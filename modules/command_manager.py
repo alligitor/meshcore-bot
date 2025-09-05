@@ -6,27 +6,16 @@ Handles all bot commands, keyword matching, and response generation
 
 import re
 import time
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Any
 from meshcore import EventType
 
 from .models import MeshMessage
-from .commands.test_command import TestCommand
-from .commands.ping_command import PingCommand
-from .commands.help_command import HelpCommand
-from .commands.advert_command import AdvertCommand
-from .commands.t_phrase_command import TPhraseCommand
-from .commands.at_phrase_command import AtPhraseCommand
-from .commands.cmd_command import CmdCommand
-from .commands.hello_command import HelloCommand
-from .commands.sun_command import SunCommand
-from .commands.moon_command import MoonCommand
-from .commands.solar_command import SolarCommand
-from .commands.hfcond_command import HfcondCommand
-from .commands.satpass_command import SatpassCommand
+from .plugin_loader import PluginLoader
+from .commands.base_command import BaseCommand
 
 
 class CommandManager:
-    """Manages all bot commands and responses"""
+    """Manages all bot commands and responses using dynamic plugin loading"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -38,22 +27,11 @@ class CommandManager:
         self.banned_users = self.load_banned_users()
         self.monitor_channels = self.load_monitor_channels()
         
-        # Initialize command handlers
-        self.commands = {
-            'test': TestCommand(bot),
-            'ping': PingCommand(bot),
-            'help': HelpCommand(bot),
-            'advert': AdvertCommand(bot),
-            't_phrase': TPhraseCommand(bot),
-            'at_phrase': AtPhraseCommand(bot),
-            'cmd': CmdCommand(bot),
-            'hello': HelloCommand(bot),
-            'sun': SunCommand(bot),
-            'moon': MoonCommand(bot),
-            'solar': SolarCommand(bot),
-            'hfcond': HfcondCommand(bot),
-            'satpass': SatpassCommand(bot)
-        }
+        # Initialize plugin loader and load all plugins
+        self.plugin_loader = PluginLoader(bot)
+        self.commands = self.plugin_loader.load_all_plugins()
+        
+        self.logger.info(f"CommandManager initialized with {len(self.commands)} plugins")
     
     def load_keywords(self) -> Dict[str, str]:
         """Load keywords from config"""
@@ -89,8 +67,15 @@ class CommandManager:
     
     def build_enhanced_connection_info(self, message: MeshMessage) -> str:
         """Build enhanced connection info with SNR, RSSI, and parsed route information"""
-        # Build routing info using the message path (which now contains the combined routing info)
+        # Extract just the hops and path info without the route type
         routing_info = message.path or "Unknown routing"
+        
+        # Clean up the routing info to remove the "via ROUTE_TYPE_*" part
+        if "via ROUTE_TYPE_" in routing_info:
+            # Extract just the hops and path part
+            parts = routing_info.split(" via ROUTE_TYPE_")
+            if len(parts) > 0:
+                routing_info = parts[0]
         
         # Add SNR and RSSI
         snr_info = f"SNR: {message.snr or 'Unknown'} dB"
@@ -293,10 +278,14 @@ class CommandManager:
         if not self.bot.connected or not self.bot.meshcore:
             return False
         
+        # Check user rate limiter (prevents spam from users)
         if not self.bot.rate_limiter.can_send():
             wait_time = self.bot.rate_limiter.time_until_next()
             self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
             return False
+        
+        # Wait for bot TX rate limiter (prevents network overload)
+        await self.bot.bot_tx_rate_limiter.wait_for_tx()
         
         try:
             # Find the contact by name (since recipient_id is the contact name)
@@ -323,11 +312,13 @@ class CommandManager:
                 elif hasattr(result, 'type') and result.type == EventType.MSG_SENT:
                     self.logger.info(f"Successfully sent DM to {contact_name}")
                     self.bot.rate_limiter.record_send()
+                    self.bot.bot_tx_rate_limiter.record_tx()
                     return True
                 else:
                     # If result is not None but doesn't have expected attributes, assume success
                     self.logger.info(f"DM sent to {contact_name} (result: {result})")
                     self.bot.rate_limiter.record_send()
+                    self.bot.bot_tx_rate_limiter.record_tx()
                     return True
             else:
                 self.logger.error(f"Failed to send DM: No result returned")
@@ -342,10 +333,14 @@ class CommandManager:
         if not self.bot.connected or not self.bot.meshcore:
             return False
         
+        # Check user rate limiter (prevents spam from users)
         if not self.bot.rate_limiter.can_send():
             wait_time = self.bot.rate_limiter.time_until_next()
             self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
             return False
+        
+        # Wait for bot TX rate limiter (prevents network overload)
+        await self.bot.bot_tx_rate_limiter.wait_for_tx()
         
         try:
             # Get channel number from channel name
@@ -360,6 +355,7 @@ class CommandManager:
             if result and result.type != EventType.ERROR:
                 self.logger.info(f"Successfully sent channel message to {channel} (channel {channel_num})")
                 self.bot.rate_limiter.record_send()
+                self.bot.bot_tx_rate_limiter.record_tx()
                 return True
             else:
                 self.logger.error(f"Failed to send channel message: {result.payload if result else 'No result'}")
@@ -380,7 +376,10 @@ class CommandManager:
             'ping': 'ping',
             'help': 'help',
             'cmd': 'cmd',
-            'hello': 'hello'
+            'hello': 'hello',
+            'wx': 'wx',
+            'weather': 'wx',
+            'wxa': 'wx'
         }
         
         # Normalize the command name
@@ -392,7 +391,7 @@ class CommandManager:
         if command:
             return f"Help {command_name}: {command.get_help_text()}"
         else:
-            return f"Unknown: {command_name}. Commands: test, ping, help, cmd, advert, t phrase, @string"
+            return f"Unknown: {command_name}. Commands: test, ping, help, cmd, advert, wx, t phrase, @string"
     
     def get_general_help(self) -> str:
         """Get general help text from config (LoRa-friendly compact format)"""
@@ -407,6 +406,7 @@ class CommandManager:
         basic_commands = ['test', 'ping', 'help', 'cmd']
         custom_syntax = ['t_phrase', 'at_phrase']  # Use the actual command key
         special_commands = ['advert']
+        weather_commands = ['wx']
         solar_commands = ['sun', 'moon', 'solar', 'hfcond', 'satpass']
         
         commands_list += "**Basic Commands:**\n"
@@ -433,6 +433,12 @@ class CommandManager:
                 help_text = self.commands[cmd].get_help_text()
                 commands_list += f"• `{cmd}` - {help_text}\n"
         
+        commands_list += "\n**Weather Commands:**\n"
+        for cmd in weather_commands:
+            if cmd in self.commands:
+                help_text = self.commands[cmd].get_help_text()
+                commands_list += f"• `{cmd}` - {help_text}\n"
+        
         commands_list += "\n**Solar Commands:**\n"
         for cmd in solar_commands:
             if cmd in self.commands:
@@ -440,6 +446,17 @@ class CommandManager:
                 commands_list += f"• `{cmd}` - {help_text}\n"
         
         return commands_list
+    
+    async def send_response(self, message: MeshMessage, content: str) -> bool:
+        """Unified method for sending responses to users"""
+        try:
+            if message.is_dm:
+                return await self.send_dm(message.sender_id, content)
+            else:
+                return await self.send_channel_message(message.channel, content)
+        except Exception as e:
+            self.logger.error(f"Failed to send response: {e}")
+            return False
     
     async def execute_commands(self, message):
         """Execute command objects for messages that don't match keywords"""
@@ -452,13 +469,52 @@ class CommandManager:
                     # Check if message starts with the command keyword
                     if content_lower.startswith(keyword.lower()):
                         self.logger.info(f"Command '{command_name}' matched, executing")
+                        
+                        # Check if command can execute (cooldown, DM requirements, etc.)
+                        if not command.can_execute(message):
+                            if command.requires_dm and not message.is_dm:
+                                await self.send_response(message, f"Command '{command_name}' can only be used in DMs")
+                            elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
+                                # Check if it's the per-user version (takes user_id parameter)
+                                import inspect
+                                sig = inspect.signature(command.get_remaining_cooldown)
+                                if len(sig.parameters) > 0:
+                                    remaining = command.get_remaining_cooldown(message.sender_id)
+                                else:
+                                    remaining = command.get_remaining_cooldown()
+                                
+                                if remaining > 0:
+                                    await self.send_response(message, f"Command '{command_name}' is on cooldown. Wait {remaining} seconds.")
+                            return
+                        
                         try:
+                            # Record execution time for cooldown tracking
+                            if hasattr(command, '_record_execution') and callable(command._record_execution):
+                                import inspect
+                                sig = inspect.signature(command._record_execution)
+                                if len(sig.parameters) > 0:
+                                    command._record_execution(message.sender_id)
+                                else:
+                                    command._record_execution()
                             await command.execute(message)
                         except Exception as e:
                             self.logger.error(f"Error executing command '{command_name}': {e}")
                             # Send error message to user
-                            if message.is_dm:
-                                await self.send_dm(message.sender_id, f"Error executing {command_name}: {e}")
-                            else:
-                                await self.send_channel_message(message.channel, f"Error executing {command_name}: {e}")
+                            await self.send_response(message, f"Error executing {command_name}: {e}")
                         return
+    
+    def get_plugin_by_keyword(self, keyword: str) -> Optional[BaseCommand]:
+        """Get a plugin by keyword"""
+        return self.plugin_loader.get_plugin_by_keyword(keyword)
+    
+    def get_plugin_by_name(self, name: str) -> Optional[BaseCommand]:
+        """Get a plugin by name"""
+        return self.plugin_loader.get_plugin_by_name(name)
+    
+    def reload_plugin(self, plugin_name: str) -> bool:
+        """Reload a specific plugin"""
+        return self.plugin_loader.reload_plugin(plugin_name)
+    
+    def get_plugin_metadata(self, plugin_name: str = None) -> Dict[str, Any]:
+        """Get plugin metadata"""
+        return self.plugin_loader.get_plugin_metadata(plugin_name)

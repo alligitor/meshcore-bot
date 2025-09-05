@@ -11,9 +11,14 @@ from ..models import MeshMessage
 class SolarCommand(BaseCommand):
     """Command to get solar conditions"""
     
+    # Plugin metadata
+    name = "solar"
+    keywords = ['solar']
+    description = "Get solar conditions and HF band status"
+    category = "solar"
+    
     def __init__(self, bot):
         super().__init__(bot)
-        self.keywords = ['solar']
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the solar command"""
@@ -24,21 +29,10 @@ class SolarCommand(BaseCommand):
             # Send response (solar only, more readable)
             response = f"☀️ Solar: {solar_info}"
             
-            # Send response based on message type
-            if message.is_dm:
-                await self.bot.command_manager.send_dm(message.sender_id, response)
-            else:
-                await self.bot.command_manager.send_channel_message(message.channel, response)
-            return True
+            # Use the unified send_response method
+            return await self.send_response(message, response)
             
         except Exception as e:
             error_msg = f"Error getting solar info: {e}"
-            if message.is_dm:
-                await self.bot.command_manager.send_dm(message.sender_id, error_msg)
-            else:
-                await self.bot.command_manager.send_channel_message(message.channel, error_msg)
+            await self.send_response(message, error_msg)
             return False
-    
-    def get_help_text(self):
-        """Get help text for this command"""
-        return "Get solar conditions and HF band status"

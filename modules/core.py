@@ -23,7 +23,7 @@ from meshcore import EventType
 from meshcore_cli.meshcore_cli import send_cmd, send_chan_msg
 
 # Import our modules
-from .rate_limiter import RateLimiter
+from .rate_limiter import RateLimiter, BotTxRateLimiter
 from .message_handler import MessageHandler
 from .command_manager import CommandManager
 from .channel_manager import ChannelManager
@@ -48,6 +48,9 @@ class MeshCoreBot:
         # Initialize modules
         self.rate_limiter = RateLimiter(
             self.config.getint('Bot', 'rate_limit_seconds', fallback=10)
+        )
+        self.bot_tx_rate_limiter = BotTxRateLimiter(
+            self.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
         )
         self.message_handler = MessageHandler(self)
         self.command_manager = CommandManager(self)

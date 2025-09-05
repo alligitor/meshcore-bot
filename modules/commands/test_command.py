@@ -11,8 +11,14 @@ from ..models import MeshMessage
 class TestCommand(BaseCommand):
     """Handles the test command"""
     
+    # Plugin metadata
+    name = "test"
+    keywords = ['test']
+    description = "Responds to 'test' with connection info"
+    category = "basic"
+    
     def get_help_text(self) -> str:
-        return "Responds to 'test' with connection info."
+        return self.description
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the test command"""

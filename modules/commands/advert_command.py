@@ -12,17 +12,25 @@ from ..models import MeshMessage
 class AdvertCommand(BaseCommand):
     """Handles the advert command"""
     
+    # Plugin metadata
+    name = "advert"
+    keywords = ['advert']
+    description = "Sends flood advert (DM only, 1hr cooldown)"
+    requires_dm = True
+    cooldown_seconds = 3600  # 1 hour
+    category = "special"
+    
     def get_help_text(self) -> str:
-        return "Sends flood advert (DM only, 1hr cooldown)."
+        return self.description
     
     def can_execute(self, message: MeshMessage) -> bool:
         """Check if advert command can be executed"""
-        # Only works in DMs
-        if not message.is_dm:
+        # Use the base class cooldown check
+        if not super().can_execute(message):
             return False
         
-        # Check cooldown
-        if self.bot.last_advert_time:
+        # Additional check for bot's last advert time (legacy support)
+        if hasattr(self.bot, 'last_advert_time') and self.bot.last_advert_time:
             current_time = time.time()
             if (current_time - self.bot.last_advert_time) < 3600:  # 1 hour
                 return False
@@ -34,11 +42,11 @@ class AdvertCommand(BaseCommand):
         try:
             # Check if enough time has passed since last advert (1 hour)
             current_time = time.time()
-            if self.bot.last_advert_time and (current_time - self.bot.last_advert_time) < 3600:
+            if hasattr(self.bot, 'last_advert_time') and self.bot.last_advert_time and (current_time - self.bot.last_advert_time) < 3600:
                 remaining_time = 3600 - (current_time - self.bot.last_advert_time)
                 remaining_minutes = int(remaining_time // 60)
                 response = f"Advert cooldown active. Please wait {remaining_minutes} more minutes before requesting another advert."
-                await self.bot.command_manager.send_dm(message.sender_id, response)
+                await self.send_response(message, response)
                 return True
             
             self.logger.info(f"User {message.sender_id} requested flood advert")
@@ -48,7 +56,8 @@ class AdvertCommand(BaseCommand):
             result = await next_cmd(self.bot.meshcore, ["flood_advert"])
             
             # Update last advert time
-            self.bot.last_advert_time = current_time
+            if hasattr(self.bot, 'last_advert_time'):
+                self.bot.last_advert_time = current_time
             
             if result and hasattr(result, 'type'):
                 if result.type == 'command_error':
@@ -61,11 +70,11 @@ class AdvertCommand(BaseCommand):
                 response = "Flood advert sent successfully!"
                 self.logger.info("Flood advert sent successfully via DM command (no result returned)")
             
-            await self.bot.command_manager.send_dm(message.sender_id, response)
+            await self.send_response(message, response)
             return True
             
         except Exception as e:
             error_msg = f"Error sending flood advert: {e}"
             self.logger.error(error_msg)
-            await self.bot.command_manager.send_dm(message.sender_id, error_msg)
+            await self.send_response(message, error_msg)
             return False

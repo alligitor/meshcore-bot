@@ -11,8 +11,14 @@ from ..models import MeshMessage
 class PingCommand(BaseCommand):
     """Handles the ping command"""
     
+    # Plugin metadata
+    name = "ping"
+    keywords = ['ping']
+    description = "Responds to 'ping' with 'Pong!'"
+    category = "basic"
+    
     def get_help_text(self) -> str:
-        return "Responds to 'ping' with 'Pong!'."
+        return self.description
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the ping command"""

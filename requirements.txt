@@ -7,3 +7,5 @@ schedule>=1.2.0
 colorlog>=6.7.0
 requests>=2.31.0
 pyephem>=4.1.4
+geopy>=2.3.0
+maidenhead>=1.4.0

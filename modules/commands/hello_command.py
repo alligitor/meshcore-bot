@@ -12,6 +12,12 @@ from ..models import MeshMessage
 class HelloCommand(BaseCommand):
     """Handles various greeting commands"""
     
+    # Plugin metadata
+    name = "hello"
+    keywords = ['hello', 'hi', 'hey', 'howdy', 'greetings', 'salutations']
+    description = "Responds to greetings with robot-themed responses"
+    category = "basic"
+    
     def __init__(self, bot):
         super().__init__(bot)
         # Robot greetings from popular culture
@@ -34,7 +40,7 @@ class HelloCommand(BaseCommand):
         ]
     
     def get_help_text(self) -> str:
-        return "Responds to greetings with robot-themed responses."
+        return self.description
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the hello command"""

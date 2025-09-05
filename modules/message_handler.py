@@ -21,9 +21,22 @@ class MessageHandler:
         self.snr_cache = {}
         self.rssi_cache = {}
         
-        # Time-based cache for recent RF log data (last 5 seconds)
+        # Load configuration for RF data correlation
+        self.rf_data_timeout = float(bot.config.get('Bot', 'rf_data_timeout', fallback='15.0'))
+        self.message_timeout = float(bot.config.get('Bot', 'message_correlation_timeout', fallback='10.0'))
+        self.enhanced_correlation = bot.config.getboolean('Bot', 'enable_enhanced_correlation', fallback=True)
+        
+        # Time-based cache for recent RF log data
         self.recent_rf_data = []
-        self.rf_data_timeout = 5.0  # seconds
+        
+        # Message correlation system to prevent race conditions
+        self.pending_messages = {}  # Store messages waiting for RF data
+        
+        # Enhanced RF data storage with better correlation
+        self.rf_data_by_timestamp = {}  # Index by timestamp for faster lookup
+        self.rf_data_by_pubkey = {}     # Index by pubkey for exact matches
+        
+        self.logger.info(f"RF Data Correlation: timeout={self.rf_data_timeout}s, enhanced={self.enhanced_correlation}")
     
     async def handle_contact_message(self, event, metadata=None):
         """Handle incoming contact message (DM)"""
@@ -383,7 +396,10 @@ class MessageHandler:
                             
                             # Log the routing information for analysis
                             if routing_info['path_length'] > 0:
-                                self.logger.info(f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {routing_info['path_hex']} ({routing_info['path_length']} bytes) | Type: {routing_info['payload_type']}")
+                                # Format path with comma separation (every 2 characters)
+                                path_hex = routing_info['path_hex']
+                                formatted_path = ','.join([path_hex[i:i+2] for i in range(0, len(path_hex), 2)])
+                                self.logger.info(f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {formatted_path} ({routing_info['path_length']} bytes) | Type: {routing_info['payload_type']}")
                             else:
                                 self.logger.info(f"📡 DIRECT MESSAGE: {routing_info['route_type']} | Type: {routing_info['payload_type']}")
                     
@@ -399,47 +415,144 @@ class MessageHandler:
                     }
                     self.recent_rf_data.append(rf_data)
                     
-                    # Clean up old data
+                    # Update correlation indexes
+                    self.rf_data_by_timestamp[current_time] = rf_data
+                    if pubkey_prefix:
+                        if pubkey_prefix not in self.rf_data_by_pubkey:
+                            self.rf_data_by_pubkey[pubkey_prefix] = []
+                        self.rf_data_by_pubkey[pubkey_prefix].append(rf_data)
+                    
+                    # Clean up old data from all indexes
                     self.recent_rf_data = [data for data in self.recent_rf_data 
                                          if current_time - data['timestamp'] < self.rf_data_timeout]
                     
+                    # Clean up timestamp index
+                    old_timestamps = [ts for ts in self.rf_data_by_timestamp.keys() 
+                                    if current_time - ts > self.rf_data_timeout]
+                    for ts in old_timestamps:
+                        del self.rf_data_by_timestamp[ts]
+                    
+                    # Clean up pubkey index
+                    for pubkey in list(self.rf_data_by_pubkey.keys()):
+                        self.rf_data_by_pubkey[pubkey] = [data for data in self.rf_data_by_pubkey[pubkey] 
+                                                         if current_time - data['timestamp'] < self.rf_data_timeout]
+                        if not self.rf_data_by_pubkey[pubkey]:
+                            del self.rf_data_by_pubkey[pubkey]
+                    
+                    # Try to correlate with any pending messages
+                    self.try_correlate_pending_messages(rf_data)
+                    
                     self.logger.debug(f"Stored recent RF data with routing info: {rf_data}")
+                    
+                    # Clean up old pending messages
+                    self.cleanup_old_messages()
                         
         except Exception as e:
             self.logger.error(f"Error handling RF log data: {e}")
     
-    def find_recent_rf_data(self, message_pubkey=None, max_age_seconds=5.0):
-        """Find recent RF data for SNR/RSSI and packet decoding"""
+    def find_recent_rf_data(self, message_pubkey=None, max_age_seconds=None):
+        """Find recent RF data for SNR/RSSI and packet decoding with improved correlation"""
         import time
         current_time = time.time()
+        
+        # Use default timeout if not specified
+        if max_age_seconds is None:
+            max_age_seconds = self.rf_data_timeout
         
         # Filter recent RF data by age
         recent_data = [data for data in self.recent_rf_data 
                       if current_time - data['timestamp'] < max_age_seconds]
         
         if not recent_data:
+            self.logger.debug(f"No recent RF data found within {max_age_seconds}s window")
             return None
         
-        # If we have a specific pubkey, try to find exact or partial matches
+        # Strategy 1: Try exact pubkey match first
         if message_pubkey:
             for data in recent_data:
                 rf_pubkey = data['pubkey_prefix']
-                # Check for exact match or partial match
-                if (rf_pubkey == message_pubkey or 
-                    rf_pubkey.startswith(message_pubkey) or 
-                    message_pubkey.startswith(rf_pubkey)):
-                    self.logger.debug(f"Found exact/partial pubkey match: {rf_pubkey} matches {message_pubkey}")
+                if rf_pubkey == message_pubkey:
+                    self.logger.debug(f"Found exact pubkey match: {rf_pubkey}")
                     return data
         
-        # If no specific pubkey or no matches, return the most recent data
-        # This is more reliable since RF data often comes right after messages
-        # and represents the same transmission even if pubkeys don't match
+        # Strategy 2: Try partial pubkey matches
+        if message_pubkey:
+            for data in recent_data:
+                rf_pubkey = data['pubkey_prefix']
+                # Check for partial match (at least 16 characters)
+                min_length = min(len(rf_pubkey), len(message_pubkey), 16)
+                if (rf_pubkey[:min_length] == message_pubkey[:min_length] and min_length >= 16):
+                    self.logger.debug(f"Found partial pubkey match: {rf_pubkey[:16]}... matches {message_pubkey[:16]}...")
+                    return data
+        
+        # Strategy 3: Use most recent data (fallback for timing issues)
         if recent_data:
             most_recent = max(recent_data, key=lambda x: x['timestamp'])
-            self.logger.debug(f"Using most recent RF data for SNR/RSSI and packet decoding: {most_recent}")
+            self.logger.debug(f"Using most recent RF data (fallback): {most_recent['pubkey_prefix'][:16]}... at {most_recent['timestamp']}")
             return most_recent
         
         return None
+    
+    def store_message_for_correlation(self, message_id, message_data):
+        """Store a message temporarily to wait for RF data correlation"""
+        import time
+        self.pending_messages[message_id] = {
+            'data': message_data,
+            'timestamp': time.time(),
+            'processed': False
+        }
+        self.logger.debug(f"Stored message {message_id} for RF data correlation")
+    
+    def correlate_message_with_rf_data(self, message_id):
+        """Try to correlate a stored message with available RF data"""
+        if message_id not in self.pending_messages:
+            return None
+            
+        message_info = self.pending_messages[message_id]
+        message_data = message_info['data']
+        
+        # Try to find RF data for this message
+        pubkey_prefix = message_data.get('pubkey_prefix', '')
+        rf_data = self.find_recent_rf_data(pubkey_prefix)
+        
+        if rf_data:
+            self.logger.debug(f"Successfully correlated message {message_id} with RF data")
+            message_info['processed'] = True
+            return rf_data
+        
+        return None
+    
+    def cleanup_old_messages(self):
+        """Clean up old pending messages that couldn't be correlated"""
+        import time
+        current_time = time.time()
+        
+        to_remove = []
+        for message_id, message_info in self.pending_messages.items():
+            if current_time - message_info['timestamp'] > self.message_timeout:
+                to_remove.append(message_id)
+        
+        for message_id in to_remove:
+            del self.pending_messages[message_id]
+            self.logger.debug(f"Cleaned up old pending message {message_id}")
+    
+    def try_correlate_pending_messages(self, rf_data):
+        """Try to correlate new RF data with any pending messages"""
+        pubkey_prefix = rf_data.get('pubkey_prefix', '')
+        
+        for message_id, message_info in self.pending_messages.items():
+            if message_info['processed']:
+                continue
+                
+            message_pubkey = message_info['data'].get('pubkey_prefix', '')
+            
+            # Check if this RF data matches the pending message
+            if (pubkey_prefix == message_pubkey or 
+                (len(pubkey_prefix) >= 16 and len(message_pubkey) >= 16 and 
+                 pubkey_prefix[:16] == message_pubkey[:16])):
+                self.logger.debug(f"Correlated RF data with pending message {message_id}")
+                message_info['processed'] = True
+                break
     
 
     
@@ -633,9 +746,32 @@ class MessageHandler:
             message_pubkey = payload.get('pubkey_prefix', '')
             self.logger.debug(f"Processing channel message from pubkey: {message_pubkey}")
             
-            # Try to decode the packet to get routing information directly from the packet
-            # According to MeshCore FAQ, the path gets embedded into the packet for future messages
-            recent_rf_data = self.find_recent_rf_data()
+            # Enhanced RF data correlation with multiple strategies
+            recent_rf_data = None
+            
+            # Strategy 1: Try immediate correlation
+            recent_rf_data = self.find_recent_rf_data(message_pubkey)
+            
+            # Strategy 2: If no immediate match and enhanced correlation is enabled, store message and wait briefly
+            if not recent_rf_data and self.enhanced_correlation:
+                import time
+                message_id = f"{message_pubkey}_{int(time.time() * 1000)}"
+                self.store_message_for_correlation(message_id, payload)
+                
+                # Wait a short time for RF data to arrive (non-blocking)
+                await asyncio.sleep(0.1)  # 100ms wait
+                recent_rf_data = self.correlate_message_with_rf_data(message_id)
+            
+            # Strategy 3: Try with extended timeout if still no match
+            if not recent_rf_data:
+                extended_timeout = self.rf_data_timeout * 2  # Double the normal timeout
+                recent_rf_data = self.find_recent_rf_data(message_pubkey, max_age_seconds=extended_timeout)
+            
+            # Strategy 4: Use most recent RF data as last resort
+            if not recent_rf_data:
+                extended_timeout = self.rf_data_timeout * 2  # Double the normal timeout
+                recent_rf_data = self.find_recent_rf_data(max_age_seconds=extended_timeout)
+            
             if recent_rf_data and recent_rf_data.get('raw_hex'):
                 raw_hex = recent_rf_data['raw_hex']
                 self.logger.info(f"🔍 FOUND RF DATA: {len(raw_hex)} chars, starts with: {raw_hex[:32]}...")
@@ -663,7 +799,7 @@ class MessageHandler:
                     hops = payload.get('path_len', 255)
                     path_string = None
             else:
-                self.logger.warning("❌ NO RF DATA found for channel message")
+                self.logger.warning("❌ NO RF DATA found for channel message after all correlation attempts")
                 hops = payload.get('path_len', 255)
                 path_string = None
             
