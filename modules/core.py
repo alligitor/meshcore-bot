@@ -28,6 +28,7 @@ from .message_handler import MessageHandler
 from .command_manager import CommandManager
 from .channel_manager import ChannelManager
 from .scheduler import MessageScheduler
+from .repeater_manager import RepeaterManager
 
 
 class MeshCoreBot:
@@ -56,6 +57,16 @@ class MeshCoreBot:
         self.command_manager = CommandManager(self)
         self.channel_manager = ChannelManager(self)
         self.scheduler = MessageScheduler(self)
+        
+        # Initialize repeater manager
+        db_path = self.config.get('Bot', 'repeater_db_path', fallback='repeater_contacts.db')
+        self.logger.info(f"Initializing repeater manager with database: {db_path}")
+        try:
+            self.repeater_manager = RepeaterManager(self, db_path)
+            self.logger.info("Repeater manager initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize repeater manager: {e}")
+            raise
         
         # Initialize solar conditions configuration
         from .solar_conditions import set_config
@@ -91,6 +102,8 @@ rate_limit_seconds = 10
 # Send startup advert when bot finishes initializing
 # Options: false (disabled), zero-hop, flood
 startup_advert = false
+# Path to repeater contacts database
+repeater_db_path = repeater_contacts.db
 
 [Keywords]
 test = "Test message received! Hops: {hops}, Path: {path}, From: {sender}"
@@ -159,6 +172,9 @@ tide_update_interval = 1800
         self.logger = logging.getLogger('MeshCoreBot')
         self.logger.setLevel(log_level)
         
+        # Clear any existing handlers to prevent duplicates
+        self.logger.handlers.clear()
+        
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
@@ -169,6 +185,40 @@ tide_update_interval = 1800
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
+        
+        # Prevent propagation to root logger to avoid duplicate output
+        self.logger.propagate = False
+        
+        # Configure meshcore library logging (separate from bot logging)
+        meshcore_log_level = getattr(logging, self.config.get('Logging', 'meshcore_log_level', fallback='INFO'))
+        
+        # Configure all possible meshcore-related loggers
+        meshcore_loggers = [
+            'meshcore',
+            'meshcore_cli', 
+            'meshcore.meshcore',
+            'meshcore_cli.meshcore_cli',
+            'meshcore_cli.commands',
+            'meshcore_cli.connection'
+        ]
+        
+        for logger_name in meshcore_loggers:
+            logger = logging.getLogger(logger_name)
+            logger.setLevel(meshcore_log_level)
+            # Remove any existing handlers to prevent duplicate output
+            logger.handlers.clear()
+            # Add our formatter
+            if not logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(formatter)
+                logger.addHandler(handler)
+        
+        # Configure root logger to prevent other libraries from using DEBUG
+        root_logger = logging.getLogger()
+        root_logger.setLevel(log_level)
+        
+        # Log the configuration for debugging
+        self.logger.info(f"Logging configured - Bot: {logging.getLevelName(log_level)}, MeshCore: {logging.getLevelName(meshcore_log_level)}")
     
     async def connect(self) -> bool:
         """Connect to MeshCore node using official package"""
@@ -183,12 +233,12 @@ tide_update_interval = 1800
                 # Create serial connection
                 serial_port = self.config.get('Connection', 'serial_port', fallback='/dev/ttyUSB0')
                 self.logger.info(f"Connecting via serial port: {serial_port}")
-                self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=True)
+                self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
             else:
                 # Create BLE connection (default)
                 ble_device_name = self.config.get('Connection', 'ble_device_name', fallback=None)
                 self.logger.info(f"Connecting via BLE" + (f" to device: {ble_device_name}" if ble_device_name else ""))
-                self.meshcore = await meshcore.MeshCore.create_ble(device_name=ble_device_name, debug=True)
+                self.meshcore = await meshcore.MeshCore.create_ble(device_name=ble_device_name, debug=False)
             
             if self.meshcore.is_connected:
                 self.connected = True

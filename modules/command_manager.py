@@ -369,8 +369,12 @@ class CommandManager:
         """Get help text for a specific command (LoRa-friendly compact format)"""
         # Map command aliases to their actual command names
         command_aliases = {
-            '@': 'at_phrase',
-            't': 't_phrase',
+            '@': 'atphrase',
+            '@string': 'atphrase',  # Handle "help @string" case
+            'string': 'atphrase',   # Handle "help string" case (when @ is stripped)
+            't': 'tphrase',
+            't phrase': 'tphrase',  # Handle "help t phrase" case
+            'phrase': 'tphrase',    # Handle "help phrase" case
             'advert': 'advert',
             'test': 'test',
             'ping': 'ping',

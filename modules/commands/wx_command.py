@@ -94,20 +94,21 @@ class WxCommand(BaseCommand):
         content = message.content.strip()
         
         # Parse the command to extract location
-        # Support formats: "wx 12345", "wx seattle", "weather everett", "wxa bellingham"
+        # Support formats: "wx 12345", "wx seattle", "wx paris, tx", "weather everett", "wxa bellingham"
         parts = content.split()
         if len(parts) < 2:
-            await self.send_response(message, f"Usage: wx <zipcode|city> - Example: wx 12345 or wx seattle")
+            await self.send_response(message, f"Usage: wx <zipcode|city> - Example: wx 12345 or wx seattle or wx paris, tx")
             return True
         
-        location = parts[1].strip()
+        # Join all parts after the command to handle "city, state" format
+        location = ' '.join(parts[1:]).strip()
         
         # Check if it's a zipcode (5 digits) or city name
         if re.match(r'^\d{5}$', location):
             # It's a zipcode
             location_type = "zipcode"
         else:
-            # It's a city name
+            # It's a city name (possibly with state)
             location_type = "city"
         
         try:
@@ -125,7 +126,9 @@ class WxCommand(BaseCommand):
                 # Wait for bot TX rate limiter to allow next message
                 import asyncio
                 rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
-                await asyncio.sleep(rate_limit + 0.2)  # Wait longer than the configured rate limit to avoid rate limiting
+                # Use a conservative sleep time to avoid rate limiting
+                sleep_time = max(rate_limit + 1.0, 2.0)  # At least 2 seconds, or rate_limit + 1 second
+                await asyncio.sleep(sleep_time)
                 
                 # Send the special weather statement
                 alert_text = weather_data[2]
@@ -151,14 +154,67 @@ class WxCommand(BaseCommand):
                 if lat is None or lon is None:
                     return f"Could not find location for zipcode {location}"
             else:  # city
-                lat, lon = self.city_to_lat_lon(location)
+                result = self.city_to_lat_lon(location)
+                if len(result) == 3:
+                    lat, lon, address_info = result
+                else:
+                    lat, lon = result
+                    address_info = None
+                
                 if lat is None or lon is None:
                     return f"Could not find city '{location}' in {self.default_state}"
+                
+                # Check if the found city is in a different state than default
+                actual_city = location
+                actual_state = self.default_state
+                if address_info:
+                    # Try to get the best city name from various address fields
+                    actual_city = (address_info.get('city') or 
+                                 address_info.get('town') or 
+                                 address_info.get('village') or 
+                                 address_info.get('hamlet') or 
+                                 address_info.get('municipality') or 
+                                 location)
+                    actual_state = address_info.get('state', self.default_state)
+                    # Convert full state name to abbreviation if needed
+                    if len(actual_state) > 2:
+                        state_abbrev_map = {
+                            'Washington': 'WA', 'California': 'CA', 'New York': 'NY', 'Texas': 'TX',
+                            'Florida': 'FL', 'Illinois': 'IL', 'Pennsylvania': 'PA', 'Ohio': 'OH',
+                            'Georgia': 'GA', 'North Carolina': 'NC', 'Michigan': 'MI', 'New Jersey': 'NJ',
+                            'Virginia': 'VA', 'Tennessee': 'TN', 'Indiana': 'IN', 'Arizona': 'AZ',
+                            'Massachusetts': 'MA', 'Missouri': 'MO', 'Maryland': 'MD', 'Wisconsin': 'WI',
+                            'Colorado': 'CO', 'Minnesota': 'MN', 'South Carolina': 'SC', 'Alabama': 'AL',
+                            'Louisiana': 'LA', 'Kentucky': 'KY', 'Oregon': 'OR', 'Oklahoma': 'OK',
+                            'Connecticut': 'CT', 'Utah': 'UT', 'Iowa': 'IA', 'Nevada': 'NV',
+                            'Arkansas': 'AR', 'Mississippi': 'MS', 'Kansas': 'KS', 'New Mexico': 'NM',
+                            'Nebraska': 'NE', 'West Virginia': 'WV', 'Idaho': 'ID', 'Hawaii': 'HI',
+                            'New Hampshire': 'NH', 'Maine': 'ME', 'Montana': 'MT', 'Rhode Island': 'RI',
+                            'Delaware': 'DE', 'South Dakota': 'SD', 'North Dakota': 'ND', 'Alaska': 'AK',
+                            'Vermont': 'VT', 'Wyoming': 'WY'
+                        }
+                        actual_state = state_abbrev_map.get(actual_state, actual_state)
+                    
+                    # Also check if the default state needs to be converted for comparison
+                    default_state_full = self.default_state
+                    if len(self.default_state) == 2:
+                        # Convert abbreviation to full name for comparison
+                        abbrev_to_full_map = {v: k for k, v in state_abbrev_map.items()}
+                        default_state_full = abbrev_to_full_map.get(self.default_state, self.default_state)
             
             # Get weather forecast
             weather = self.get_noaa_weather(lat, lon)
             if weather == self.ERROR_FETCHING_DATA:
                 return "Error fetching weather data from NOAA"
+            
+            # Add location info if city is in a different state than default
+            location_prefix = ""
+            if location_type == "city" and address_info:
+                # Compare states (handle both full names and abbreviations)
+                states_different = (actual_state != self.default_state and 
+                                  actual_state != default_state_full)
+                if states_different:
+                    location_prefix = f"{actual_city}, {actual_state}: "
             
             # Try to get additional current conditions data
             current_conditions = self.get_current_conditions(lat, lon)
@@ -174,28 +230,11 @@ class WxCommand(BaseCommand):
             else:
                 full_alert_text, abbreviated_alert_text, alert_count = alerts_result
                 if alert_count > 0:
-                    # Check if this is a special weather statement that needs two messages
-                    self.logger.debug(f"Checking if alert is special: '{full_alert_text}'")
-                    if self.is_special_weather_statement(full_alert_text):
-                        self.logger.info(f"Special weather statement detected: '{full_alert_text}' - using multi-message mode")
-                        # Return a tuple indicating we need to send two messages
-                        # Don't truncate the alert text for special statements
-                        return ("multi_message", weather, full_alert_text, alert_count)
-                    else:
-                        self.logger.debug(f"Regular alert detected: '{full_alert_text}' - using single message mode")
-                    
-                    # For regular alerts, use the already abbreviated text and apply truncation for single message
-                    alert_text_for_single_message = self.truncate_alert_for_lora(abbreviated_alert_text, max_length=80)
-                    
-                    # Combine weather and alerts more compactly
-                    combined = f"{weather} | {alert_count} alerts: {alert_text_for_single_message}"
-                    if len(combined) > 120:
-                        # If still too long, prioritize alerts only
-                        weather = f"{alert_count} alerts: {alert_text_for_single_message}"
-                    else:
-                        weather = combined
+                    # Always send weather first, then alerts in separate message
+                    self.logger.info(f"Found {alert_count} alerts - using two-message mode")
+                    return ("multi_message", f"{location_prefix}{weather}", full_alert_text, alert_count)
             
-            return weather
+            return f"{location_prefix}{weather}"
             
         except Exception as e:
             self.logger.error(f"Error getting weather for {location_type} {location}: {e}")
@@ -221,20 +260,83 @@ class WxCommand(BaseCommand):
     def city_to_lat_lon(self, city: str) -> tuple:
         """Convert city name to latitude and longitude using default state"""
         try:
-            # Use Nominatim to geocode the city with default state
+            # Check if the input contains a comma (city, state format)
+            if ',' in city:
+                # Parse city, state format
+                city_parts = [part.strip() for part in city.split(',')]
+                if len(city_parts) >= 2:
+                    city_name = city_parts[0]
+                    state = city_parts[1]
+                    
+                    # Try the specific city, state combination first
+                    location = self.geolocator.geocode(f"{city_name}, {state}, USA")
+                    if location:
+                        # Use reverse geocoding to get detailed address info
+                        try:
+                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            if reverse_location:
+                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                        except:
+                            pass
+                        return location.latitude, location.longitude, location.raw.get('address', {})
+            
+            # For common city names, try major cities first to avoid small towns
+            major_city_mappings = {
+                'albany': ['Albany, NY, USA', 'Albany, OR, USA', 'Albany, CA, USA'],
+                'portland': ['Portland, OR, USA', 'Portland, ME, USA'],
+                'boston': ['Boston, MA, USA'],
+                'paris': ['Paris, TX, USA', 'Paris, IL, USA', 'Paris, TN, USA'],
+                'springfield': ['Springfield, IL, USA', 'Springfield, MO, USA', 'Springfield, MA, USA'],
+                'franklin': ['Franklin, TN, USA', 'Franklin, MA, USA'],
+                'georgetown': ['Georgetown, TX, USA', 'Georgetown, SC, USA'],
+                'madison': ['Madison, WI, USA', 'Madison, AL, USA'],
+                'auburn': ['Auburn, AL, USA', 'Auburn, WA, USA'],
+                'troy': ['Troy, NY, USA', 'Troy, MI, USA'],
+                'clinton': ['Clinton, IA, USA', 'Clinton, MS, USA']
+            }
+            
+            # If it's a major city with multiple locations, try the major ones first
+            if city.lower() in major_city_mappings:
+                for major_city_query in major_city_mappings[city.lower()]:
+                    location = self.geolocator.geocode(major_city_query)
+                    if location:
+                        # Use reverse geocoding to get detailed address info
+                        try:
+                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            if reverse_location:
+                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                        except:
+                            pass
+                        return location.latitude, location.longitude, location.raw.get('address', {})
+            
+            # First try with default state
             location = self.geolocator.geocode(f"{city}, {self.default_state}, USA")
             if location:
-                return location.latitude, location.longitude
+                # Use reverse geocoding to get detailed address info
+                try:
+                    reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                    if reverse_location:
+                        return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                except:
+                    pass
+                return location.latitude, location.longitude, location.raw.get('address', {})
             else:
                 # Try without state as fallback
                 location = self.geolocator.geocode(f"{city}, USA")
                 if location:
-                    return location.latitude, location.longitude
+                    # Use reverse geocoding to get detailed address info
+                    try:
+                        reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                        if reverse_location:
+                            return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                    except:
+                        pass
+                    return location.latitude, location.longitude, location.raw.get('address', {})
                 else:
-                    return None, None
+                    return None, None, None
         except Exception as e:
             self.logger.error(f"Error geocoding city {city}: {e}")
-            return None, None
+            return None, None, None
     
     def get_noaa_weather(self, lat: float, lon: float) -> str:
         """Get weather forecast from NOAA"""
@@ -405,60 +507,6 @@ class WxCommand(BaseCommand):
             self.logger.error(f"Error fetching NOAA weather alerts: {e}")
             return self.ERROR_FETCHING_DATA
     
-    def truncate_alert_for_lora(self, alert_text: str, max_length: int = 60) -> str:
-        """Truncate alert text intelligently for LoRa message limits"""
-        if len(alert_text) <= max_length:
-            return alert_text
-        
-        # Try to truncate at word boundaries
-        truncated = alert_text[:max_length-3]
-        last_space = truncated.rfind(' ')
-        
-        if last_space > max_length * 0.7:  # If we can find a good word boundary
-            return truncated[:last_space] + "..."
-        else:
-            return truncated + "..."
-    
-    def is_special_weather_statement(self, alert_text: str) -> bool:
-        """Check if this is a special weather statement that should be sent in a separate message"""
-        # Special weather statements are typically longer and more detailed
-        # They often contain important information that shouldn't be truncated
-        
-        # Check for special weather statement keywords (both full and abbreviated forms)
-        special_keywords = [
-            "special weather statement",
-            "special weather stmt",
-            "hazardous weather outlook",
-            "hydrologic outlook",
-            "fire weather watch",
-            "red flag warning",
-            "excessive heat warning",
-            "extreme heat warning",
-            # Abbreviated forms
-            "extheat warning",
-            "extheat warn",
-            "exheat warning", 
-            "exheat warn",
-            "redflag warning",
-            "redflag warn",
-            "firewx watch",
-            "firewx warning"
-        ]
-        
-        alert_lower = alert_text.lower()
-        
-        # Check if it contains any special keywords
-        for keyword in special_keywords:
-            if keyword in alert_lower:
-                self.logger.debug(f"Special keyword '{keyword}' found in alert: '{alert_text}'")
-                return True
-        
-        # Also check if the alert is particularly long (likely to be truncated)
-        # Special statements are often 100+ characters
-        if len(alert_text) > 100:
-            return True
-        
-        return False
     
     def abbreviate_alert_title(self, title: str) -> str:
         """Abbreviate alert title for brevity"""
