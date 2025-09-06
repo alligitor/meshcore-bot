@@ -37,7 +37,7 @@ class AqiCommand(BaseCommand):
         self.default_state = self.bot.config.get('Weather', 'default_state', fallback='WA')
         
         # Get AirNow API key from config
-        self.api_key = self.bot.config.get('Solar_Config', 'airnow_api_key', fallback='')
+        self.api_key = self.bot.config.get('External_Data', 'airnow_api_key', fallback='')
         if not self.api_key:
             self.logger.warning("AirNow API key not configured in config.ini")
         
@@ -283,7 +283,7 @@ class AqiCommand(BaseCommand):
         """Get AQI data for a location (zipcode, city, or coordinates)"""
         try:
             if not self.api_key:
-                return "AirNow API key not configured. Please add airnow_api_key to config.ini"
+                return "AirNow API key not configured. Please add airnow_api_key to [External_Data] section in config.ini"
             
             # Convert location to lat/lon
             if location_type == "zipcode":

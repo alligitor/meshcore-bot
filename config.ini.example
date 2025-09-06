@@ -152,6 +152,14 @@ tide_api_key =
 # Tide update interval in seconds (future feature)
 tide_update_interval = 1800
 
+# N2YO API key for satellite pass information
+# Get free key at: https://www.n2yo.com/login/
+n2yo_api_key = 
+
+# AirNow API key for AQI data
+# Get free key at: https://docs.airnowapi.org/
+airnow_api_key = 
+
 [Weather]
 # Default state for city name disambiguation
 # When users type "wx seattle", it will search for "seattle, WA, USA"
@@ -174,11 +182,3 @@ url_timeout = 10
 # true: Use 24-hour UTC format
 # false: Use 12-hour local format
 use_zulu_time = false
-
-# N2YO API key for satellite pass information
-# Get free key at: https://www.n2yo.com/login/
-n2yo_api_key = 
-
-# AirNow API key for AQI data
-# Get free key at: https://www.airnowapi.org/
-airnow_api_key = 

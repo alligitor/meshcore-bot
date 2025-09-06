@@ -353,7 +353,7 @@ def get_next_satellite_pass(satellite, lat=None, lon=None):
             lon = get_config_value('Solar_Config', 'default_longitude', DEFAULT_LONGITUDE)
         
         # API URL
-        n2yo_key = get_config_value('Solar_Config', 'n2yo_api_key', DEFAULT_N2YO_API_KEY)
+        n2yo_key = get_config_value('External_Data', 'n2yo_api_key', DEFAULT_N2YO_API_KEY)
         if not n2yo_key:
             logger.error("System: Missing API key free at https://www.n2yo.com/login/")
             return "not configured, bug your sysop"
