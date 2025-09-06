@@ -148,6 +148,11 @@ rate_limit_seconds = 2
 # Prevents bot from overwhelming the mesh network
 bot_tx_rate_limit_seconds = 1.0
 
+# Timezone for bot operations
+# Use standard timezone names (e.g., "America/New_York", "Europe/London", "UTC")
+# Leave empty to use system timezone
+timezone = 
+
 # Send startup advert when bot finishes initializing
 # false: No startup advert (default)
 # zero-hop: Send local broadcast advert
