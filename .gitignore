@@ -120,6 +120,7 @@ Thumbs.db
 config.ini
 *.db
 mctomqtt.py
+bot_cli.py
 
 # Local documentation and development files
 docs/local/

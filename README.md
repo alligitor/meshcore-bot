@@ -12,7 +12,6 @@ A Python bot that connects to MeshCore mesh networks via serial port or BLE. The
 - **Scheduled Messages**: Send messages at configured times
 - **Direct Message Support**: Respond to private messages
 - **Logging**: Console and file logging with configurable levels
-- **CLI Management**: Command-line interface for bot management
 
 ## Requirements
 
@@ -100,18 +99,6 @@ colored_output = true             # Enable colored console output
 python meshcore_bot.py
 ```
 
-### CLI Management
-
-The bot includes a CLI for management:
-
-```bash
-# Interactive mode
-python bot_cli.py --interactive
-
-# Command line mode
-python bot_cli.py status
-python bot_cli.py send general "Hello everyone!"
-```
 
 ### Available Commands
 
