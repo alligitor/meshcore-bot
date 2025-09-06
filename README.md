@@ -236,4 +236,4 @@ This project is licensed under the MIT License.
 ## Acknowledgments
 
 - [MeshCore Project](https://github.com/meshcore-dev/MeshCore) for the mesh networking protocol
-- Adapted from MeshLink bot by K7MHI Kelly Keeton 2024
+- Some commands adapted from MeshingAround bot by K7MHI Kelly Keeton 2024
