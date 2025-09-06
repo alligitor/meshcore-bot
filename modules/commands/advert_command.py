@@ -51,24 +51,15 @@ class AdvertCommand(BaseCommand):
             
             self.logger.info(f"User {message.sender_id} requested flood advert")
             
-            # Send flood advert
-            from meshcore_cli.meshcore_cli import next_cmd
-            result = await next_cmd(self.bot.meshcore, ["flood_advert"])
+            # Send flood advert using meshcore.commands
+            await self.bot.meshcore.commands.send_advert(flood=True)
             
             # Update last advert time
             if hasattr(self.bot, 'last_advert_time'):
                 self.bot.last_advert_time = current_time
             
-            if result and hasattr(result, 'type'):
-                if result.type == 'command_error':
-                    response = f"Failed to send flood advert: {result.payload}"
-                    self.logger.error(response)
-                else:
-                    response = "Flood advert sent successfully!"
-                    self.logger.info("Flood advert sent successfully via DM command")
-            else:
-                response = "Flood advert sent successfully!"
-                self.logger.info("Flood advert sent successfully via DM command (no result returned)")
+            response = "Flood advert sent successfully!"
+            self.logger.info("Flood advert sent successfully via DM command")
             
             await self.send_response(message, response)
             return True

@@ -419,14 +419,16 @@ tide_update_interval = 1800
             
             self.logger.info(f"Sending startup advert: {startup_advert}")
             
-            # Import the advert function from meshcore-cli
-            from meshcore_cli.meshcore_cli import next_cmd
+            # Add a small delay to ensure connection is fully established
+            await asyncio.sleep(2)
             
-            # Send the appropriate type of advert
+            # Send the appropriate type of advert using meshcore.commands
             if startup_advert == 'zero-hop':
-                result = await next_cmd(self.meshcore, ["advert"])
+                self.logger.debug("Sending zero-hop advert")
+                await self.meshcore.commands.send_advert(flood=False)
             elif startup_advert == 'flood':
-                result = await next_cmd(self.meshcore, ["flood_advert"])
+                self.logger.debug("Sending flood advert")
+                await self.meshcore.commands.send_advert(flood=True)
             else:
                 self.logger.warning(f"Unknown startup_advert option: {startup_advert}")
                 return
@@ -435,13 +437,7 @@ tide_update_interval = 1800
             import time
             self.last_advert_time = time.time()
             
-            if result and hasattr(result, 'type'):
-                if result.type == EventType.ERROR:
-                    self.logger.error(f"Failed to send startup advert: {result.payload}")
-                else:
-                    self.logger.info(f"Startup {startup_advert} advert sent successfully")
-            else:
-                self.logger.info(f"Startup {startup_advert} advert sent (no result returned)")
+            self.logger.info(f"Startup {startup_advert} advert sent successfully")
                 
         except Exception as e:
             self.logger.error(f"Error sending startup advert: {e}")
