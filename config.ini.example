@@ -19,6 +19,16 @@ timeout = 30
 # Bot name for identification and logging
 bot_name = MeshCoreBot
 
+# RF Data Correlation Settings
+# Time window for correlating RF data with messages (seconds)
+rf_data_timeout = 15.0
+
+# Time to wait for RF data correlation (seconds)
+message_correlation_timeout = 10.0
+
+# Enable enhanced correlation strategies
+enable_enhanced_correlation = true
+
 # Bot node ID (leave empty for auto-assignment)
 node_id = 
 
@@ -36,11 +46,21 @@ passive_mode = false
 # Prevents spam by limiting how often the bot can send messages
 rate_limit_seconds = 10
 
+# Bot transmission rate limit in seconds between bot messages
+# Prevents bot from overwhelming the mesh network
+bot_tx_rate_limit_seconds = 1.0
+
 # Send startup advert when bot finishes initializing
 # false: No startup advert (default)
 # zero-hop: Send local broadcast advert
 # flood: Send network-wide flood advert
 startup_advert = false
+
+# Auto-manage contact list when new contacts are discovered
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
+auto_manage_contacts = false
 
 [Keywords]
 # Keyword-response pairs (keyword = response format)
@@ -54,8 +74,8 @@ startup_advert = false
 test = "Message received from {sender} | {connection_info} | Received at: {timestamp}"
 ping = "Pong!"
 pong = "Ping!"
-help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string | Use 'help <command>' for details"
-cmd = "Available commands: test, ping, help, hello, cmd, advert, t phrase, @string, sun, moon, solar, hfcond, satpass"
+help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass | Use 'help <command>' for details"
+cmd = "Available commands: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass"
 
 [Channels]
 # Channels to monitor (comma-separated)
@@ -100,6 +120,11 @@ log_file = meshcore_bot.log
 # false: Plain text output
 colored_output = true
 
+# MeshCore library log level (separate from bot log level)
+# Controls debug output from the meshcore library itself
+# Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+meshcore_log_level = INFO
+
 [Custom_Syntax]
 # Custom syntax patterns for special message formats
 # Format: pattern = "response_format"
@@ -126,3 +151,34 @@ tide_api_key =
 
 # Tide update interval in seconds (future feature)
 tide_update_interval = 1800
+
+[Weather]
+# Default state for city name disambiguation
+# When users type "wx seattle", it will search for "seattle, WA, USA"
+# Use 2-letter state abbreviation (e.g., WA, CA, NY, TX)
+default_state = WA
+
+[Solar_Config]
+# Default latitude for astronomical calculations (decimal degrees)
+# Example: 40.7128 for New York City
+default_latitude = 40.7128
+
+# Default longitude for astronomical calculations (decimal degrees)
+# Example: -74.0060 for New York City
+default_longitude = -74.0060
+
+# URL timeout for external API calls (seconds)
+url_timeout = 10
+
+# Use Zulu/UTC time for astronomical data
+# true: Use 24-hour UTC format
+# false: Use 12-hour local format
+use_zulu_time = false
+
+# N2YO API key for satellite pass information
+# Get free key at: https://www.n2yo.com/login/
+n2yo_api_key = 
+
+# AirNow API key for AQI data
+# Get free key at: https://www.airnowapi.org/
+airnow_api_key = 
