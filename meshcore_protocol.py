@@ -141,19 +141,21 @@ class MeshCoreProtocol:
     
     def parse_binary_message(self, raw_data: bytes) -> Optional[MeshCoreMessage]:
         """Parse binary MeshCore packet"""
-        print(f"DEBUG: parse_binary_message called with {len(raw_data)} bytes: {raw_data.hex()[:32]}...")
+        if self.logger:
+            self.logger.debug(f"parse_binary_message called with {len(raw_data)} bytes: {raw_data.hex()[:32]}...")
         try:
             packet = self.parse_binary_packet(raw_data)
             if not packet:
-                print(f"DEBUG: parse_binary_packet returned None")
+                if self.logger:
+                    self.logger.debug("parse_binary_packet returned None")
                 return None
             
             message = self._convert_packet_to_message(packet)
-            print(f"DEBUG: Created message: {message.content}")
+            if self.logger:
+                self.logger.debug(f"Created message: {message.content}")
             return message
             
         except Exception as e:
-            print(f"DEBUG: Error parsing binary message: {e}")
             if self.logger:
                 self.logger.error(f"Error parsing binary message: {e}")
             return None
@@ -409,7 +411,8 @@ class SerialProtocolAdapter:
                 return True
             return False
         except Exception as e:
-            print(f"Serial send error: {e}")
+            if self.logger:
+                self.logger.error(f"Serial send error: {e}")
             return False
     
     async def read_message(self) -> Optional[str]:
@@ -421,7 +424,8 @@ class SerialProtocolAdapter:
                     return line if line else None
             return None
         except Exception as e:
-            print(f"Serial read error: {e}")
+            if self.logger:
+                self.logger.error(f"Serial read error: {e}")
             return None
 
 
@@ -449,7 +453,8 @@ class BLEProtocolAdapter:
                 return True
             return False
         except Exception as e:
-            print(f"BLE send error: {e}")
+            if self.logger:
+                self.logger.error(f"BLE send error: {e}")
             return False
     
     async def read_message(self) -> Optional[str]:
@@ -485,7 +490,8 @@ class BLEProtocolAdapter:
             await self.client.start_notify(self.RX_CHARACTERISTIC_UUID, self._notification_handler)
             return True
         except Exception as e:
-            print(f"Failed to setup BLE notifications: {e}")
+            if self.logger:
+                self.logger.error(f"Failed to setup BLE notifications: {e}")
             return False
     
     def _notification_handler(self, sender, data):
@@ -499,21 +505,27 @@ class BLEProtocolAdapter:
             # Default handling
             try:
                 message_str = data.decode('utf-8')
-                print(f"BLE Notification (UTF-8): {message_str}")
+                if self.logger:
+                    self.logger.debug(f"BLE Notification (UTF-8): {message_str}")
                 # Parse as text message
                 message = self.protocol.parse_message(message_str)
                 if message:
-                    print(f"Parsed text message: {message.content}")
+                    if self.logger:
+                        self.logger.debug(f"Parsed text message: {message.content}")
             except UnicodeDecodeError:
                 # If UTF-8 fails, try binary packet parsing
-                print(f"BLE Notification (Binary): {data.hex()}")
+                if self.logger:
+                    self.logger.debug(f"BLE Notification (Binary): {data.hex()}")
                 message = self.protocol.parse_binary_message(data)
                 if message:
-                    print(f"Parsed binary packet: {message.content}")
+                    if self.logger:
+                        self.logger.debug(f"Parsed binary packet: {message.content}")
                 else:
-                    print(f"Could not parse binary packet: {data.hex()}")
+                    if self.logger:
+                        self.logger.debug(f"Could not parse binary packet: {data.hex()}")
             
             # You can process the message here or store it for later processing
             # For now, just log it
         except Exception as e:
-            print(f"Error handling BLE notification: {e}")
+            if self.logger:
+                self.logger.error(f"Error handling BLE notification: {e}")

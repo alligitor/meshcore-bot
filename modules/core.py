@@ -46,6 +46,17 @@ class MeshCoreBot:
         self.meshcore = None
         self.connected = False
         
+        # Initialize database manager first (needed by plugins)
+        db_path = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
+        self.logger.info(f"Initializing database manager with database: {db_path}")
+        try:
+            from .db_manager import DBManager
+            self.db_manager = DBManager(self, db_path)
+            self.logger.info("Database manager initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize database manager: {e}")
+            raise
+        
         # Initialize modules
         self.rate_limiter = RateLimiter(
             self.config.getint('Bot', 'rate_limit_seconds', fallback=10)
@@ -59,10 +70,9 @@ class MeshCoreBot:
         self.scheduler = MessageScheduler(self)
         
         # Initialize repeater manager
-        db_path = self.config.get('Bot', 'repeater_db_path', fallback='repeater_contacts.db')
-        self.logger.info(f"Initializing repeater manager with database: {db_path}")
+        self.logger.info("Initializing repeater manager")
         try:
-            self.repeater_manager = RepeaterManager(self, db_path)
+            self.repeater_manager = RepeaterManager(self)
             self.logger.info("Repeater manager initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize repeater manager: {e}")
@@ -143,6 +153,7 @@ tide_update_interval = 1800
 """
         with open(self.config_file, 'w') as f:
             f.write(default_config)
+        # Note: Using print here since logger may not be initialized yet
         print(f"Created default config file: {self.config_file}")
     
     def setup_logging(self):
@@ -312,6 +323,10 @@ tide_update_interval = 1800
         async def on_raw_data(event, metadata=None):
             await self.message_handler.handle_raw_data(event, metadata)
         
+        # Handle new contact events
+        async def on_new_contact(event, metadata=None):
+            await self.message_handler.handle_new_contact(event, metadata)
+        
         # Subscribe to events
         self.meshcore.subscribe(EventType.CONTACT_MSG_RECV, on_contact_message)
         self.meshcore.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_message)
@@ -320,18 +335,32 @@ tide_update_interval = 1800
         # Subscribe to RAW_DATA events for full packet data
         self.meshcore.subscribe(EventType.RAW_DATA, on_raw_data)
         
-        # Try to enable debug mode to get raw packet data
+        # Subscribe to NEW_CONTACT events for automatic contact management
+        self.meshcore.subscribe(EventType.NEW_CONTACT, on_new_contact)
+        
+        # Try to enable debug mode to get raw packet data (if available)
         try:
             from meshcore_cli.meshcore_cli import next_cmd
-            await next_cmd(self.meshcore, ["debug", "on"])
-            self.logger.info("Debug mode enabled on MeshCore device")
             
-            # Try to enable more verbose logging
+            # Check if debug command exists by testing it first
+            try:
+                await next_cmd(self.meshcore, ["debug", "on"])
+                self.logger.info("Debug mode enabled on MeshCore device")
+            except Exception as debug_error:
+                if "Unknown command" in str(debug_error):
+                    self.logger.info("Debug command not available in this meshcore-cli version")
+                else:
+                    self.logger.warning(f"Could not enable debug mode: {debug_error}")
+            
+            # Try to enable more verbose logging (if available)
             try:
                 await next_cmd(self.meshcore, ["log", "debug"])
                 self.logger.info("Debug logging enabled on MeshCore device")
-            except Exception as e:
-                self.logger.warning(f"Could not enable debug logging: {e}")
+            except Exception as log_error:
+                if "Unknown command" in str(log_error):
+                    self.logger.info("Log command not available in this meshcore-cli version")
+                else:
+                    self.logger.warning(f"Could not enable debug logging: {log_error}")
                 
         except Exception as e:
             self.logger.warning(f"Could not enable debug mode: {e}")
