@@ -97,59 +97,187 @@ class MeshCoreBot:
     def create_default_config(self):
         """Create default configuration file"""
         default_config = """[Connection]
-connection_type = ble
-ble_device_name = MeshCore
+# Connection type: serial or ble
+# serial: Connect via USB serial port
+# ble: Connect via Bluetooth Low Energy
+connection_type = serial
+
+# Serial port (for serial connection)
+# Common ports: /dev/ttyUSB0, /dev/tty.usbserial-*, COM3 (Windows)
 serial_port = /dev/ttyUSB0
+
+# BLE device name (for BLE connection)
+# Leave commented out for auto-detection, or specify exact device name
+#ble_device_name = MeshCore
+
+# Connection timeout in seconds
 timeout = 30
 
 [Bot]
+# Bot name for identification and logging
 bot_name = MeshCoreBot
+
+# RF Data Correlation Settings
+# Time window for correlating RF data with messages (seconds)
+rf_data_timeout = 15.0
+
+# Time to wait for RF data correlation (seconds)
+message_correlation_timeout = 10.0
+
+# Enable enhanced correlation strategies
+enable_enhanced_correlation = true
+
+# Bot node ID (leave empty for auto-assignment)
 node_id = 
+
+# Enable/disable bot responses
+# true: Bot will respond to keywords and commands
+# false: Bot will only listen and log messages
 enabled = true
+
+# Passive mode (only listen, don't respond)
+# true: Bot will not send any messages
+# false: Bot will respond normally
 passive_mode = false
-rate_limit_seconds = 10
-# Send startup announcement when bot finishes initializing
+
+# Rate limiting in seconds between messages
+# Prevents spam by limiting how often the bot can send messages
+rate_limit_seconds = 2
+
+# Bot transmission rate limit in seconds between bot messages
+# Prevents bot from overwhelming the mesh network
+bot_tx_rate_limit_seconds = 1.0
+
 # Send startup advert when bot finishes initializing
-# Options: false (disabled), zero-hop, flood
+# false: No startup advert (default)
+# zero-hop: Send local broadcast advert
+# flood: Send network-wide flood advert
 startup_advert = false
-# Path to repeater contacts database
-repeater_db_path = repeater_contacts.db
+
+# Auto-manage contact list when new contacts are discovered
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
+auto_manage_contacts = false
 
 [Keywords]
-test = "Test message received! Hops: {hops}, Path: {path}, From: {sender}"
-ping = "Pong! Response time: {timestamp}"
-help = "Available commands: test, ping, help"
+# Keyword-response pairs (keyword = response format)
+# Available fields: {sender}, {connection_info}, {snr}, {timestamp}, {path}
+# {sender}: Name/ID of message sender
+# {connection_info}: "Direct connection (0 hops)" or "Routed through X hops"
+# {snr}: Signal-to-noise ratio in dB
+# {timestamp}: Message timestamp in HH:MM:SS format
+# {path}: Message routing path (e.g., "01,5f (2 hops)")
+test = "Message received from {sender} | {connection_info} | Received at: {timestamp}"
+ping = "Pong!"
+pong = "Ping!"
+help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass | Use 'help <command>' for details"
+cmd = "Available commands: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass"
+
+[Channels]
+# Channels to monitor (comma-separated)
+# Bot will only respond to messages on these channels
+# Use exact channel names as configured on your MeshCore node
+monitor_channels = general,test,emergency
+
+# Enable DM responses
+# true: Bot will respond to direct messages
+# false: Bot will ignore direct messages
+respond_to_dms = true
+
+[Banned_Users]
+# List of banned user IDs (comma-separated)
+# Bot will ignore messages from these users
+banned_users = 
+
+[Scheduled_Messages]
+# Scheduled message format: HHMM = channel:message
+# Time format: HHMM (24-hour, no colon)
+# Bot will send these messages at the specified times daily
+0800 = general:Good morning! Bot is online and ready.
+1200 = general:Midday status check - all systems operational.
+1800 = general:Evening update - bot status: Good
+
+[Logging]
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+# DEBUG: Most verbose, shows all details
+# INFO: Standard logging level
+# WARNING: Only warnings and errors
+# ERROR: Only errors
+# CRITICAL: Only critical errors
+log_level = INFO
+
+# Log file path (leave empty for console only)
+# Bot will write logs to this file in addition to console
+log_file = meshcore_bot.log
+
+# Enable colored console output
+# true: Use colors in console output
+# false: Plain text output
+colored_output = true
+
+# MeshCore library log level (separate from bot log level)
+# Controls debug output from the meshcore library itself
+# Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+meshcore_log_level = INFO
 
 [Custom_Syntax]
 # Custom syntax patterns for special message formats
 # Format: pattern = "response_format"
 # Available fields: {sender}, {phrase}, {connection_info}, {snr}, {timestamp}, {path}
-t_phrase = "ack {sender} {phrase} | {connection_info}"
-@_phrase = "ack {sender} {phrase} | {connection_info}"
+# {phrase}: The text after the trigger (for t_phrase syntax)
+# 
+# Special syntax: Messages starting with "t " or "T " followed by a phrase
+# Example: "t hello world" -> "ack {sender}: hello world | {connection_info}"
+t_phrase = "ack {sender}: {phrase} | {connection_info}"
 
-[Channels]
-monitor_channels = Testing
-respond_to_dms = true
-channel_public_key = 1321f3257ae4f7125204096e15b34c99
-
-[Banned_Users]
-banned_users = 
-
-[Scheduled_Messages]
-0800 = Testing:Good morning! Testing channel is active.
-1200 = Testing:Midday test - channel is working properly.
-1800 = Testing:Evening test - channel status: Good
-
-[Logging]
-log_level = INFO
-log_file = meshcore_bot.log
-colored_output = true
+# Special syntax: Messages starting with "@" followed by a phrase (DM only)
+# Example: "@hello world" -> "ack {sender}: hello world | {connection_info}"
+@_phrase = "ack {sender}: {phrase} | {connection_info}"
 
 [External_Data]
+# Weather API key (future feature)
 weather_api_key = 
+
+# Weather update interval in seconds (future feature)
 weather_update_interval = 3600
+
+# Tide API key (future feature)
 tide_api_key = 
+
+# Tide update interval in seconds (future feature)
 tide_update_interval = 1800
+
+# N2YO API key for satellite pass information
+# Get free key at: https://www.n2yo.com/login/
+n2yo_api_key = 
+
+# AirNow API key for AQI data
+# Get free key at: https://docs.airnowapi.org/
+airnow_api_key = 
+
+[Weather]
+# Default state for city name disambiguation
+# When users type "wx seattle", it will search for "seattle, WA, USA"
+# Use 2-letter state abbreviation (e.g., WA, CA, NY, TX)
+default_state = WA
+
+[Solar_Config]
+# Default latitude for astronomical calculations (decimal degrees)
+# Example: 40.7128 for New York City
+default_latitude = 40.7128
+
+# Default longitude for astronomical calculations (decimal degrees)
+# Example: -74.0060 for New York City
+default_longitude = -74.0060
+
+# URL timeout for external API calls (seconds)
+url_timeout = 10
+
+# Use Zulu/UTC time for astronomical data
+# true: Use 24-hour UTC format
+# false: Use 12-hour local format
+use_zulu_time = false
 """
         with open(self.config_file, 'w') as f:
             f.write(default_config)
