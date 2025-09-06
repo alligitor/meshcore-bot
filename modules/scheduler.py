@@ -58,8 +58,22 @@ class MessageScheduler:
         except ValueError:
             return False
     
-    async def send_scheduled_message(self, channel: str, message: str):
-        """Send a scheduled message"""
+    def send_scheduled_message(self, channel: str, message: str):
+        """Send a scheduled message (synchronous wrapper for schedule library)"""
+        import asyncio
+        
+        # Create a new event loop for this thread if one doesn't exist
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function in the event loop
+        loop.run_until_complete(self._send_scheduled_message_async(channel, message))
+    
+    async def _send_scheduled_message_async(self, channel: str, message: str):
+        """Send a scheduled message (async implementation)"""
         await self.bot.command_manager.send_channel_message(channel, message)
     
     def start(self):
