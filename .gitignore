@@ -121,5 +121,6 @@ config.ini
 *.db
 mctomqtt.py
 
-# Local documentation (internal development notes)
+# Local documentation and development files
 docs/local/
+tests/
