@@ -176,8 +176,8 @@ help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcon
    - Verify BLE permissions
 
 3. **Message Parsing Errors**:
-   - Check protocol format in `meshcore_protocol.py`
    - Enable DEBUG logging for detailed information
+   - Check meshcore library documentation for protocol details
 
 4. **Rate Limiting**:
    - Adjust `rate_limit_seconds` in config
