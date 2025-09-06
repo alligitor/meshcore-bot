@@ -1,10 +1,10 @@
 # MeshCore Bot
 
-A Python bot that connects to MeshCore mesh networks via serial port or Bluetooth Low Energy. The bot responds to messages containing configured keywords, executes commands, and provides various data services including weather, solar conditions, and satellite pass information.
+A Python bot that connects to MeshCore mesh networks via serial port or BLE. The bot responds to messages containing configured keywords, executes commands, and provides various data services including weather, solar conditions, and satellite pass information.
 
 ## Features
 
-- **Connection Methods**: Serial port or Bluetooth Low Energy (BLE)
+- **Connection Methods**: Serial port or BLE (Bluetooth Low Energy)
 - **Keyword Responses**: Configurable keyword-response pairs with template variables
 - **Command System**: Plugin-based command architecture with built-in commands
 - **Rate Limiting**: Configurable rate limiting to prevent network spam
