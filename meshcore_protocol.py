@@ -473,7 +473,8 @@ class BLEProtocolAdapter:
                     
             return None
         except Exception as e:
-            print(f"BLE read error: {e}")
+            if self.logger:
+                self.logger.error(f"BLE read error: {e}")
             return None
     
     async def setup_notifications(self, custom_handler=None):

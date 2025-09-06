@@ -338,32 +338,8 @@ tide_update_interval = 1800
         # Subscribe to NEW_CONTACT events for automatic contact management
         self.meshcore.subscribe(EventType.NEW_CONTACT, on_new_contact)
         
-        # Try to enable debug mode to get raw packet data (if available)
-        try:
-            from meshcore_cli.meshcore_cli import next_cmd
-            
-            # Check if debug command exists by testing it first
-            try:
-                await next_cmd(self.meshcore, ["debug", "on"])
-                self.logger.info("Debug mode enabled on MeshCore device")
-            except Exception as debug_error:
-                if "Unknown command" in str(debug_error):
-                    self.logger.info("Debug command not available in this meshcore-cli version")
-                else:
-                    self.logger.warning(f"Could not enable debug mode: {debug_error}")
-            
-            # Try to enable more verbose logging (if available)
-            try:
-                await next_cmd(self.meshcore, ["log", "debug"])
-                self.logger.info("Debug logging enabled on MeshCore device")
-            except Exception as log_error:
-                if "Unknown command" in str(log_error):
-                    self.logger.info("Log command not available in this meshcore-cli version")
-                else:
-                    self.logger.warning(f"Could not enable debug logging: {log_error}")
-                
-        except Exception as e:
-            self.logger.warning(f"Could not enable debug mode: {e}")
+        # Note: Debug mode commands are not available in current meshcore-cli version
+        # The meshcore library handles debug output automatically when needed
         
         # Start auto message fetching
         await self.meshcore.start_auto_message_fetching()
