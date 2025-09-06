@@ -5,6 +5,8 @@ Handles channel fetching, naming, and operations
 """
 
 import asyncio
+import sys
+import os
 from typing import Dict, Any
 
 
@@ -45,8 +47,14 @@ class ChannelManager:
                     from meshcore import EventType
                     subscription = self.bot.meshcore.subscribe(EventType.CHANNEL_INFO, on_channel_info)
                     
-                    # Send the command
-                    await next_cmd(self.bot.meshcore, ["get_channel", str(channel_num)])
+                    # Send the command (suppress raw JSON output)
+                    with open(os.devnull, 'w') as devnull:
+                        old_stdout = sys.stdout
+                        sys.stdout = devnull
+                        try:
+                            await next_cmd(self.bot.meshcore, ["get_channel", str(channel_num)])
+                        finally:
+                            sys.stdout = old_stdout
                     
                     # Wait a moment for the event to be processed
                     await asyncio.sleep(0.5)
@@ -86,7 +94,11 @@ class ChannelManager:
                 self.bot.meshcore.channels = channels
                 self.logger.info(f"Successfully fetched {len(channels)} channels from MeshCore node")
                 for num, info in channels.items():
-                    self.logger.info(f"  Channel {num}: {info}")
+                    channel_name = info.get('channel_name', f'Channel{num}')
+                    if channel_name:  # Only log non-empty channel names
+                        self.logger.info(f"  Channel {num}: {channel_name}")
+                    else:
+                        self.logger.debug(f"  Channel {num}: (empty)")
             else:
                 self.logger.warning("No channels found on MeshCore node")
                 self.bot.meshcore.channels = {}
