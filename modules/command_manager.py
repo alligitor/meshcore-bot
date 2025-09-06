@@ -383,7 +383,11 @@ class CommandManager:
             'hello': 'hello',
             'wx': 'wx',
             'weather': 'wx',
-            'wxa': 'wx'
+            'wxa': 'wx',
+            'aqi': 'aqi',
+            'air': 'aqi',
+            'airquality': 'aqi',
+            'air_quality': 'aqi'
         }
         
         # Normalize the command name
@@ -395,7 +399,7 @@ class CommandManager:
         if command:
             return f"Help {command_name}: {command.get_help_text()}"
         else:
-            return f"Unknown: {command_name}. Commands: test, ping, help, cmd, advert, wx, t phrase, @string"
+            return f"Unknown: {command_name}. Commands: test, ping, help, cmd, advert, wx, aqi, t phrase, @string"
     
     def get_general_help(self) -> str:
         """Get general help text from config (LoRa-friendly compact format)"""
@@ -410,7 +414,7 @@ class CommandManager:
         basic_commands = ['test', 'ping', 'help', 'cmd']
         custom_syntax = ['t_phrase', 'at_phrase']  # Use the actual command key
         special_commands = ['advert']
-        weather_commands = ['wx']
+        weather_commands = ['wx', 'aqi']
         solar_commands = ['sun', 'moon', 'solar', 'hfcond', 'satpass']
         
         commands_list += "**Basic Commands:**\n"
