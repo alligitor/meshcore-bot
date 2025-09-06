@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MeshCore Bot using the official meshcore package
-This version uses a modular structure for better organization
+MeshCore Bot using the meshcore-cli and meshcore.py packages
+Uses a modular structure for command creation and organization
 """
 
 import asyncio
