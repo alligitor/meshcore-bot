@@ -118,3 +118,5 @@ Thumbs.db
 # Project specific
 *.log
 config.ini
+*.db
+mctomqtt.py
