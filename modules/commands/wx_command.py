@@ -46,6 +46,9 @@ class WxCommand(BaseCommand):
         
         # Initialize geocoder
         self.geolocator = Nominatim(user_agent="meshcore-bot")
+        
+        # Get database manager for geocoding cache
+        self.db_manager = bot.db_manager
     
     def get_help_text(self) -> str:
         return f"Usage: wx <zipcode|city> - Get weather for US zipcode or city in {self.default_state}"
@@ -203,7 +206,7 @@ class WxCommand(BaseCommand):
                         default_state_full = abbrev_to_full_map.get(self.default_state, self.default_state)
             
             # Get weather forecast
-            weather = self.get_noaa_weather(lat, lon)
+            weather, points_data = self.get_noaa_weather(lat, lon)
             if weather == self.ERROR_FETCHING_DATA:
                 return "Error fetching weather data from NOAA"
             
@@ -217,7 +220,7 @@ class WxCommand(BaseCommand):
                     location_prefix = f"{actual_city}, {actual_state}: "
             
             # Try to get additional current conditions data
-            current_conditions = self.get_current_conditions(lat, lon)
+            current_conditions = self.get_current_conditions(points_data)
             if current_conditions and len(weather) < 120:
                 weather = f"{weather} {current_conditions}"
             
@@ -260,6 +263,20 @@ class WxCommand(BaseCommand):
     def city_to_lat_lon(self, city: str) -> tuple:
         """Convert city name to latitude and longitude using default state"""
         try:
+            # Check cache first for default state query
+            cache_query = f"{city}, {self.default_state}, USA"
+            cached_lat, cached_lon = self.db_manager.get_cached_geocoding(cache_query)
+            if cached_lat is not None and cached_lon is not None:
+                self.logger.debug(f"Using cached geocoding for {city}")
+                # Still need to do reverse geocoding for address details
+                try:
+                    reverse_location = self.geolocator.reverse(f"{cached_lat}, {cached_lon}")
+                    if reverse_location:
+                        return cached_lat, cached_lon, reverse_location.raw.get('address', {})
+                except:
+                    pass
+                return cached_lat, cached_lon, {}
+            
             # Check if the input contains a comma (city, state format)
             if ',' in city:
                 # Parse city, state format
@@ -271,6 +288,9 @@ class WxCommand(BaseCommand):
                     # Try the specific city, state combination first
                     location = self.geolocator.geocode(f"{city_name}, {state}, USA")
                     if location:
+                        # Cache the result
+                        self.db_manager.cache_geocoding(f"{city_name}, {state}, USA", location.latitude, location.longitude)
+                        
                         # Use reverse geocoding to get detailed address info
                         try:
                             reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
@@ -300,6 +320,9 @@ class WxCommand(BaseCommand):
                 for major_city_query in major_city_mappings[city.lower()]:
                     location = self.geolocator.geocode(major_city_query)
                     if location:
+                        # Cache the result
+                        self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
+                        
                         # Use reverse geocoding to get detailed address info
                         try:
                             reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
@@ -312,6 +335,9 @@ class WxCommand(BaseCommand):
             # First try with default state
             location = self.geolocator.geocode(f"{city}, {self.default_state}, USA")
             if location:
+                # Cache the result
+                self.db_manager.cache_geocoding(f"{city}, {self.default_state}, USA", location.latitude, location.longitude)
+                
                 # Use reverse geocoding to get detailed address info
                 try:
                     reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
@@ -324,6 +350,9 @@ class WxCommand(BaseCommand):
                 # Try without state as fallback
                 location = self.geolocator.geocode(f"{city}, USA")
                 if location:
+                    # Cache the result
+                    self.db_manager.cache_geocoding(f"{city}, USA", location.latitude, location.longitude)
+                    
                     # Use reverse geocoding to get detailed address info
                     try:
                         reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
@@ -338,8 +367,8 @@ class WxCommand(BaseCommand):
             self.logger.error(f"Error geocoding city {city}: {e}")
             return None, None, None
     
-    def get_noaa_weather(self, lat: float, lon: float) -> str:
-        """Get weather forecast from NOAA"""
+    def get_noaa_weather(self, lat: float, lon: float) -> tuple:
+        """Get weather forecast from NOAA and return both weather string and points data"""
         try:
             # Get weather data from NOAA
             weather_api = f"https://api.weather.gov/points/{lat},{lon}"
@@ -348,7 +377,7 @@ class WxCommand(BaseCommand):
             weather_data = requests.get(weather_api, timeout=self.url_timeout)
             if not weather_data.ok:
                 self.logger.warning("Error fetching weather data from NOAA")
-                return self.ERROR_FETCHING_DATA
+                return self.ERROR_FETCHING_DATA, None
             
             weather_json = weather_data.json()
             forecast_url = weather_json['properties']['forecast']
@@ -461,11 +490,11 @@ class WxCommand(BaseCommand):
                     if len(weather + tomorrow_str) <= 130:  # Leave room for alerts
                         weather += tomorrow_str
             
-            return weather
+            return weather, weather_json
             
         except Exception as e:
             self.logger.error(f"Error fetching NOAA weather: {e}")
-            return self.ERROR_FETCHING_DATA
+            return self.ERROR_FETCHING_DATA, None
     
     def get_weather_alerts_noaa(self, lat: float, lon: float) -> tuple:
         """Get weather alerts from NOAA"""
@@ -816,16 +845,13 @@ class WxCommand(BaseCommand):
         
         return ""
 
-    def get_current_conditions(self, lat: float, lon: float) -> str:
-        """Get additional current conditions data from NOAA"""
+    def get_current_conditions(self, points_data: dict) -> str:
+        """Get additional current conditions data from NOAA using existing points data"""
         try:
-            # Get the weather station info
-            weather_api = f"https://api.weather.gov/points/{lat},{lon}"
-            weather_data = requests.get(weather_api, timeout=self.url_timeout)
-            if not weather_data.ok:
+            if not points_data:
                 return ""
             
-            weather_json = weather_data.json()
+            weather_json = points_data
             station_url = weather_json['properties'].get('observationStations')
             if not station_url:
                 return ""

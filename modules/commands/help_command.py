@@ -11,8 +11,14 @@ from ..models import MeshMessage
 class HelpCommand(BaseCommand):
     """Handles the help command"""
     
+    # Plugin metadata
+    name = "help"
+    keywords = ['help']
+    description = "Shows commands. Use 'help <command>' for details."
+    category = "basic"
+    
     def get_help_text(self) -> str:
-        return "Shows commands. Use 'help <command>' for details."
+        return self.description
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the help command"""

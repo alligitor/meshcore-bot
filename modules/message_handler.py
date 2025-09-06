@@ -105,8 +105,15 @@ class MessageHandler:
             decoded_packet = None
             routing_info = None
             # Look for raw packet data in recent RF data
-            message_pubkey = payload.get('pubkey_prefix', '')  # Use payload instead of metadata
-            if message_pubkey:
+            # Extract packet prefix from message raw_hex for correlation
+            message_raw_hex = payload.get('raw_hex', '')
+            message_packet_prefix = message_raw_hex[:32] if message_raw_hex else None
+            message_pubkey = payload.get('pubkey_prefix', '')  # Keep for contact lookup
+            
+            if message_packet_prefix:
+                recent_rf_data = self.find_recent_rf_data(message_packet_prefix)
+            elif message_pubkey:
+                # Fallback to pubkey correlation if no raw_hex
                 recent_rf_data = self.find_recent_rf_data(message_pubkey)
                 if recent_rf_data and recent_rf_data.get('raw_hex'):
                     decoded_packet = self.decode_meshcore_packet(recent_rf_data['raw_hex'])
@@ -187,8 +194,7 @@ class MessageHandler:
             
             # For DMs, we can't decode the encrypted packet, but we can get SNR/RSSI from the payload
             # For channel messages, we can decode the packet since they use shared keys
-            message_pubkey = payload.get('pubkey_prefix', '')
-            self.logger.debug(f"Processing DM from pubkey: {message_pubkey}")
+            self.logger.debug(f"Processing DM from packet prefix: {message_packet_prefix}, pubkey: {message_pubkey}")
             
             # DMs are encrypted with recipient's public key, so we can't decode the raw packet
             # But we can get SNR/RSSI from the message payload if available
@@ -331,47 +337,37 @@ class MessageHandler:
             if 'snr' in payload:
                 snr_value = payload.get('snr')
                 
-                # Try to get pubkey from metadata first
+                # Use raw_hex prefix for correlation instead of trying to extract pubkey
+                raw_hex = payload.get('raw_hex', '')
+                packet_prefix = None
+                
+                if raw_hex:
+                    # Use first 32 characters as correlation key (16 bytes)
+                    # This provides unique identification while being consistent
+                    packet_prefix = raw_hex[:32]
+                    self.logger.debug(f"Using packet prefix for correlation: {packet_prefix}")
+                
+                # Keep pubkey_prefix for contact lookup (from metadata if available)
                 pubkey_prefix = None
                 if metadata and 'pubkey_prefix' in metadata:
                     pubkey_prefix = metadata.get('pubkey_prefix')
                     self.logger.debug(f"Got pubkey_prefix from metadata: {pubkey_prefix[:16]}...")
                 
-                # Fallback: extract pubkey from raw_hex if no metadata
-                if not pubkey_prefix:
-                    raw_hex = payload.get('raw_hex', '')
-                    if raw_hex and len(raw_hex) >= 64:  # Pubkey is 64 hex chars
-                        # Extract first 64 characters as pubkey (32 bytes)
-                        pubkey_prefix = raw_hex[:64]
-                        self.logger.debug(f"Extracted pubkey from raw_hex: {pubkey_prefix[:16]}...")
-                    elif raw_hex and len(raw_hex) >= 32:
-                        # For shorter packets, try to extract sender pubkey from payload
-                        # This handles cases where the packet is truncated
-                        decoded_packet = self.decode_meshcore_packet(raw_hex)
-                        if decoded_packet and decoded_packet.get('payload'):
-                            # Try to extract sender info from payload
-                            payload_hex = decoded_packet['payload']
-                            if len(payload_hex) >= 64:
-                                # Assume first 64 chars might be sender pubkey
-                                potential_pubkey = payload_hex[:64]
-                                self.logger.debug(f"Extracted potential pubkey from payload: {potential_pubkey[:16]}...")
-                                pubkey_prefix = potential_pubkey
-                
-                if pubkey_prefix and snr_value is not None:
-                    # Cache the SNR value for this pubkey
-                    self.snr_cache[pubkey_prefix] = snr_value
-                    self.logger.debug(f"Cached SNR {snr_value} for pubkey {pubkey_prefix[:16]}...")
+                if packet_prefix and snr_value is not None:
+                    # Cache the SNR value for this packet prefix
+                    self.snr_cache[packet_prefix] = snr_value
+                    self.logger.debug(f"Cached SNR {snr_value} for packet prefix {packet_prefix}")
                 
                 # Extract and cache RSSI if available
                 if 'rssi' in payload:
                     rssi_value = payload.get('rssi')
-                    if pubkey_prefix and rssi_value is not None:
-                        # Cache the RSSI value for this pubkey
-                        self.rssi_cache[pubkey_prefix] = rssi_value
-                        self.logger.debug(f"Cached RSSI {rssi_value} for pubkey {pubkey_prefix[:16]}...")
+                    if packet_prefix and rssi_value is not None:
+                        # Cache the RSSI value for this packet prefix
+                        self.rssi_cache[packet_prefix] = rssi_value
+                        self.logger.debug(f"Cached RSSI {rssi_value} for packet prefix {packet_prefix}")
                 
                 # Store recent RF data with timestamp for SNR/RSSI matching only
-                if pubkey_prefix:
+                if packet_prefix:
                     import time
                     current_time = time.time()
                     
@@ -405,7 +401,8 @@ class MessageHandler:
                     
                     rf_data = {
                         'timestamp': current_time,
-                        'pubkey_prefix': pubkey_prefix,
+                        'packet_prefix': packet_prefix,  # Use packet prefix for correlation
+                        'pubkey_prefix': pubkey_prefix,  # Keep for contact lookup
                         'snr': snr_value,
                         'rssi': payload.get('rssi') if 'rssi' in payload else None,
                         'raw_hex': raw_hex,  # Full packet data
@@ -417,10 +414,10 @@ class MessageHandler:
                     
                     # Update correlation indexes
                     self.rf_data_by_timestamp[current_time] = rf_data
-                    if pubkey_prefix:
-                        if pubkey_prefix not in self.rf_data_by_pubkey:
-                            self.rf_data_by_pubkey[pubkey_prefix] = []
-                        self.rf_data_by_pubkey[pubkey_prefix].append(rf_data)
+                    if packet_prefix:
+                        if packet_prefix not in self.rf_data_by_pubkey:
+                            self.rf_data_by_pubkey[packet_prefix] = []
+                        self.rf_data_by_pubkey[packet_prefix].append(rf_data)
                     
                     # Clean up old data from all indexes
                     self.recent_rf_data = [data for data in self.recent_rf_data 
@@ -450,8 +447,14 @@ class MessageHandler:
         except Exception as e:
             self.logger.error(f"Error handling RF log data: {e}")
     
-    def find_recent_rf_data(self, message_pubkey=None, max_age_seconds=None):
-        """Find recent RF data for SNR/RSSI and packet decoding with improved correlation"""
+    def find_recent_rf_data(self, correlation_key=None, max_age_seconds=None):
+        """Find recent RF data for SNR/RSSI and packet decoding with improved correlation
+        
+        Args:
+            correlation_key: Can be either:
+                - packet_prefix (from raw_hex[:32]) for RF data correlation
+                - pubkey_prefix (from message payload) for message correlation
+        """
         import time
         current_time = time.time()
         
@@ -467,28 +470,37 @@ class MessageHandler:
             self.logger.debug(f"No recent RF data found within {max_age_seconds}s window")
             return None
         
-        # Strategy 1: Try exact pubkey match first
-        if message_pubkey:
+        # Strategy 1: Try exact packet prefix match first (for RF data correlation)
+        if correlation_key:
             for data in recent_data:
-                rf_pubkey = data['pubkey_prefix']
-                if rf_pubkey == message_pubkey:
-                    self.logger.debug(f"Found exact pubkey match: {rf_pubkey}")
+                rf_packet_prefix = data.get('packet_prefix', '') or ''
+                if rf_packet_prefix == correlation_key:
+                    self.logger.debug(f"Found exact packet prefix match: {rf_packet_prefix}")
                     return data
         
-        # Strategy 2: Try partial pubkey matches
-        if message_pubkey:
+        # Strategy 2: Try pubkey prefix match (for message correlation)
+        if correlation_key:
             for data in recent_data:
-                rf_pubkey = data['pubkey_prefix']
+                rf_pubkey_prefix = data.get('pubkey_prefix', '') or ''
+                if rf_pubkey_prefix == correlation_key:
+                    self.logger.debug(f"Found exact pubkey prefix match: {rf_pubkey_prefix}")
+                    return data
+        
+        # Strategy 3: Try partial packet prefix matches
+        if correlation_key:
+            for data in recent_data:
+                rf_packet_prefix = data.get('packet_prefix', '') or ''
                 # Check for partial match (at least 16 characters)
-                min_length = min(len(rf_pubkey), len(message_pubkey), 16)
-                if (rf_pubkey[:min_length] == message_pubkey[:min_length] and min_length >= 16):
-                    self.logger.debug(f"Found partial pubkey match: {rf_pubkey[:16]}... matches {message_pubkey[:16]}...")
+                min_length = min(len(rf_packet_prefix), len(correlation_key), 16)
+                if (rf_packet_prefix[:min_length] == correlation_key[:min_length] and min_length >= 16):
+                    self.logger.debug(f"Found partial packet prefix match: {rf_packet_prefix[:16]}... matches {correlation_key[:16]}...")
                     return data
         
-        # Strategy 3: Use most recent data (fallback for timing issues)
+        # Strategy 4: Use most recent data (fallback for timing issues)
         if recent_data:
             most_recent = max(recent_data, key=lambda x: x['timestamp'])
-            self.logger.debug(f"Using most recent RF data (fallback): {most_recent['pubkey_prefix'][:16]}... at {most_recent['timestamp']}")
+            packet_prefix = most_recent.get('packet_prefix', 'unknown')
+            self.logger.debug(f"Using most recent RF data (fallback): {packet_prefix} at {most_recent['timestamp']}")
             return most_recent
         
         return None
@@ -538,13 +550,13 @@ class MessageHandler:
     
     def try_correlate_pending_messages(self, rf_data):
         """Try to correlate new RF data with any pending messages"""
-        pubkey_prefix = rf_data.get('pubkey_prefix', '')
+        pubkey_prefix = rf_data.get('pubkey_prefix', '') or ''
         
         for message_id, message_info in self.pending_messages.items():
             if message_info['processed']:
                 continue
                 
-            message_pubkey = message_info['data'].get('pubkey_prefix', '')
+            message_pubkey = message_info['data'].get('pubkey_prefix', '') or ''
             
             # Check if this RF data matches the pending message
             if (pubkey_prefix == message_pubkey or 
@@ -567,6 +579,11 @@ class MessageHandler:
             Decoded packet information or None if parsing fails
         """
         try:
+            # Handle None or empty raw_hex
+            if not raw_hex:
+                self.logger.debug("No raw_hex data provided for packet decoding")
+                return None
+                
             byte_data = bytes.fromhex(raw_hex)
             
             # Basic validation
@@ -649,22 +666,20 @@ class MessageHandler:
     def get_payload_type_name(self, payload_type: int) -> str:
         """Get human-readable name for payload type"""
         payload_types = {
-            0x00: "UNKNOWN",
-            0x01: "HELLO",
+            0x00: "REQ",
+            0x01: "RESPONSE", 
             0x02: "TXT_MSG",
             0x03: "ACK",
             0x04: "ADVERT",
             0x05: "GRP_TXT",
-            0x06: "GRP_JOIN",
-            0x07: "GRP_LEAVE",
+            0x06: "GRP_DATA",
+            0x07: "ANON_REQ",
             0x08: "PATH",
-            0x09: "CHANNEL_JOIN",
-            0x0A: "CHANNEL_LEAVE",
-            0x0B: "CHANNEL_MSG",
-            0x0C: "CHANNEL_ACK",
-            0x0D: "CHANNEL_NACK",
-            0x0E: "CHANNEL_INVITE",
-            0x0F: "CHANNEL_KICK"
+            0x09: "TRACE",
+            0x0A: "MULTIPART",
+            # Note: Payload types 0x0B, 0x0C, 0x0D, 0x0E are not defined in MeshCore headers
+            # They will show as UNKNOWN_0b, UNKNOWN_0c, UNKNOWN_0d, UNKNOWN_0e
+            0x0F: "RAW_CUSTOM"
         }
         return payload_types.get(payload_type, f"UNKNOWN_{payload_type:02x}")
     
@@ -743,19 +758,27 @@ class MessageHandler:
             
             # For channel messages, we can decode the packet since they use shared channel keys
             # This gives us access to the actual routing information
-            message_pubkey = payload.get('pubkey_prefix', '')
-            self.logger.debug(f"Processing channel message from pubkey: {message_pubkey}")
+            # Extract packet prefix from message raw_hex for correlation
+            message_raw_hex = payload.get('raw_hex', '')
+            message_packet_prefix = message_raw_hex[:32] if message_raw_hex else None
+            message_pubkey = payload.get('pubkey_prefix', '')  # Keep for contact lookup
+            self.logger.debug(f"Processing channel message from packet prefix: {message_packet_prefix}, pubkey: {message_pubkey}")
             
             # Enhanced RF data correlation with multiple strategies
             recent_rf_data = None
             
-            # Strategy 1: Try immediate correlation
-            recent_rf_data = self.find_recent_rf_data(message_pubkey)
+            # Strategy 1: Try immediate correlation using packet prefix
+            if message_packet_prefix:
+                recent_rf_data = self.find_recent_rf_data(message_packet_prefix)
+            elif message_pubkey:
+                # Fallback to pubkey correlation
+                recent_rf_data = self.find_recent_rf_data(message_pubkey)
             
             # Strategy 2: If no immediate match and enhanced correlation is enabled, store message and wait briefly
             if not recent_rf_data and self.enhanced_correlation:
                 import time
-                message_id = f"{message_pubkey}_{int(time.time() * 1000)}"
+                correlation_key = message_packet_prefix or message_pubkey
+                message_id = f"{correlation_key}_{int(time.time() * 1000)}"
                 self.store_message_for_correlation(message_id, payload)
                 
                 # Wait a short time for RF data to arrive (non-blocking)
@@ -765,7 +788,10 @@ class MessageHandler:
             # Strategy 3: Try with extended timeout if still no match
             if not recent_rf_data:
                 extended_timeout = self.rf_data_timeout * 2  # Double the normal timeout
-                recent_rf_data = self.find_recent_rf_data(message_pubkey, max_age_seconds=extended_timeout)
+                if message_packet_prefix:
+                    recent_rf_data = self.find_recent_rf_data(message_packet_prefix, max_age_seconds=extended_timeout)
+                elif message_pubkey:
+                    recent_rf_data = self.find_recent_rf_data(message_pubkey, max_age_seconds=extended_timeout)
             
             # Strategy 4: Use most recent RF data as last resort
             if not recent_rf_data:
@@ -1074,17 +1100,9 @@ class MessageHandler:
             else:
                 self.logger.debug(f"🔍 DEBUG PACKET: No extracted payload available")
             
-            # NOTE: Raw packet decoding is fundamentally flawed
-            # The raw hex data does NOT follow the documented MeshCore packet structure
-            # Even mctomqtt.py has the same issue when trying to decode raw data
-            # 
-            # Instead, we should use the structured event data which already provides:
-            # - path_len from channel message events
-            # - SNR/RSSI from RX_LOG_DATA events
-            # - message content from the event payload
-            #
-            # The raw hex appears to be encrypted/encoded data that cannot be decoded
-            # without the proper keys or understanding of the actual packet format
+            # NOTE: This implementation of raw packet decoding is flawed.
+            #  We're not actually decoding the packet contents, we're reading the headers and path.
+            # The payload is encrypted and I haven't implemented decoding yet.
             self.logger.debug(f"🔍 DEBUG PACKET: Raw hex length: {len(raw_hex)} chars")
             self.logger.debug(f"🔍 DEBUG PACKET: Raw hex start: {raw_hex[:32]}...")
             self.logger.debug(f"🔍 DEBUG PACKET: Raw hex appears to be encrypted/encoded data")
@@ -1173,17 +1191,28 @@ class MessageHandler:
         # Check for keywords and custom syntax
         keyword_matches = self.bot.command_manager.check_keywords(message)
         
+        help_response_sent = False
         if keyword_matches:
             for keyword, response in keyword_matches:
                 self.logger.info(f"Keyword '{keyword}' matched, responding")
+                
+                # Skip commands that handle their own responses (response is None)
+                if response is None:
+                    continue
+                
+                # Track if this is a help response
+                if keyword == 'help':
+                    help_response_sent = True
                 
                 # Send response
                 if message.is_dm:
                     await self.bot.command_manager.send_dm(message.sender_id, response)
                 else:
                     await self.bot.command_manager.send_channel_message(message.channel, response)
-        else:
-            # Check for command objects if no keywords matched
+        
+        # Only execute commands if no help response was sent
+        # Help responses should be the final response for that message
+        if not help_response_sent:
             await self.bot.command_manager.execute_commands(message)
     
     def should_process_message(self, message: MeshMessage) -> bool:
@@ -1208,3 +1237,88 @@ class MessageHandler:
             return False
         
         return True
+    
+    async def handle_new_contact(self, event, metadata=None):
+        """Handle NEW_CONTACT events for automatic contact management"""
+        try:
+            self.logger.info(f"New contact discovered: {event}")
+            
+            # Extract contact information from the event
+            contact_data = event.payload if hasattr(event, 'payload') else event
+            
+            if not contact_data:
+                self.logger.warning("NEW_CONTACT event has no payload data")
+                return
+            
+            # Get contact details
+            contact_name = contact_data.get('name', contact_data.get('adv_name', 'Unknown'))
+            public_key = contact_data.get('public_key', '')
+            
+            self.logger.info(f"Processing new contact: {contact_name} (key: {public_key[:16]}...)")
+            
+            # Check if this is a repeater (we don't want to auto-manage repeaters)
+            if hasattr(self.bot, 'repeater_manager'):
+                is_repeater = self.bot.repeater_manager._is_repeater_device(contact_data)
+                if is_repeater:
+                    self.logger.info(f"New contact '{contact_name}' is a repeater - will be managed by repeater system")
+                    # Let the repeater manager handle it
+                    await self.bot.repeater_manager.scan_and_catalog_repeaters()
+                    return
+            
+            # For non-repeater contacts, handle based on auto_manage_contacts setting
+            if hasattr(self.bot, 'repeater_manager'):
+                auto_manage_setting = self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower()
+                
+                if auto_manage_setting == 'device':
+                    # Device mode: Let device handle auto-addition, bot manages capacity
+                    self.logger.info(f"Device auto-addition mode - new contact '{contact_name}' will be handled by device")
+                    
+                    # Check contact list capacity and manage if needed
+                    status = await self.bot.repeater_manager.get_contact_list_status()
+                    
+                    if status and status.get('is_near_limit', False):
+                        self.logger.warning(f"Contact list near limit ({status['usage_percentage']:.1f}%) - managing capacity")
+                        await self.bot.repeater_manager.manage_contact_list(auto_cleanup=True)
+                    else:
+                        self.logger.info(f"New contact '{contact_name}' - contact list has adequate space")
+                        
+                elif auto_manage_setting == 'bot':
+                    # Bot mode: Bot automatically adds companion contacts to device and manages capacity
+                    self.logger.info(f"Bot auto-addition mode - automatically adding new companion contact '{contact_name}' to device")
+                    
+                    # Add the contact to the device's contact list
+                    success = await self.bot.repeater_manager.add_discovered_contact(
+                        contact_name, 
+                        public_key, 
+                        f"Auto-added companion contact discovered via NEW_CONTACT event"
+                    )
+                    
+                    if success:
+                        self.logger.info(f"Successfully added companion contact '{contact_name}' to device")
+                    else:
+                        self.logger.warning(f"Failed to add companion contact '{contact_name}' to device")
+                    
+                    # Check contact list capacity and manage if needed
+                    status = await self.bot.repeater_manager.get_contact_list_status()
+                    
+                    if status and status.get('is_near_limit', False):
+                        self.logger.warning(f"Contact list near limit ({status['usage_percentage']:.1f}%) - managing capacity")
+                        await self.bot.repeater_manager.manage_contact_list(auto_cleanup=True)
+                    else:
+                        self.logger.info(f"New contact '{contact_name}' - contact list has adequate space")
+                        
+                else:  # false or any other value
+                    # Manual mode: Just log the discovery, no automatic actions
+                    self.logger.info(f"Manual mode - new companion contact '{contact_name}' discovered (not auto-added)")
+            
+            # Log the new contact discovery
+            if hasattr(self.bot, 'repeater_manager'):
+                self.bot.repeater_manager.db_manager.execute_update(
+                    'INSERT INTO purging_log (action, details) VALUES (?, ?)',
+                    ('new_contact_discovered', f'New contact discovered: {contact_name} (key: {public_key[:16]}...)')
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Error handling new contact event: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())

@@ -44,10 +44,12 @@ class HelloCommand(BaseCommand):
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the hello command"""
-        # The hello command is handled by keyword matching in the command manager
-        # This is just a placeholder for future functionality
-        self.logger.debug("Hello command executed (handled by keyword matching)")
-        return True
+        # Get bot name from config
+        bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
+        # Get random robot greeting
+        random_greeting = self.get_random_greeting()
+        response = f"{random_greeting} I'm {bot_name}."
+        return await self.send_response(message, response)
     
     def get_random_greeting(self) -> str:
         """Get a random robot greeting"""

@@ -89,11 +89,13 @@ class CommandManager:
     def check_keywords(self, message: MeshMessage) -> List[tuple]:
         """Check message content for keywords and return matching responses"""
         matches = []
-        content_lower = message.content.lower()
-        content = message.content
+        # Strip exclamation mark if present (for command-style messages)
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
+        content_lower = content.lower()
         
         # Check for help requests first (special handling)
-        content_lower = message.content.lower()
         if content_lower.startswith('help '):
             command_name = content_lower[5:].strip()  # Remove "help " prefix
             help_text = self.get_help_for_command(command_name)
@@ -104,168 +106,55 @@ class CommandManager:
             matches.append(('help', help_text))
             return matches
         
-        # Check for hello variants (special handling)
-        hello_variants = ['hello', 'hi', 'hey', 'howdy', 'greetings', 'salutations']
-        if content_lower in hello_variants:
-            # Get the hello command instance to access random greetings
-            hello_cmd = self.commands.get('hello')
-            if hello_cmd:
-                # Get bot name from config
-                bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
-                # Get random robot greeting
-                random_greeting = hello_cmd.get_random_greeting()
-                response = f"{random_greeting} I'm {bot_name}."
-                matches.append(('hello', response))
-                return matches
+        # Check all loaded plugins for matches
+        for command_name, command in self.commands.items():
+            if command.should_execute(message):
+                # Get response format and generate response
+                response_format = command.get_response_format()
+                if response_format:
+                    response = command.format_response(message, response_format)
+                    matches.append((command_name, response))
+                else:
+                    # For commands without response format, they handle their own response
+                    # We'll mark them as matched but let execute_commands handle the actual execution
+                    matches.append((command_name, None))
         
-        # Check for custom syntax patterns first
-        for pattern_name, response_format in self.custom_syntax.items():
-            if pattern_name == "t_phrase":
-                # Handle "t" or "T" phrase syntax
-                if (content.strip().startswith('t ') or content.strip().startswith('T ')) and len(content.strip()) > 2:
-                    phrase = content.strip()[2:].strip()  # Get everything after "t " or "T " and strip whitespace
-                    if phrase:  # Make sure there's actually a phrase
-                        # Build enhanced connection info with parsed route information
-                        connection_info = self.build_enhanced_connection_info(message)
-                        
-                        # Format timestamp
-                        if message.timestamp and message.timestamp != 'unknown':
-                            try:
-                                from datetime import datetime
-                                dt = datetime.fromtimestamp(message.timestamp)
-                                time_str = dt.strftime("%H:%M:%S")
-                            except:
-                                time_str = str(message.timestamp)
-                        else:
-                            time_str = "Unknown"
-                        
-                        # Format the response using the configurable format
-                        try:
-                            response = response_format.format(
-                                sender=message.sender_id or "Unknown",
-                                phrase=phrase,
-                                connection_info=connection_info,
-                                path=message.path or "Unknown",
-                                timestamp=time_str,
-                                snr=message.snr or "Unknown"
-                            )
-                            matches.append((pattern_name, response))
-                        except (KeyError, ValueError) as e:
-                            # Fallback to simple response if formatting fails
-                            self.logger.warning(f"Error formatting custom syntax '{pattern_name}': {e}")
-                            matches.append((pattern_name, response_format))
-            elif pattern_name == "@_phrase":
-                # Handle "@{string}" phrase syntax (DM and non-Public channels only)
-                if content.strip().startswith('@') and len(content.strip()) > 1:
-                    # Check if this is a DM or a non-Public channel
-                    is_allowed = message.is_dm
-                    if not message.is_dm and message.channel:
-                        # Allow in all channels except "Public"
-                        is_allowed = message.channel.lower() != "public"
-                    
-                    if is_allowed:
-                        phrase = content.strip()[1:].strip()  # Get everything after "@" and strip whitespace
-                        if phrase:  # Make sure there's actually a phrase
-                            # Build enhanced connection info with parsed route information
-                            connection_info = self.build_enhanced_connection_info(message)
-                            
-                            # Format timestamp
-                            if message.timestamp and message.timestamp != 'unknown':
-                                try:
-                                    from datetime import datetime
-                                    dt = datetime.fromtimestamp(message.timestamp)
-                                    time_str = dt.strftime("%H:%M:%S")
-                                except:
-                                    time_str = str(message.timestamp)
-                            else:
-                                time_str = "Unknown"
-                            
-                            # Format the response using the configurable format
-                            try:
-                                response = response_format.format(
-                                    sender=message.sender_id or "Unknown",
-                                    phrase=phrase,
-                                    connection_info=connection_info,
-                                    path=message.path or "Unknown",
-                                    timestamp=time_str,
-                                    snr=message.snr or "Unknown"
-                                )
-                                matches.append((pattern_name, response))
-                            except (KeyError, ValueError) as e:
-                                # Fallback to simple response if formatting fails
-                                self.logger.warning(f"Error formatting custom syntax '{pattern_name}': {e}")
-                                matches.append((pattern_name, response_format))
-        
+        # Check remaining keywords that don't have plugins
         for keyword, response_format in self.keywords.items():
-            # Check if keyword is "test" and apply special matching rules
-            if keyword.lower() == "test":
-                # For "test", only match if it's the first word or its own word
-                # Split by whitespace and clean up punctuation
-                words = re.findall(r'\b\w+\b', content_lower)
-                if words and (words[0] == "test" or "test" in words):
-                    # Use the configured response format from config.ini
-                    try:
-                        # Build enhanced connection info with parsed route information
-                        connection_info = self.build_enhanced_connection_info(message)
-                        
-                        # Format timestamp
-                        if message.timestamp and message.timestamp != 'unknown':
-                            try:
-                                from datetime import datetime
-                                dt = datetime.fromtimestamp(message.timestamp)
-                                time_str = dt.strftime("%H:%M:%S")
-                            except:
-                                time_str = str(message.timestamp)
-                        else:
-                            time_str = "Unknown"
-                        
-                        # Format the response with available message data
-                        response = response_format.format(
-                            sender=message.sender_id or "Unknown",
-                            connection_info=connection_info,
-                            path=message.path or "Unknown",
-                            timestamp=time_str,
-                            snr=message.snr or "Unknown",
-                            rssi=message.rssi or "Unknown"
-                        )
-                        matches.append((keyword, response))
-                    except (KeyError, ValueError) as e:
-                        # Fallback to simple response if formatting fails
-                        self.logger.warning(f"Error formatting response for '{keyword}': {e}")
-                        matches.append((keyword, response_format))
-            else:
-                # For other keywords, use the original substring matching
-                if keyword.lower() in content_lower:
-                    # Use the configured response format from config.ini
-                    try:
-                        # Build enhanced connection info with parsed route information
-                        connection_info = self.build_enhanced_connection_info(message)
-                        
-                        # Format timestamp
-                        if message.timestamp and message.timestamp != 'unknown':
-                            try:
-                                from datetime import datetime
-                                dt = datetime.fromtimestamp(message.timestamp)
-                                time_str = dt.strftime("%H:%M:%S")
-                            except:
-                                time_str = str(message.timestamp)
-                        else:
-                            time_str = "Unknown"
-                        
-                        # Format the response with available message data
-                        response = response_format.format(
-                            sender=message.sender_id or "Unknown",
-                            connection_info=connection_info,
-                            path=message.path or "Unknown",
-                            timestamp=time_str,
-                            snr=message.snr or "Unknown",
-                            rssi=message.rssi or "Unknown"
-                        )
-                        matches.append((keyword, response))
-                    except (KeyError, ValueError) as e:
-                        # Fallback to simple response if formatting fails
-                        self.logger.warning(f"Error formatting response for '{keyword}': {e}")
-                        matches.append((keyword, response_format))
+            # Skip if we already have a plugin handling this keyword
+            if any(cmd.matches_keyword(message) for cmd in self.commands.values()):
+                continue
+                
+            if keyword.lower() in content_lower:
+                try:
+                    # Build enhanced connection info with parsed route information
+                    connection_info = self.build_enhanced_connection_info(message)
+                    
+                    # Format timestamp
+                    if message.timestamp and message.timestamp != 'unknown':
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromtimestamp(message.timestamp)
+                            time_str = dt.strftime("%H:%M:%S")
+                        except:
+                            time_str = str(message.timestamp)
+                    else:
+                        time_str = "Unknown"
+                    
+                    # Format the response with available message data
+                    response = response_format.format(
+                        sender=message.sender_id or "Unknown",
+                        connection_info=connection_info,
+                        path=message.path or "Unknown",
+                        timestamp=time_str,
+                        snr=message.snr or "Unknown",
+                        rssi=message.rssi or "Unknown"
+                    )
+                    matches.append((keyword, response))
+                except (KeyError, ValueError) as e:
+                    # Fallback to simple response if formatting fails
+                    self.logger.warning(f"Error formatting response for '{keyword}': {e}")
+                    matches.append((keyword, response_format))
         
         return matches
     
@@ -367,39 +256,25 @@ class CommandManager:
     
     def get_help_for_command(self, command_name: str) -> str:
         """Get help text for a specific command (LoRa-friendly compact format)"""
-        # Map command aliases to their actual command names
-        command_aliases = {
-            '@': 'atphrase',
-            '@string': 'atphrase',  # Handle "help @string" case
-            'string': 'atphrase',   # Handle "help string" case (when @ is stripped)
-            't': 'tphrase',
-            't phrase': 'tphrase',  # Handle "help t phrase" case
-            'phrase': 'tphrase',    # Handle "help phrase" case
-            'advert': 'advert',
-            'test': 'test',
-            'ping': 'ping',
-            'help': 'help',
-            'cmd': 'cmd',
-            'hello': 'hello',
-            'wx': 'wx',
-            'weather': 'wx',
-            'wxa': 'wx',
-            'aqi': 'aqi',
-            'air': 'aqi',
-            'airquality': 'aqi',
-            'air_quality': 'aqi'
-        }
-        
-        # Normalize the command name
-        normalized_name = command_aliases.get(command_name, command_name)
-        
-        # Get the command instance
-        command = self.commands.get(normalized_name)
-        
+        # First, try to find a command by exact name
+        command = self.commands.get(command_name)
         if command:
             return f"Help {command_name}: {command.get_help_text()}"
-        else:
-            return f"Unknown: {command_name}. Commands: test, ping, help, cmd, advert, wx, aqi, t phrase, @string"
+        
+        # If not found, search through all commands and their keywords
+        for cmd_name, cmd_instance in self.commands.items():
+            # Check if the requested command name matches any of this command's keywords
+            if hasattr(cmd_instance, 'keywords') and command_name in cmd_instance.keywords:
+                return f"Help {command_name}: {cmd_instance.get_help_text()}"
+        
+        # If still not found, return unknown command message
+        available_commands = []
+        for cmd_name, cmd_instance in self.commands.items():
+            available_commands.append(cmd_name)
+            if hasattr(cmd_instance, 'keywords'):
+                available_commands.extend(cmd_instance.keywords)
+        
+        return f"Unknown: {command_name}. Available: {', '.join(sorted(set(available_commands)))}"
     
     def get_general_help(self) -> str:
         """Get general help text from config (LoRa-friendly compact format)"""
@@ -467,49 +342,56 @@ class CommandManager:
             return False
     
     async def execute_commands(self, message):
-        """Execute command objects for messages that don't match keywords"""
-        content_lower = message.content.lower().strip()
+        """Execute command objects that handle their own responses"""
+        # Strip exclamation mark if present (for command-style messages)
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
+        content_lower = content.lower()
         
         # Check each command to see if it should execute
         for command_name, command in self.commands.items():
-            if hasattr(command, 'keywords') and command.keywords:
-                for keyword in command.keywords:
-                    # Check if message starts with the command keyword
-                    if content_lower.startswith(keyword.lower()):
-                        self.logger.info(f"Command '{command_name}' matched, executing")
+            if command.should_execute(message):
+                # Only execute commands that don't have a response format (they handle their own responses)
+                response_format = command.get_response_format()
+                if response_format is not None:
+                    # This command was already handled by keyword matching
+                    continue
+                
+                self.logger.info(f"Command '{command_name}' matched, executing")
+                
+                # Check if command can execute (cooldown, DM requirements, etc.)
+                if not command.can_execute(message):
+                    if command.requires_dm and not message.is_dm:
+                        await self.send_response(message, f"Command '{command_name}' can only be used in DMs")
+                    elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
+                        # Check if it's the per-user version (takes user_id parameter)
+                        import inspect
+                        sig = inspect.signature(command.get_remaining_cooldown)
+                        if len(sig.parameters) > 0:
+                            remaining = command.get_remaining_cooldown(message.sender_id)
+                        else:
+                            remaining = command.get_remaining_cooldown()
                         
-                        # Check if command can execute (cooldown, DM requirements, etc.)
-                        if not command.can_execute(message):
-                            if command.requires_dm and not message.is_dm:
-                                await self.send_response(message, f"Command '{command_name}' can only be used in DMs")
-                            elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
-                                # Check if it's the per-user version (takes user_id parameter)
-                                import inspect
-                                sig = inspect.signature(command.get_remaining_cooldown)
-                                if len(sig.parameters) > 0:
-                                    remaining = command.get_remaining_cooldown(message.sender_id)
-                                else:
-                                    remaining = command.get_remaining_cooldown()
-                                
-                                if remaining > 0:
-                                    await self.send_response(message, f"Command '{command_name}' is on cooldown. Wait {remaining} seconds.")
-                            return
-                        
-                        try:
-                            # Record execution time for cooldown tracking
-                            if hasattr(command, '_record_execution') and callable(command._record_execution):
-                                import inspect
-                                sig = inspect.signature(command._record_execution)
-                                if len(sig.parameters) > 0:
-                                    command._record_execution(message.sender_id)
-                                else:
-                                    command._record_execution()
-                            await command.execute(message)
-                        except Exception as e:
-                            self.logger.error(f"Error executing command '{command_name}': {e}")
-                            # Send error message to user
-                            await self.send_response(message, f"Error executing {command_name}: {e}")
-                        return
+                        if remaining > 0:
+                            await self.send_response(message, f"Command '{command_name}' is on cooldown. Wait {remaining} seconds.")
+                    return
+                
+                try:
+                    # Record execution time for cooldown tracking
+                    if hasattr(command, '_record_execution') and callable(command._record_execution):
+                        import inspect
+                        sig = inspect.signature(command._record_execution)
+                        if len(sig.parameters) > 0:
+                            command._record_execution(message.sender_id)
+                        else:
+                            command._record_execution()
+                    await command.execute(message)
+                except Exception as e:
+                    self.logger.error(f"Error executing command '{command_name}': {e}")
+                    # Send error message to user
+                    await self.send_response(message, f"Error executing {command_name}: {e}")
+                return
     
     def get_plugin_by_keyword(self, keyword: str) -> Optional[BaseCommand]:
         """Get a plugin by keyword"""
