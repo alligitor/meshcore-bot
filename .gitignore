@@ -120,3 +120,6 @@ Thumbs.db
 config.ini
 *.db
 mctomqtt.py
+
+# Local documentation (internal development notes)
+docs/local/
