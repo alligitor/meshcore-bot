@@ -36,7 +36,7 @@ class PrefixCommand(BaseCommand):
         self.session = None
     
     def get_help_text(self) -> str:
-        return "Look up repeaters by two-character prefix. Usage: 'prefix 1A' or 'prefix 82'. Use 'prefix refresh' to update the cache."
+        return "Look up repeaters by two-character prefix. Uses API data with local database fallback. Usage: 'prefix 1A' or 'prefix 82'. Use 'prefix refresh' to update the cache."
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the prefix command"""
@@ -77,14 +77,18 @@ class PrefixCommand(BaseCommand):
         return await self.send_response(message, response)
     
     async def get_prefix_data(self, prefix: str) -> Optional[Dict[str, Any]]:
-        """Get prefix data from cache or API"""
+        """Get prefix data from cache, API, or database fallback"""
         # Check if cache is valid
         current_time = time.time()
         if current_time - self.cache_timestamp > self.cache_duration:
             await self.refresh_cache()
         
-        # Return cached data for the prefix
-        return self.cache_data.get(prefix)
+        # Return cached data for the prefix if available
+        if prefix in self.cache_data:
+            return self.cache_data.get(prefix)
+        
+        # Fallback to database if API cache is empty or prefix not found
+        return await self.get_prefix_data_from_db(prefix)
     
     async def refresh_cache(self):
         """Refresh the cache from the API"""
@@ -128,26 +132,76 @@ class PrefixCommand(BaseCommand):
         except Exception as e:
             self.logger.error(f"Unexpected error refreshing cache: {e}")
     
+    async def get_prefix_data_from_db(self, prefix: str) -> Optional[Dict[str, Any]]:
+        """Get prefix data from the bot's SQLite database as fallback"""
+        try:
+            self.logger.info(f"Looking up prefix '{prefix}' in local database")
+            
+            # Query the repeater_contacts table for repeaters with matching prefix
+            query = '''
+                SELECT name, public_key, device_type, last_seen
+                FROM repeater_contacts 
+                WHERE is_active = 1 
+                AND public_key LIKE ?
+                ORDER BY name
+            '''
+            
+            # The prefix should match the first two characters of the public key
+            prefix_pattern = f"{prefix}%"
+            
+            results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+            
+            if not results:
+                self.logger.info(f"No repeaters found in database with prefix '{prefix}'")
+                return None
+            
+            # Extract node names and count
+            node_names = []
+            for row in results:
+                name = row['name']
+                device_type = row['device_type']
+                # Add device type indicator for clarity
+                if device_type == 2:
+                    name += " (Repeater)"
+                elif device_type == 3:
+                    name += " (Room Server)"
+                node_names.append(name)
+            
+            self.logger.info(f"Found {len(node_names)} repeaters in database with prefix '{prefix}'")
+            
+            return {
+                'node_count': len(node_names),
+                'node_names': node_names,
+                'source': 'database'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error querying database for prefix '{prefix}': {e}")
+            return None
+    
     def format_prefix_response(self, prefix: str, data: Dict[str, Any]) -> str:
         """Format the prefix response"""
         node_count = data['node_count']
         node_names = data['node_names']
+        source = data.get('source', 'api')
         
         response = f"📡 **Prefix {prefix}** ({node_count} repeater{'s' if node_count != 1 else ''}):\n"
         
         for i, name in enumerate(node_names, 1):
             response += f"{i}. {name}\n"
         
-        # Add cache info
-        cache_age = int(time.time() - self.cache_timestamp)
-        if cache_age < 60:
-            cache_info = f"{cache_age}s ago"
-        elif cache_age < 3600:
-            cache_info = f"{cache_age // 60}m ago"
+        # Add source and cache info
+        if source == 'database':
+            response += f"\n💾 Data from local database (offline mode)"
         else:
-            cache_info = f"{cache_age // 3600}h ago"
-        
-        response += f"\n💾 Cache updated {cache_info}"
+            cache_age = int(time.time() - self.cache_timestamp)
+            if cache_age < 60:
+                cache_info = f"{cache_age}s ago"
+            elif cache_age < 3600:
+                cache_info = f"{cache_age // 60}m ago"
+            else:
+                cache_info = f"{cache_age // 3600}h ago"
+            response += f"\n💾 Cache updated {cache_info}"
         
         return response
     
