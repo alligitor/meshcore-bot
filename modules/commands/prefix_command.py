@@ -39,6 +39,17 @@ class PrefixCommand(BaseCommand):
     def get_help_text(self) -> str:
         return "Look up repeaters by two-character prefix. Uses API data with local database fallback. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
     
+    def matches_keyword(self, message: MeshMessage) -> bool:
+        """Check if message starts with 'prefix' keyword"""
+        content = message.content.strip()
+        
+        # Handle exclamation prefix
+        if content.startswith('!'):
+            content = content[1:].strip()
+        
+        # Check if message starts with 'prefix'
+        return content.lower().startswith('prefix ')
+    
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the prefix command"""
         content = message.content.strip()
