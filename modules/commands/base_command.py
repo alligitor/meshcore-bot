@@ -102,11 +102,20 @@ class BaseCommand(ABC):
         
         for keyword in self.keywords:
             keyword_lower = keyword.lower()
-            # Check for exact word match or exact phrase match
-            if (keyword_lower == content_lower or  # Exact match
-                content_lower.startswith(keyword_lower + ' ') or  # Keyword followed by space
-                content_lower.endswith(' ' + keyword_lower) or  # Space followed by keyword
-                ' ' + keyword_lower + ' ' in content_lower):  # Keyword surrounded by spaces
+            
+            # Check for exact match first
+            if keyword_lower == content_lower:
+                return True
+            
+            # Check for word boundary matches using regex
+            import re
+            # Create a regex pattern that matches the keyword at word boundaries
+            # Use custom word boundary that treats underscores as separators
+            # (?<![a-zA-Z0-9]) = negative lookbehind for alphanumeric characters (not underscore)
+            # (?![a-zA-Z0-9]) = negative lookahead for alphanumeric characters (not underscore)
+            # This allows underscores to act as word boundaries
+            pattern = r'(?<![a-zA-Z0-9])' + re.escape(keyword_lower) + r'(?![a-zA-Z0-9])'
+            if re.search(pattern, content_lower):
                 return True
         
         return False
