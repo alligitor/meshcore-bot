@@ -252,7 +252,7 @@ class PrefixCommand(BaseCommand):
         if not free_prefixes:
             return "❌ No free prefixes found (all 254 valid prefixes are in use)"
         
-        response = f"🆓 **Available Prefixes** ({len(free_prefixes)} shown):\n"
+        response = f"🆓 Available Prefixes ({len(free_prefixes)} shown):\n"
         
         # Format as a grid for better readability
         for i, prefix in enumerate(free_prefixes, 1):
@@ -266,7 +266,7 @@ class PrefixCommand(BaseCommand):
         if len(free_prefixes) % 5 != 0:
             response += "\n"
         
-        response += f"\n💡 Use 'prefix <XX>' to check if a prefix is available"
+        response += f"\n💡 Generate a key for a specific prefix at https://gessaman.com/mc-keygen"
         
         return response
     
