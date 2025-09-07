@@ -203,8 +203,15 @@ class PrefixCommand(BaseCommand):
             # No additional info needed for database responses
             pass
         else:
-            # Add API source info
-            response += f"\nSource: map.w0z.is"
+            # Add API source info - extract domain from API URL
+            try:
+                from urllib.parse import urlparse
+                parsed_url = urlparse(self.api_url)
+                domain = parsed_url.netloc
+                response += f"\nSource: {domain}"
+            except Exception:
+                # Fallback if URL parsing fails
+                response += f"\nSource: API"
         
         return response
     
