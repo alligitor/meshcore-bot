@@ -261,6 +261,16 @@ n2yo_api_key =
 # Get free key at: https://docs.airnowapi.org/
 airnow_api_key = 
 
+# Repeater prefix API URL for prefix command
+# Default: w0z.is Seattle region API
+# You can change the region parameter to query different areas
+repeater_prefix_api_url = https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
+
+# Repeater prefix cache duration in hours
+# How long to cache prefix data before refreshing from API
+# Recommended: 1-6 hours (data doesn't change frequently)
+repeater_prefix_cache_hours = 1
+
 [Weather]
 # Default state for city name disambiguation
 # When users type "wx seattle", it will search for "seattle, WA, USA"

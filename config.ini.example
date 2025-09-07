@@ -79,8 +79,8 @@ auto_manage_contacts = false
 test = "Message received from {sender} | {connection_info} | Received at: {timestamp}"
 ping = "Pong!"
 pong = "Ping!"
-help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass | Use 'help <command>' for details"
-cmd = "Available commands: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass"
+help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass, prefix | Use 'help <command>' for details"
+cmd = "Available commands: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass, prefix"
 
 [Channels]
 # Channels to monitor (comma-separated)
@@ -164,6 +164,16 @@ n2yo_api_key =
 # AirNow API key for AQI data
 # Get free key at: https://docs.airnowapi.org/
 airnow_api_key = 
+
+# Repeater prefix API URL for prefix command
+# Default: w0z.is Seattle region API
+# You can change the region parameter to query different areas
+repeater_prefix_api_url = https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
+
+# Repeater prefix cache duration in hours
+# How long to cache prefix data before refreshing from API
+# Recommended: 1-6 hours (data doesn't change frequently)
+repeater_prefix_cache_hours = 1
 
 [Weather]
 # Default state for city name disambiguation
