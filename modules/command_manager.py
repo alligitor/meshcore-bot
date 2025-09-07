@@ -6,6 +6,7 @@ Handles all bot commands, keyword matching, and response generation
 
 import re
 import time
+import asyncio
 from typing import List, Dict, Tuple, Optional, Any
 from meshcore import EventType
 
@@ -32,6 +33,12 @@ class CommandManager:
         self.commands = self.plugin_loader.load_all_plugins()
         
         self.logger.info(f"CommandManager initialized with {len(self.commands)} plugins")
+    
+    async def _apply_tx_delay(self):
+        """Apply transmission delay to prevent message collisions"""
+        if self.bot.tx_delay_ms > 0:
+            self.logger.debug(f"Applying {self.bot.tx_delay_ms}ms transmission delay")
+            await asyncio.sleep(self.bot.tx_delay_ms / 1000.0)
     
     def load_keywords(self) -> Dict[str, str]:
         """Load keywords from config"""
@@ -176,6 +183,9 @@ class CommandManager:
         # Wait for bot TX rate limiter (prevents network overload)
         await self.bot.bot_tx_rate_limiter.wait_for_tx()
         
+        # Apply transmission delay to prevent message collisions
+        await self._apply_tx_delay()
+        
         try:
             # Find the contact by name (since recipient_id is the contact name)
             contact = self.bot.meshcore.get_contact_by_name(recipient_id)
@@ -230,6 +240,9 @@ class CommandManager:
         
         # Wait for bot TX rate limiter (prevents network overload)
         await self.bot.bot_tx_rate_limiter.wait_for_tx()
+        
+        # Apply transmission delay to prevent message collisions
+        await self._apply_tx_delay()
         
         try:
             # Get channel number from channel name

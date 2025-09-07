@@ -50,6 +50,11 @@ rate_limit_seconds = 10
 # Prevents bot from overwhelming the mesh network
 bot_tx_rate_limit_seconds = 1.0
 
+# Transmission delay in milliseconds before sending messages
+# Helps prevent message collisions on the mesh network
+# Recommended: 100-500ms for busy networks, 0 for quiet networks
+tx_delay_ms = 250
+
 # Timezone for bot operations
 # Use standard timezone names (e.g., "America/New_York", "Europe/London", "UTC")
 # Leave empty to use system timezone

@@ -64,6 +64,7 @@ class MeshCoreBot:
         self.bot_tx_rate_limiter = BotTxRateLimiter(
             self.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
         )
+        self.tx_delay_ms = self.config.getint('Bot', 'tx_delay_ms', fallback=250)
         self.message_handler = MessageHandler(self)
         self.command_manager = CommandManager(self)
         self.channel_manager = ChannelManager(self)
@@ -147,6 +148,11 @@ rate_limit_seconds = 2
 # Bot transmission rate limit in seconds between bot messages
 # Prevents bot from overwhelming the mesh network
 bot_tx_rate_limit_seconds = 1.0
+
+# Transmission delay in milliseconds before sending messages
+# Helps prevent message collisions on the mesh network
+# Recommended: 100-500ms for busy networks, 0 for quiet networks
+tx_delay_ms = 250
 
 # Timezone for bot operations
 # Use standard timezone names (e.g., "America/New_York", "Europe/London", "UTC")
