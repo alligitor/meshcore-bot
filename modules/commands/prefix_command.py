@@ -83,7 +83,7 @@ class PrefixCommand(BaseCommand):
         
         # Validate prefix format
         if len(command) != 2 or not command.isalnum():
-            response = "❌ Invalid prefix format. Use two characters (e.g., '1A', '82', 'BD')"
+            response = "❌ Invalid prefix format. Use two characters (e.g., prefix 1A)"
             return await self.send_response(message, response)
         
         # Get prefix data
