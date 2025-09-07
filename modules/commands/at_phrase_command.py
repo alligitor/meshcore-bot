@@ -9,17 +9,17 @@ from ..models import MeshMessage
 
 
 class AtPhraseCommand(BaseCommand):
-    """Handles the @{string} command (DM only)"""
+    """Handles the @{string} command (DM and non-Public channels)"""
     
     # Plugin metadata
     name = "at_phrase"
     keywords = ['@', '@string', 'string']
-    description = "Responds to '@{string}' with ack + connection info (DM only)"
+    description = "Responds to '@{string}' with ack + connection info (DM and non-Public channels)"
     category = "custom_syntax"
-    requires_dm = True
+    requires_dm = False  # Allow in channels, but restrict to non-Public channels in matches_custom_syntax
     
     def get_help_text(self) -> str:
-        return "Responds to '@{string}' with ack + connection info (DM only)."
+        return "Responds to '@{string}' with ack + connection info (DM and non-Public channels)."
     
     def matches_custom_syntax(self, message: MeshMessage) -> bool:
         """Check if message matches @_phrase syntax"""
