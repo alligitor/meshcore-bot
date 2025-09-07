@@ -194,9 +194,17 @@ class PrefixCommand(BaseCommand):
             # Get all used prefixes from both API cache and database
             used_prefixes = set()
             
+            # Always try to refresh cache if it's empty or stale
+            current_time = time.time()
+            if not self.cache_data or current_time - self.cache_timestamp > self.cache_duration:
+                self.logger.info("Refreshing cache for free prefixes lookup")
+                await self.refresh_cache()
+            
             # Add prefixes from API cache
             for prefix in self.cache_data.keys():
                 used_prefixes.add(prefix.upper())
+            
+            self.logger.info(f"Found {len(used_prefixes)} used prefixes from API cache")
             
             # Add prefixes from database
             try:
@@ -225,6 +233,8 @@ class PrefixCommand(BaseCommand):
             for prefix in all_prefixes:
                 if prefix not in used_prefixes:
                     free_prefixes.append(prefix)
+            
+            self.logger.info(f"Found {len(free_prefixes)} free prefixes out of {len(all_prefixes)} total valid prefixes")
             
             # Return up to 10 free prefixes
             return free_prefixes[:10]
