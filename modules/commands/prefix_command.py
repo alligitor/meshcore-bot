@@ -8,6 +8,7 @@ import asyncio
 import aiohttp
 import time
 import json
+import random
 from typing import Dict, List, Optional, Any
 from .base_command import BaseCommand
 from ..models import MeshMessage
@@ -236,8 +237,11 @@ class PrefixCommand(BaseCommand):
             
             self.logger.info(f"Found {len(free_prefixes)} free prefixes out of {len(all_prefixes)} total valid prefixes")
             
-            # Return up to 10 free prefixes
-            return free_prefixes[:10]
+            # Randomly select up to 10 free prefixes
+            if len(free_prefixes) <= 10:
+                return free_prefixes
+            else:
+                return random.sample(free_prefixes, 10)
             
         except Exception as e:
             self.logger.error(f"Error getting free prefixes: {e}")
