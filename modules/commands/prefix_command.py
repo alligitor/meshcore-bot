@@ -185,23 +185,26 @@ class PrefixCommand(BaseCommand):
         node_names = data['node_names']
         source = data.get('source', 'api')
         
-        response = f"📡 **Prefix {prefix}** ({node_count} repeater{'s' if node_count != 1 else ''}):\n"
+        # Get bot name for database responses
+        bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
+        
+        if source == 'database':
+            # Database response format
+            response = f"{bot_name} has heard {node_count} repeater{'s' if node_count != 1 else ''} with prefix {prefix}:\n"
+        else:
+            # API response format
+            response = f"📡 Prefix {prefix} ({node_count} repeater{'s' if node_count != 1 else ''}):\n"
         
         for i, name in enumerate(node_names, 1):
             response += f"{i}. {name}\n"
         
-        # Add source and cache info
+        # Add source info
         if source == 'database':
-            response += f"\n💾 Data from local database (offline mode)"
+            # No additional info needed for database responses
+            pass
         else:
-            cache_age = int(time.time() - self.cache_timestamp)
-            if cache_age < 60:
-                cache_info = f"{cache_age}s ago"
-            elif cache_age < 3600:
-                cache_info = f"{cache_age // 60}m ago"
-            else:
-                cache_info = f"{cache_age // 3600}h ago"
-            response += f"\n💾 Cache updated {cache_info}"
+            # Add API source info
+            response += f"\nSource: map.w0z.is"
         
         return response
     
