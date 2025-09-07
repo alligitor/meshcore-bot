@@ -7,6 +7,8 @@ Handles scheduled messages and timing
 import time
 import threading
 import schedule
+import datetime
+import pytz
 from typing import Dict, Tuple
 
 
@@ -18,6 +20,20 @@ class MessageScheduler:
         self.logger = bot.logger
         self.scheduled_messages = {}
         self.scheduler_thread = None
+    
+    def get_current_time(self):
+        """Get current time in configured timezone"""
+        timezone_str = self.bot.config.get('Bot', 'timezone', fallback='')
+        
+        if timezone_str:
+            try:
+                tz = pytz.timezone(timezone_str)
+                return datetime.datetime.now(tz)
+            except pytz.exceptions.UnknownTimeZoneError:
+                self.logger.warning(f"Invalid timezone '{timezone_str}', using system timezone")
+                return datetime.datetime.now()
+        else:
+            return datetime.datetime.now()
     
     def setup_scheduled_messages(self):
         """Setup scheduled messages from config"""
@@ -60,6 +76,9 @@ class MessageScheduler:
     
     def send_scheduled_message(self, channel: str, message: str):
         """Send a scheduled message (synchronous wrapper for schedule library)"""
+        current_time = self.get_current_time()
+        self.logger.info(f"📅 Sending scheduled message at {current_time.strftime('%H:%M:%S')} to {channel}: {message}")
+        
         import asyncio
         
         # Create a new event loop for this thread if one doesn't exist
@@ -83,6 +102,23 @@ class MessageScheduler:
     
     def run_scheduler(self):
         """Run the scheduler in a separate thread"""
+        self.logger.info("Scheduler thread started")
+        last_log_time = 0
+        
         while self.bot.connected:
+            current_time = self.get_current_time()
+            
+            # Log current time every 5 minutes for debugging
+            if time.time() - last_log_time > 300:  # 5 minutes
+                self.logger.info(f"Scheduler running - Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                last_log_time = time.time()
+            
+            # Check for pending scheduled messages
+            pending_jobs = schedule.get_jobs()
+            if pending_jobs:
+                self.logger.debug(f"Found {len(pending_jobs)} scheduled jobs")
+            
             schedule.run_pending()
             time.sleep(1)
+        
+        self.logger.info("Scheduler thread stopped")
