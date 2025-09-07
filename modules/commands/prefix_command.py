@@ -36,7 +36,7 @@ class PrefixCommand(BaseCommand):
         self.session = None
     
     def get_help_text(self) -> str:
-        return "Look up repeaters by two-character prefix. Uses API data with local database fallback. Usage: 'prefix 1A' or 'prefix 82'. Use 'prefix refresh' to update the cache."
+        return "Look up repeaters by two-character prefix. Uses API data with local database fallback. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the prefix command"""
@@ -49,7 +49,7 @@ class PrefixCommand(BaseCommand):
         # Parse the command
         parts = content.split()
         if len(parts) < 2:
-            response = "Usage: prefix <two-character-prefix> (e.g., 'prefix 1A') or 'prefix refresh'"
+            response = "Usage: prefix <two-character-prefix> (e.g., 'prefix 1A'), 'prefix free', or 'prefix refresh'"
             return await self.send_response(message, response)
         
         command = parts[1].upper()
@@ -58,6 +58,15 @@ class PrefixCommand(BaseCommand):
         if command == "REFRESH":
             await self.refresh_cache()
             response = "🔄 Repeater prefix cache refreshed!"
+            return await self.send_response(message, response)
+        
+        # Handle free command
+        if command == "FREE":
+            free_prefixes = await self.get_free_prefixes()
+            if free_prefixes:
+                response = self.format_free_prefixes_response(free_prefixes)
+            else:
+                response = "❌ Unable to determine free prefixes. Try 'prefix refresh' first."
             return await self.send_response(message, response)
         
         # Validate prefix format
@@ -178,6 +187,74 @@ class PrefixCommand(BaseCommand):
         except Exception as e:
             self.logger.error(f"Error querying database for prefix '{prefix}': {e}")
             return None
+    
+    async def get_free_prefixes(self) -> List[str]:
+        """Get list of available (unused) prefixes"""
+        try:
+            # Get all used prefixes from both API cache and database
+            used_prefixes = set()
+            
+            # Add prefixes from API cache
+            for prefix in self.cache_data.keys():
+                used_prefixes.add(prefix.upper())
+            
+            # Add prefixes from database
+            try:
+                query = '''
+                    SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
+                    FROM repeater_contacts 
+                    WHERE is_active = 1 
+                    AND LENGTH(public_key) >= 2
+                '''
+                results = self.bot.db_manager.execute_query(query)
+                for row in results:
+                    prefix = row['prefix'].upper()
+                    if len(prefix) == 2:
+                        used_prefixes.add(prefix)
+            except Exception as e:
+                self.logger.warning(f"Error getting prefixes from database: {e}")
+            
+            # Generate all valid hex prefixes (01-FE, excluding 00 and FF)
+            all_prefixes = []
+            for i in range(1, 255):  # 1 to 254 (exclude 0 and 255)
+                prefix = f"{i:02X}"
+                all_prefixes.append(prefix)
+            
+            # Find free prefixes
+            free_prefixes = []
+            for prefix in all_prefixes:
+                if prefix not in used_prefixes:
+                    free_prefixes.append(prefix)
+            
+            # Return up to 10 free prefixes
+            return free_prefixes[:10]
+            
+        except Exception as e:
+            self.logger.error(f"Error getting free prefixes: {e}")
+            return []
+    
+    def format_free_prefixes_response(self, free_prefixes: List[str]) -> str:
+        """Format the free prefixes response"""
+        if not free_prefixes:
+            return "❌ No free prefixes found (all 254 valid prefixes are in use)"
+        
+        response = f"🆓 **Available Prefixes** ({len(free_prefixes)} shown):\n"
+        
+        # Format as a grid for better readability
+        for i, prefix in enumerate(free_prefixes, 1):
+            response += f"{prefix}"
+            if i % 5 == 0:  # New line every 5 prefixes
+                response += "\n"
+            elif i < len(free_prefixes):  # Add space if not the last item
+                response += " "
+        
+        # Add newline if the last line wasn't complete
+        if len(free_prefixes) % 5 != 0:
+            response += "\n"
+        
+        response += f"\n💡 Use 'prefix <XX>' to check if a prefix is available"
+        
+        return response
     
     def format_prefix_response(self, prefix: str, data: Dict[str, Any]) -> str:
         """Format the prefix response"""
