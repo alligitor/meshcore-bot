@@ -21,6 +21,7 @@ A Python bot that connects to MeshCore mesh networks via serial port or BLE. The
 
 ## Installation
 
+### Quick Start (Development)
 1. Clone the repository:
 ```bash
 git clone <repository-url>
@@ -37,6 +38,36 @@ pip install -r requirements.txt
 cp config.ini.example config.ini
 # Edit config.ini with your settings
 ```
+
+4. Run the bot:
+```bash
+python3 meshcore_bot.py
+```
+
+### Production Installation (Systemd Service)
+For production deployment as a system service:
+
+1. Install as systemd service:
+```bash
+sudo ./install-service.sh
+```
+
+2. Configure the bot:
+```bash
+sudo nano /opt/meshcore-bot/config.ini
+```
+
+3. Start the service:
+```bash
+sudo systemctl start meshcore-bot
+```
+
+4. Check status:
+```bash
+sudo systemctl status meshcore-bot
+```
+
+See [SERVICE-INSTALLATION.md](SERVICE-INSTALLATION.md) for detailed service installation instructions.
 
 ## Configuration
 

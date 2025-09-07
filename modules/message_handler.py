@@ -28,6 +28,30 @@ class MessageHandler:
         
         # Time-based cache for recent RF log data
         self.recent_rf_data = []
+    
+    def get_sender_name_from_pubkey(self, pubkey_prefix: str) -> str:
+        """
+        Look up sender name from pubkey_prefix using contacts.
+        
+        Args:
+            pubkey_prefix: The public key prefix to look up
+            
+        Returns:
+            str: Sender name if found, empty string if not found
+        """
+        if not pubkey_prefix or not hasattr(self.bot.meshcore, 'contacts') or not self.bot.meshcore.contacts:
+            return ""
+        
+        try:
+            # Look for contact by pubkey prefix
+            for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                if contact_data.get('public_key', '').startswith(pubkey_prefix):
+                    # Return the advertisement name if available, otherwise the contact key
+                    return contact_data.get('adv_name', contact_key)
+        except Exception as e:
+            self.logger.debug(f"Error looking up sender name for pubkey_prefix {pubkey_prefix}: {e}")
+        
+        return ""
         
         # Message correlation system to prevent race conditions
         self.pending_messages = {}  # Store messages waiting for RF data
@@ -395,9 +419,18 @@ class MessageHandler:
                                 # Format path with comma separation (every 2 characters)
                                 path_hex = routing_info['path_hex']
                                 formatted_path = ','.join([path_hex[i:i+2] for i in range(0, len(path_hex), 2)])
-                                self.logger.info(f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {formatted_path} ({routing_info['path_length']} bytes) | Type: {routing_info['payload_type']}")
+                                
+                                # Try to get sender name from pubkey_prefix
+                                sender_name = self.get_sender_name_from_pubkey(pubkey_prefix)
+                                sender_info = f" | From: {sender_name}" if sender_name else ""
+                                
+                                self.logger.info(f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {formatted_path} ({routing_info['path_length']} bytes) | Type: {routing_info['payload_type']}{sender_info}")
                             else:
-                                self.logger.info(f"📡 DIRECT MESSAGE: {routing_info['route_type']} | Type: {routing_info['payload_type']}")
+                                # Try to get sender name from pubkey_prefix
+                                sender_name = self.get_sender_name_from_pubkey(pubkey_prefix)
+                                sender_info = f" | From: {sender_name}" if sender_name else ""
+                                
+                                self.logger.info(f"📡 DIRECT MESSAGE: {routing_info['route_type']} | Type: {routing_info['payload_type']}{sender_info}")
                     
                     rf_data = {
                         'timestamp': current_time,
