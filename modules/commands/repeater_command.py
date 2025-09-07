@@ -15,14 +15,28 @@ class RepeaterCommand(BaseCommand):
     # Plugin metadata
     name = "repeater"
     keywords = ["repeater", "repeaters", "rp"]
-    description = "Manage repeater contacts and purging operations"
-    requires_dm = False
+    description = "Manage repeater contacts and purging operations (DM only)"
+    requires_dm = True
     cooldown_seconds = 0
     category = "management"
     
     def __init__(self, bot):
         super().__init__(bot)
     
+    def matches_keyword(self, message: MeshMessage) -> bool:
+        """Check if message starts with 'repeater' keyword"""
+        content = message.content.strip()
+        
+        # Handle exclamation prefix
+        if content.startswith('!'):
+            content = content[1:].strip()
+        
+        # Check if message starts with any of our keywords
+        content_lower = content.lower()
+        for keyword in self.keywords:
+            if content_lower.startswith(keyword + ' '):
+                return True
+        return False
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute repeater management command"""
