@@ -9,7 +9,7 @@ import aiohttp
 import time
 import json
 import random
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from .base_command import BaseCommand
 from ..models import MeshMessage
 
@@ -74,9 +74,9 @@ class PrefixCommand(BaseCommand):
         
         # Handle free command
         if command == "FREE":
-            free_prefixes = await self.get_free_prefixes()
+            free_prefixes, total_free = await self.get_free_prefixes()
             if free_prefixes:
-                response = self.format_free_prefixes_response(free_prefixes)
+                response = self.format_free_prefixes_response(free_prefixes, total_free)
             else:
                 response = "❌ Unable to determine free prefixes. Try 'prefix refresh' first."
             return await self.send_response(message, response)
@@ -200,8 +200,8 @@ class PrefixCommand(BaseCommand):
             self.logger.error(f"Error querying database for prefix '{prefix}': {e}")
             return None
     
-    async def get_free_prefixes(self) -> List[str]:
-        """Get list of available (unused) prefixes"""
+    async def get_free_prefixes(self) -> Tuple[List[str], int]:
+        """Get list of available (unused) prefixes and total count"""
         try:
             # Get all used prefixes from both API cache and database
             used_prefixes = set()
@@ -249,21 +249,24 @@ class PrefixCommand(BaseCommand):
             self.logger.info(f"Found {len(free_prefixes)} free prefixes out of {len(all_prefixes)} total valid prefixes")
             
             # Randomly select up to 10 free prefixes
+            total_free = len(free_prefixes)
             if len(free_prefixes) <= 10:
-                return free_prefixes
+                selected_prefixes = free_prefixes
             else:
-                return random.sample(free_prefixes, 10)
+                selected_prefixes = random.sample(free_prefixes, 10)
+            
+            return selected_prefixes, total_free
             
         except Exception as e:
             self.logger.error(f"Error getting free prefixes: {e}")
-            return []
+            return [], 0
     
-    def format_free_prefixes_response(self, free_prefixes: List[str]) -> str:
+    def format_free_prefixes_response(self, free_prefixes: List[str], total_free: int) -> str:
         """Format the free prefixes response"""
         if not free_prefixes:
             return "❌ No free prefixes found (all 254 valid prefixes are in use)"
         
-        response = f"🆓 Available Prefixes ({len(free_prefixes)} shown):\n"
+        response = f"🆓 Available Prefixes ({len(free_prefixes)} of {total_free} free shown):\n"
         
         # Format as a grid for better readability
         for i, prefix in enumerate(free_prefixes, 1):
