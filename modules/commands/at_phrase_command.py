@@ -13,7 +13,7 @@ class AtPhraseCommand(BaseCommand):
     
     # Plugin metadata
     name = "at_phrase"
-    keywords = ['@', '@string', 'string']
+    keywords = []  # No keywords - only use custom syntax matching
     description = "Responds to '@{string}' with ack + connection info (DM and non-Public channels)"
     category = "custom_syntax"
     requires_dm = False  # Allow in channels, but restrict to non-Public channels in matches_custom_syntax
