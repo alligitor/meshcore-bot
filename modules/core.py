@@ -154,6 +154,16 @@ bot_tx_rate_limit_seconds = 1.0
 # Recommended: 100-500ms for busy networks, 0 for quiet networks
 tx_delay_ms = 250
 
+# DM retry settings for improved reliability (meshcore-2.1.6+)
+# Maximum number of retry attempts for failed DM sends
+dm_max_retries = 3
+
+# Maximum flood attempts (when path reset is needed)
+dm_max_flood_attempts = 2
+
+# Number of attempts before switching to flood mode
+dm_flood_after = 2
+
 # Timezone for bot operations
 # Use standard timezone names (e.g., "America/New_York", "Europe/London", "UTC")
 # Leave empty to use system timezone

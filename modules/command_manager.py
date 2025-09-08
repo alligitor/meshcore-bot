@@ -197,30 +197,65 @@ class CommandManager:
             contact_name = contact.get('name', contact.get('adv_name', recipient_id))
             self.logger.info(f"Sending DM to {contact_name}: {content}")
             
-            # Import send_msg from meshcore-cli
-            from meshcore_cli.meshcore_cli import send_msg
-            
-            # Use send_msg to send the actual message (not a command)
-            result = await send_msg(self.bot.meshcore, contact, content)
+            # Try to use send_msg_with_retry if available (meshcore-2.1.6+)
+            try:
+                # Use the meshcore commands interface for send_msg_with_retry
+                if hasattr(self.bot.meshcore, 'commands') and hasattr(self.bot.meshcore.commands, 'send_msg_with_retry'):
+                    self.logger.debug("Using send_msg_with_retry for improved reliability")
+                    
+                    # Use send_msg_with_retry with configurable retry parameters
+                    max_attempts = self.bot.config.getint('Bot', 'dm_max_retries', fallback=3)
+                    max_flood_attempts = self.bot.config.getint('Bot', 'dm_max_flood_attempts', fallback=2)
+                    flood_after = self.bot.config.getint('Bot', 'dm_flood_after', fallback=2)
+                    timeout = 0  # Use suggested timeout from meshcore
+                    
+                    self.logger.debug(f"Attempting DM send with {max_attempts} max attempts")
+                    result = await self.bot.meshcore.commands.send_msg_with_retry(
+                        contact, 
+                        content,
+                        max_attempts=max_attempts,
+                        max_flood_attempts=max_flood_attempts,
+                        flood_after=flood_after,
+                        timeout=timeout
+                    )
+                else:
+                    # Fallback to regular send_msg for older meshcore versions
+                    self.logger.debug("send_msg_with_retry not available, using send_msg")
+                    result = await self.bot.meshcore.commands.send_msg(contact, content)
+                    
+            except AttributeError:
+                # Fallback to regular send_msg for older meshcore versions
+                self.logger.debug("send_msg_with_retry not available, using send_msg")
+                result = await self.bot.meshcore.commands.send_msg(contact, content)
             
             # Check if the result indicates success
             if result:
                 if hasattr(result, 'type') and result.type == EventType.ERROR:
-                    self.logger.error(f"Failed to send DM: {result.payload}")
+                    self.logger.error(f"❌ DM failed to {contact_name}: {result.payload}")
                     return False
                 elif hasattr(result, 'type') and result.type == EventType.MSG_SENT:
-                    self.logger.info(f"Successfully sent DM to {contact_name}")
+                    # For send_msg_with_retry, check if we got an ACK (result is not None means ACK received)
+                    if hasattr(self.bot.meshcore, 'commands') and hasattr(self.bot.meshcore.commands, 'send_msg_with_retry'):
+                        # We used send_msg_with_retry, so result being returned means ACK was received
+                        self.logger.info(f"✅ DM sent and ACK received from {contact_name}")
+                    else:
+                        # We used regular send_msg, so just log the send
+                        self.logger.info(f"✅ DM sent to {contact_name}")
                     self.bot.rate_limiter.record_send()
                     self.bot.bot_tx_rate_limiter.record_tx()
                     return True
                 else:
                     # If result is not None but doesn't have expected attributes, assume success
-                    self.logger.info(f"DM sent to {contact_name} (result: {result})")
+                    self.logger.info(f"✅ DM sent to {contact_name} (result: {result})")
                     self.bot.rate_limiter.record_send()
                     self.bot.bot_tx_rate_limiter.record_tx()
                     return True
             else:
-                self.logger.error(f"Failed to send DM: No result returned")
+                # This means send_msg_with_retry failed to get an ACK after all retries
+                if hasattr(self.bot.meshcore, 'commands') and hasattr(self.bot.meshcore.commands, 'send_msg_with_retry'):
+                    self.logger.error(f"❌ DM to {contact_name} failed - no ACK received after retries")
+                else:
+                    self.logger.error(f"❌ DM to {contact_name} failed - no result returned")
                 return False
                 
         except Exception as e:
