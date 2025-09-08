@@ -145,6 +145,7 @@ class ChannelManager:
                     return num
         
         self.logger.warning(f"Channel name '{channel_name}' not found in fetched channels")
+        self.logger.warning(f"Available channels: {list(self.bot.meshcore.channels.keys()) if hasattr(self.bot.meshcore, 'channels') else 'No channels available'}")
         # Return 0 as fallback, but log a warning
         return 0
     
