@@ -53,6 +53,17 @@ class WxCommand(BaseCommand):
     def get_help_text(self) -> str:
         return f"Usage: wx <zipcode|city> - Get weather for US zipcode or city in {self.default_state}"
     
+    def matches_keyword(self, message: MeshMessage) -> bool:
+        """Check if message starts with a weather keyword"""
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
+        content_lower = content.lower()
+        for keyword in self.keywords:
+            if content_lower.startswith(keyword + ' '):
+                return True
+        return False
+    
     def can_execute(self, message: MeshMessage) -> bool:
         """Override cooldown check to be per-user instead of per-command-instance"""
         # Check if command requires DM and message is not DM
