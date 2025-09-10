@@ -27,7 +27,7 @@ class HelpCommand(BaseCommand):
         self.logger.debug("Help command executed (handled by keyword matching)")
         return True
     
-    def get_specific_help(self, command_name: str) -> str:
+    def get_specific_help(self, command_name: str, message: MeshMessage = None) -> str:
         """Get help text for a specific command"""
         # Map command aliases to their actual command names
         command_aliases = {
@@ -46,7 +46,16 @@ class HelpCommand(BaseCommand):
         command = self.bot.command_manager.commands.get(normalized_name)
         
         if command:
-            return f"**Help for '{command_name}':**\n{command.get_help_text()}"
+            # Pass message context to get_help_text if the method supports it
+            if hasattr(command, 'get_help_text') and callable(getattr(command, 'get_help_text')):
+                try:
+                    help_text = command.get_help_text(message)
+                except TypeError:
+                    # Fallback for commands that don't accept message parameter
+                    help_text = command.get_help_text()
+            else:
+                help_text = "No help available"
+            return f"**Help for '{command_name}':**\n{help_text}"
         else:
             return f"**Unknown command: '{command_name}'**\n\nAvailable commands:\n" + self.get_available_commands_list()
     

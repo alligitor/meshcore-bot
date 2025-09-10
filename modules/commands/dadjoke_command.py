@@ -34,7 +34,8 @@ class DadJokeCommand(BaseCommand):
         self.user_cooldowns = {}  # user_id -> last_execution_time
         
         # Load configuration
-        self.dadjoke_enabled = bot.config.getboolean('Bot', 'dadjoke_enabled', fallback=True)
+        self.dadjoke_enabled = bot.config.getboolean('Jokes', 'dadjoke_enabled', fallback=True)
+        self.long_jokes = bot.config.getboolean('Jokes', 'long_jokes', fallback=False)
     
     def get_help_text(self) -> str:
         return "Usage: dadjoke - Get a random dad joke"
@@ -101,16 +102,15 @@ class DadJokeCommand(BaseCommand):
             # Record execution for this user
             self._record_execution(message.sender_id)
             
-            # Get dad joke from API
-            joke_data = await self.get_dad_joke_from_api()
+            # Get dad joke from API with length handling
+            joke_data = await self.get_dad_joke_with_length_handling()
             
             if joke_data is None:
                 await self.send_response(message, "Sorry, couldn't fetch a dad joke right now. Try again later!")
                 return True
             
-            # Format and send the joke
-            joke_text = self.format_dad_joke(joke_data)
-            await self.send_response(message, joke_text)
+            # Format and send the joke(s)
+            await self.send_dad_joke_with_length_handling(message, joke_data)
             
             return True
             
@@ -160,6 +160,88 @@ class DadJokeCommand(BaseCommand):
         except Exception as e:
             self.logger.error(f"Error fetching dad joke from API: {e}")
             return None
+    
+    async def get_dad_joke_with_length_handling(self) -> Optional[Dict[str, Any]]:
+        """Get a dad joke from API with length handling based on configuration"""
+        max_attempts = 5  # Prevent infinite loops
+        
+        for attempt in range(max_attempts):
+            joke_data = await self.get_dad_joke_from_api()
+            
+            if joke_data is None:
+                return None
+            
+            # Check joke length
+            joke_text = self.format_dad_joke(joke_data)
+            
+            if len(joke_text) <= 130:
+                # Joke is short enough, return it
+                return joke_data
+            elif self.long_jokes:
+                # Long jokes are enabled, return it for splitting
+                return joke_data
+            else:
+                # Long jokes are disabled, try again
+                self.logger.debug(f"Dad joke too long ({len(joke_text)} chars), fetching another...")
+                continue
+        
+        # If we've tried max_attempts times and still getting long jokes, return the last one
+        self.logger.warning(f"Could not get short dad joke after {max_attempts} attempts")
+        return joke_data
+    
+    async def send_dad_joke_with_length_handling(self, message: MeshMessage, joke_data: Dict[str, Any]):
+        """Send dad joke with length handling - split if necessary"""
+        joke_text = self.format_dad_joke(joke_data)
+        
+        if len(joke_text) <= 130:
+            # Joke is short enough, send as single message
+            await self.send_response(message, joke_text)
+        else:
+            # Joke is too long, split it
+            parts = self.split_dad_joke(joke_text)
+            
+            if len(parts) == 2 and len(parts[0]) <= 130 and len(parts[1]) <= 130:
+                # Can be split into two messages
+                await self.send_response(message, parts[0])
+                # Use conservative delay to avoid rate limiting (same as weather command)
+                await asyncio.sleep(2.0)
+                await self.send_response(message, parts[1])
+            else:
+                # Cannot be split properly, send as single message (user will see truncation)
+                await self.send_response(message, joke_text)
+    
+    def split_dad_joke(self, joke_text: str) -> list:
+        """Split a long dad joke at a logical point"""
+        # Remove emoji for splitting
+        clean_joke = joke_text[2:] if joke_text.startswith('🥸 ') else joke_text
+        
+        # Try to split at common logical points
+        split_points = [
+            '. ',     # Period followed by space
+            '? ',     # Question mark followed by space
+            '! ',     # Exclamation mark followed by space
+            ', ',     # Comma followed by space
+        ]
+        
+        for split_point in split_points:
+            if split_point in clean_joke:
+                parts = clean_joke.split(split_point, 1)
+                if len(parts) == 2:
+                    # Add emoji back to both parts
+                    return [f"🥸 {parts[0]}{split_point}", f"🥸 {parts[1]}"]
+        
+        # If no good split point found, split at middle
+        mid_point = len(clean_joke) // 2
+        # Find nearest space to avoid splitting words
+        for i in range(mid_point, len(clean_joke)):
+            if clean_joke[i] == ' ':
+                mid_point = i
+                break
+        
+        part1 = clean_joke[:mid_point]
+        part2 = clean_joke[mid_point + 1:]
+        
+        return [f"🥸 {part1}", f"🥸 {part2}"]
     
     def format_dad_joke(self, joke_data: Dict[str, Any]) -> str:
         """Format the dad joke data into a readable string"""

@@ -169,7 +169,7 @@ dm_flood_after = 2
 # Leave empty to use system timezone
 timezone = 
 
-# Joke command settings
+[Jokes]
 # Enable or disable the joke command
 # true: Joke command is available
 # false: Joke command is disabled
@@ -185,6 +185,11 @@ seasonal_jokes = true
 # true: Dad joke command is available
 # false: Dad joke command is disabled
 dadjoke_enabled = true
+
+# Handle long jokes (over 130 characters)
+# false: Fetch new jokes until we get a short one
+# true: Split long jokes into multiple messages
+long_jokes = false
 
 # Send startup advert when bot finishes initializing
 # false: No startup advert (default)

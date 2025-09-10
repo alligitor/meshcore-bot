@@ -105,7 +105,7 @@ class CommandManager:
         # Check for help requests first (special handling)
         if content_lower.startswith('help '):
             command_name = content_lower[5:].strip()  # Remove "help " prefix
-            help_text = self.get_help_for_command(command_name)
+            help_text = self.get_help_for_command(command_name, message)
             matches.append(('help', help_text))
             return matches
         elif content_lower == 'help':
@@ -302,18 +302,30 @@ class CommandManager:
             self.logger.error(f"Failed to send channel message: {e}")
             return False
     
-    def get_help_for_command(self, command_name: str) -> str:
+    def get_help_for_command(self, command_name: str, message: MeshMessage = None) -> str:
         """Get help text for a specific command (LoRa-friendly compact format)"""
         # First, try to find a command by exact name
         command = self.commands.get(command_name)
         if command:
-            return f"Help {command_name}: {command.get_help_text()}"
+            # Try to pass message context to get_help_text if supported
+            try:
+                help_text = command.get_help_text(message)
+            except TypeError:
+                # Fallback for commands that don't accept message parameter
+                help_text = command.get_help_text()
+            return f"Help {command_name}: {help_text}"
         
         # If not found, search through all commands and their keywords
         for cmd_name, cmd_instance in self.commands.items():
             # Check if the requested command name matches any of this command's keywords
             if hasattr(cmd_instance, 'keywords') and command_name in cmd_instance.keywords:
-                return f"Help {command_name}: {cmd_instance.get_help_text()}"
+                # Try to pass message context to get_help_text if supported
+                try:
+                    help_text = cmd_instance.get_help_text(message)
+                except TypeError:
+                    # Fallback for commands that don't accept message parameter
+                    help_text = cmd_instance.get_help_text()
+                return f"Help {command_name}: {help_text}"
         
         # If still not found, return unknown command message
         available_commands = []
