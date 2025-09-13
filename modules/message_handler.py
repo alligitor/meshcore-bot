@@ -595,7 +595,7 @@ class MessageHandler:
             
             # Check if transport codes are present based on route type
             route_type = header & 0x03
-            has_transport = route_type in [0, 1, 2, 3]  # All route types have transport codes
+            has_transport = route_type in [0, 3]  # Only TRANSPORT_FLOOD (0) and TRANSPORT_DIRECT (3) have transport codes
             
             # Transport codes size: appears to be 2 bytes for most types, 4 bytes only for specific cases
             # Based on packet analysis, even route type 3 seems to use 2 bytes
@@ -677,8 +677,11 @@ class MessageHandler:
             0x08: "PATH",
             0x09: "TRACE",
             0x0A: "MULTIPART",
-            # Note: Payload types 0x0B, 0x0C, 0x0D, 0x0E are not defined in MeshCore headers
-            # They will show as UNKNOWN_0b, UNKNOWN_0c, UNKNOWN_0d, UNKNOWN_0e
+            # Additional payload types found in meshcore library (may not be in official spec)
+            0x0B: "UNKNOWN_0b",  # Not defined in official spec
+            0x0C: "UNKNOWN_0c",  # Not defined in official spec  
+            0x0D: "UNKNOWN_0d",  # Not defined in official spec
+            0x0E: "UNKNOWN_0e",  # Not defined in official spec
             0x0F: "RAW_CUSTOM"
         }
         return payload_types.get(payload_type, f"UNKNOWN_{payload_type:02x}")
@@ -1192,17 +1195,22 @@ class MessageHandler:
         keyword_matches = self.bot.command_manager.check_keywords(message)
         
         help_response_sent = False
+        plugin_command_with_response_matched = False
         if keyword_matches:
             for keyword, response in keyword_matches:
                 self.logger.info(f"Keyword '{keyword}' matched, responding")
                 
-                # Skip commands that handle their own responses (response is None)
-                if response is None:
-                    continue
-                
                 # Track if this is a help response
                 if keyword == 'help':
                     help_response_sent = True
+                
+                # Track if this is a plugin command that has a response format
+                if keyword in self.bot.command_manager.commands and response is not None:
+                    plugin_command_with_response_matched = True
+                
+                # Skip commands that handle their own responses (response is None)
+                if response is None:
+                    continue
                 
                 # Send response
                 if message.is_dm:
@@ -1210,9 +1218,10 @@ class MessageHandler:
                 else:
                     await self.bot.command_manager.send_channel_message(message.channel, response)
         
-        # Only execute commands if no help response was sent
-        # Help responses should be the final response for that message
-        if not help_response_sent:
+        # Only execute commands if no help response was sent and no plugin command with response was matched
+        # Help responses and plugin commands with responses should be the final response for that message
+        # Plugin commands without responses (response is None) should still be executed
+        if not help_response_sent and not plugin_command_with_response_matched:
             await self.bot.command_manager.execute_commands(message)
     
     def should_process_message(self, message: MeshMessage) -> bool:

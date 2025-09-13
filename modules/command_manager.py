@@ -351,6 +351,7 @@ class CommandManager:
         special_commands = ['advert']
         weather_commands = ['wx', 'aqi']
         solar_commands = ['sun', 'moon', 'solar', 'hfcond', 'satpass']
+        sports_commands = ['sports']
         
         commands_list += "**Basic Commands:**\n"
         for cmd in basic_commands:
@@ -384,6 +385,12 @@ class CommandManager:
         
         commands_list += "\n**Solar Commands:**\n"
         for cmd in solar_commands:
+            if cmd in self.commands:
+                help_text = self.commands[cmd].get_help_text()
+                commands_list += f"• `{cmd}` - {help_text}\n"
+        
+        commands_list += "\n**Sports Commands:**\n"
+        for cmd in sports_commands:
             if cmd in self.commands:
                 help_text = self.commands[cmd].get_help_text()
                 commands_list += f"• `{cmd}` - {help_text}\n"
