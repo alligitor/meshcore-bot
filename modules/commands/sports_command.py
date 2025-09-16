@@ -2,6 +2,7 @@
 """
 Sports command for the MeshCore Bot
 Provides sports scores and schedules using ESPN API
+API description via https://github.com/zuplo/espn-openapi/
 """
 
 import re
@@ -615,6 +616,10 @@ class SportsCommand(BaseCommand):
                     formatted = f"{team1_name} vs {team2_name} (TBD)"
                     timestamp = 9999999999  # Put TBD games last
                     
+            elif status_name == 'STATUS_HALFTIME':
+                # Game is at halftime
+                formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} (HT)"
+                timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
                 formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} (FT)"
@@ -788,6 +793,10 @@ class SportsCommand(BaseCommand):
                     formatted = f"{our_team_name} vs {other_team_name} (TBD)"
                     timestamp = 9999999999  # Put TBD games last
                     
+            elif status_name == 'STATUS_HALFTIME':
+                # Game is at halftime
+                formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} (HT)"
+                timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
                 formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} (FT)"
@@ -885,6 +894,9 @@ class SportsCommand(BaseCommand):
                 else:
                     return f"{our_team_name} vs {other_team_name} (TBD)"
             
+            elif status_name == 'STATUS_HALFTIME':
+                # Game is at halftime
+                return f"{our_team_name} {our_score}-{other_score} {other_team_name} (HT)"
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished
                 return f"{our_team_name} {our_score}-{other_score} {other_team_name} (FT)"

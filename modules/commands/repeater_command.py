@@ -4,6 +4,7 @@ Repeater Management Command
 Provides commands to manage repeater contacts and purging operations
 """
 
+import asyncio
 from .base_command import BaseCommand
 from ..models import MeshMessage
 from typing import List, Optional
@@ -162,28 +163,110 @@ class RepeaterCommand(BaseCommand):
             return "Repeater manager not initialized. Please check bot configuration."
         
         if not args:
-            return "Usage: !repeater purge [all|days|name] [reason]\nExamples:\n  !repeater purge all 'Clear all repeaters'\n  !repeater purge 30 'Auto-cleanup old repeaters'\n  !repeater purge 'Hillcrest' 'Remove specific repeater'"
+            return "Usage: !repeater purge [all|days|name] [reason]\nExamples:\n  !repeater purge all 'Clear all repeaters'\n  !repeater purge all force 'Force clear all repeaters'\n  !repeater purge 30 'Auto-cleanup old repeaters'\n  !repeater purge 'Hillcrest' 'Remove specific repeater'"
         
         try:
             if args[0].lower() == 'all':
-                # Purge all repeaters
-                reason = " ".join(args[1:]) if len(args) > 1 else "Manual purge - all repeaters"
+                # Check for force flag
+                force_purge = len(args) > 1 and args[1].lower() == 'force'
+                if force_purge:
+                    reason = " ".join(args[2:]) if len(args) > 2 else "Force purge - all repeaters"
+                else:
+                    reason = " ".join(args[1:]) if len(args) > 1 else "Manual purge - all repeaters"
                 
-                # Get all active repeaters
-                repeaters = await self.bot.repeater_manager.get_repeater_contacts(active_only=True)
+                # Always get repeaters directly from device contacts for purging
+                # This ensures we have the correct contact_key for removal
+                self.logger.info("Scanning device contacts for repeaters to purge...")
+                device_repeaters = []
+                if hasattr(self.bot.meshcore, 'contacts'):
+                    for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                        if self.bot.repeater_manager._is_repeater_device(contact_data):
+                            public_key = contact_data.get('public_key', contact_key)
+                            name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
+                            device_repeaters.append({
+                                'public_key': public_key,
+                                'contact_key': contact_key,  # Include the contact key for removal
+                                'name': name,
+                                'contact_data': contact_data
+                            })
                 
-                if not repeaters:
-                    return "❌ No active repeaters found to purge"
+                if not device_repeaters:
+                    return "❌ No repeaters found on device to purge"
+                
+                repeaters = device_repeaters
+                self.logger.info(f"Found {len(repeaters)} repeaters directly from device contacts")
+                
+                # Also catalog them in the database for future reference
+                cataloged = await self.bot.repeater_manager.scan_and_catalog_repeaters()
+                if cataloged > 0:
+                    self.logger.info(f"Cataloged {cataloged} new repeaters in database")
+                
+                # Force a complete refresh of contacts from device after purging
+                self.logger.info("Forcing contact list refresh from device to ensure persistence...")
+                try:
+                    from meshcore_cli.meshcore_cli import next_cmd
+                    await asyncio.wait_for(
+                        next_cmd(self.bot.meshcore, ["contacts"]),
+                        timeout=30.0
+                    )
+                    self.logger.info("Contact list refreshed from device")
+                except Exception as e:
+                    self.logger.warning(f"Failed to refresh contact list: {e}")
                 
                 purged_count = 0
-                for repeater in repeaters:
-                    success = await self.bot.repeater_manager.purge_repeater_from_contacts(
-                        repeater['public_key'], reason
+                failed_count = 0
+                failed_repeaters = []
+                
+                for i, repeater in enumerate(repeaters):
+                    self.logger.info(f"Purging repeater {i+1}/{len(repeaters)}: {repeater['name']} (force={force_purge})")
+                    
+                    # Always use the new method that works with contact keys
+                    success = await self.bot.repeater_manager.purge_repeater_by_contact_key(
+                        repeater['contact_key'], reason
                     )
+                    
                     if success:
                         purged_count += 1
+                    else:
+                        failed_count += 1
+                        failed_repeaters.append(repeater['name'])
+                    
+                    # Add a small delay between purges to avoid overwhelming the device
+                    if i < len(repeaters) - 1:
+                        await asyncio.sleep(1)
                 
-                return f"✅ Purged {purged_count}/{len(repeaters)} repeaters"
+                # Final verification: Check if contacts were actually removed from device
+                self.logger.info("Performing final verification of contact removal...")
+                try:
+                    from meshcore_cli.meshcore_cli import next_cmd
+                    await asyncio.wait_for(
+                        next_cmd(self.bot.meshcore, ["contacts"]),
+                        timeout=30.0
+                    )
+                    
+                    # Count remaining repeaters on device
+                    remaining_repeaters = 0
+                    if hasattr(self.bot.meshcore, 'contacts'):
+                        for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                            if self.bot.repeater_manager._is_repeater_device(contact_data):
+                                remaining_repeaters += 1
+                    
+                    self.logger.info(f"Final verification: {remaining_repeaters} repeaters still on device")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Final verification failed: {e}")
+                
+                # Build response message
+                purge_type = "Force purged" if force_purge else "Purged"
+                response = f"✅ {purge_type} {purged_count}/{len(repeaters)} repeaters"
+                if failed_count > 0:
+                    response += f"\n❌ Failed to purge {failed_count} repeaters: {', '.join(failed_repeaters[:5])}"
+                    if len(failed_repeaters) > 5:
+                        response += f" (and {len(failed_repeaters) - 5} more)"
+                    if not force_purge:
+                        response += f"\n💡 Try '!repeater purge all force' to force remove stubborn repeaters"
+                
+                return response
                 
             elif args[0].isdigit():
                 # Purge old repeaters
@@ -510,6 +593,7 @@ class RepeaterCommand(BaseCommand):
 • `scan` - Scan current contacts and catalog new repeaters
 • `list` - List repeater contacts (use `--all` to show purged ones)
         • `purge all` - Purge all repeaters
+        • `purge all force` - Force purge all repeaters (uses multiple removal methods)
         • `purge <days>` - Purge repeaters older than specified days
         • `purge <name>` - Purge specific repeater by name
 • `restore <name>` - Restore a previously purged repeater
@@ -534,6 +618,7 @@ class RepeaterCommand(BaseCommand):
         • `!repeater auto off` - Disable manual contact addition
         • `!repeater test` - Test meshcore-cli commands
         • `!repeater purge all` - Purge all repeaters
+        • `!repeater purge all force` - Force purge all repeaters
         • `!repeater purge 30` - Purge repeaters older than 30 days
 • `!repeater stats` - Show management statistics
 

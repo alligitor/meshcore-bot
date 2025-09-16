@@ -298,6 +298,37 @@ class RepeaterManager:
                 self.logger.warning(f"Repeater with public key {public_key} not found in current contacts")
                 return False
             
+            # Check if repeater exists in database, if not add it first
+            existing_repeater = self.db_manager.execute_query(
+                'SELECT id FROM repeater_contacts WHERE public_key = ?',
+                (public_key,)
+            )
+            
+            if not existing_repeater:
+                # Add repeater to database first
+                contact_name = contact_to_remove.get('adv_name', contact_to_remove.get('name', 'Unknown'))
+                device_type = 'Repeater'
+                if contact_to_remove.get('type') == 3:
+                    device_type = 'RoomServer'
+                elif 'room' in contact_name.lower() or 'server' in contact_name.lower():
+                    device_type = 'RoomServer'
+                
+                self.db_manager.execute_update('''
+                    INSERT INTO repeater_contacts 
+                    (public_key, name, device_type, contact_data)
+                    VALUES (?, ?, ?, ?)
+                ''', (
+                    public_key,
+                    contact_name,
+                    device_type,
+                    json.dumps(contact_to_remove)
+                ))
+                
+                self.logger.info(f"Added repeater {contact_name} to database before purging")
+            
+            # Track whether device removal was successful
+            device_removal_successful = False
+            
             # Actually remove the contact from the device using meshcore-cli API
             # Add timeout and error handling for LoRa communication
             try:
@@ -318,19 +349,50 @@ class RepeaterManager:
                     
                     # Use the meshcore-cli API for device commands
                     from meshcore_cli.meshcore_cli import next_cmd
-                    result = await asyncio.wait_for(
-                        next_cmd(self.bot.meshcore, ["remove_contact", public_key]),
-                        timeout=30.0  # 30 second timeout for LoRa communication
-                    )
+                    import sys
+                    import io
+                    
+                    # Capture stdout/stderr to catch "Unknown contact" messages
+                    old_stdout = sys.stdout
+                    old_stderr = sys.stderr
+                    captured_output = io.StringIO()
+                    captured_errors = io.StringIO()
+                    
+                    try:
+                        sys.stdout = captured_output
+                        sys.stderr = captured_errors
+                        
+                        # Use contact name instead of public key for removal
+                        contact_name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
+                        result = await asyncio.wait_for(
+                            next_cmd(self.bot.meshcore, ["remove_contact", contact_name]),
+                            timeout=30.0  # 30 second timeout for LoRa communication
+                        )
+                    finally:
+                        sys.stdout = old_stdout
+                        sys.stderr = old_stderr
+                    
+                    # Get captured output
+                    stdout_content = captured_output.getvalue()
+                    stderr_content = captured_errors.getvalue()
+                    all_output = stdout_content + stderr_content
                     
                     end_time = asyncio.get_event_loop().time()
                     duration = end_time - start_time
                     self.logger.info(f"Remove command completed in {duration:.2f} seconds")
                     
                     # Check if removal was successful
-                    if result is not None:
+                    # Note: meshcore-cli prints "Unknown contact" to stdout/stderr if contact doesn't exist
+                    self.logger.debug(f"Command result: {result}")
+                    self.logger.debug(f"Captured output: {all_output}")
+                    
+                    # Check if the captured output indicates the contact was unknown (doesn't exist)
+                    if "unknown contact" in all_output.lower():
+                        self.logger.warning(f"Contact '{contact_name}' was not found on device - this suggests the contact list is out of sync")
+                        # Don't mark as successful - we need to actually remove contacts that exist
+                        device_removal_successful = False
+                    elif result is not None:
                         self.logger.info(f"Successfully removed contact '{contact_name}' from device")
-                        self.logger.debug(f"Command result: {result}")
                         
                         # Verify the contact was actually removed by checking if it still exists
                         await asyncio.sleep(1)  # Give device time to process
@@ -342,47 +404,415 @@ class RepeaterManager:
                         
                         if contact_still_exists:
                             self.logger.warning(f"Contact '{contact_name}' still exists after removal command - removal may have failed")
+                            device_removal_successful = False
                         else:
                             self.logger.info(f"Verified: Contact '{contact_name}' successfully removed from device")
+                            device_removal_successful = True
                     else:
                         self.logger.warning(f"Contact removal command returned no result for '{contact_name}'")
+                        device_removal_successful = False
                         
                 except asyncio.TimeoutError:
                     end_time = asyncio.get_event_loop().time()
                     duration = end_time - start_time
                     self.logger.warning(f"Timeout removing contact '{contact_name}' after {duration:.2f} seconds (LoRa communication)")
-                    # Continue with database operations even if device removal timed out
+                    device_removal_successful = False
                 except Exception as cmd_error:
                     end_time = asyncio.get_event_loop().time()
                     duration = end_time - start_time
                     self.logger.error(f"Command error removing contact '{contact_name}' after {duration:.2f} seconds: {cmd_error}")
                     self.logger.debug(f"Error type: {type(cmd_error).__name__}")
-                    # Continue with database operations even if device removal failed
+                    device_removal_successful = False
                 
             except Exception as e:
                 self.logger.error(f"Failed to remove contact '{contact_name}' from device: {e}")
                 self.logger.debug(f"Error type: {type(e).__name__}")
-                # Continue with database operations even if device removal failed
+                device_removal_successful = False
             
-            # Mark as inactive in database
+            # Only mark as inactive in database if device removal was successful
+            if device_removal_successful:
+                self.db_manager.execute_update(
+                    'UPDATE repeater_contacts SET is_active = 0, purge_count = purge_count + 1 WHERE public_key = ?',
+                    (public_key,)
+                )
+                
+                # Log the purge action
+                self.db_manager.execute_update('''
+                    INSERT INTO purging_log (action, public_key, name, reason)
+                    VALUES ('purged', ?, ?, ?)
+                ''', (public_key, contact_name, reason))
+                
+                self.logger.info(f"Successfully purged repeater {contact_name}: {reason}")
+                self.logger.debug(f"Purge process completed successfully for {contact_name}")
+                return True
+            else:
+                self.logger.error(f"Failed to remove repeater {contact_name} from device - not marking as purged in database")
+                # Log the failed attempt
+                self.db_manager.execute_update('''
+                    INSERT INTO purging_log (action, public_key, name, reason)
+                    VALUES ('purge_failed', ?, ?, ?)
+                ''', (public_key, contact_name, f"{reason} - Device removal failed"))
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"Error purging repeater {public_key}: {e}")
+            self.logger.debug(f"Error type: {type(e).__name__}")
+            return False
+    
+    async def purge_repeater_by_contact_key(self, contact_key: str, reason: str = "Manual purge") -> bool:
+        """Remove a repeater using the contact key from the device's contact list"""
+        self.logger.info(f"Starting purge process for contact_key: {contact_key}")
+        self.logger.debug(f"Purge reason: {reason}")
+        
+        try:
+            # Find the contact in meshcore using the contact key
+            if contact_key not in self.bot.meshcore.contacts:
+                self.logger.warning(f"Contact with key {contact_key} not found in current contacts")
+                return False
+            
+            contact_data = self.bot.meshcore.contacts[contact_key]
+            contact_name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
+            public_key = contact_data.get('public_key', contact_key)
+            
+            self.logger.info(f"Found contact: {contact_name} (key: {contact_key}, public_key: {public_key[:16]}...)")
+            
+            # Check if repeater exists in database, if not add it first
+            existing_repeater = self.db_manager.execute_query(
+                'SELECT id FROM repeater_contacts WHERE public_key = ?',
+                (public_key,)
+            )
+            
+            if not existing_repeater:
+                # Add repeater to database first
+                device_type = 'Repeater'
+                if contact_data.get('type') == 3:
+                    device_type = 'RoomServer'
+                elif 'room' in contact_name.lower() or 'server' in contact_name.lower():
+                    device_type = 'RoomServer'
+                
+                self.db_manager.execute_update('''
+                    INSERT INTO repeater_contacts 
+                    (public_key, name, device_type, contact_data)
+                    VALUES (?, ?, ?, ?)
+                ''', (
+                    public_key,
+                    contact_name,
+                    device_type,
+                    json.dumps(contact_data)
+                ))
+                
+                self.logger.info(f"Added repeater {contact_name} to database before purging")
+            
+            # Track whether device removal was successful
+            device_removal_successful = False
+            
+            # Try multiple approaches to remove the contact
+            try:
+                self.logger.info(f"Starting removal of contact '{contact_name}' from device...")
+                
+                # Method 1: Try direct removal from contacts dictionary
+                try:
+                    self.logger.info(f"Method 1: Attempting direct removal from contacts dictionary...")
+                    if contact_key in self.bot.meshcore.contacts:
+                        del self.bot.meshcore.contacts[contact_key]
+                        self.logger.info(f"Successfully removed contact '{contact_name}' from contacts dictionary")
+                        device_removal_successful = True
+                    else:
+                        self.logger.warning(f"Contact '{contact_name}' not found in contacts dictionary")
+                except Exception as e:
+                    self.logger.warning(f"Direct removal failed: {e}")
+                
+                # Method 2: Try using meshcore commands if available
+                if not device_removal_successful and hasattr(self.bot.meshcore, 'commands'):
+                    try:
+                        self.logger.info(f"Method 2: Attempting removal via meshcore commands...")
+                        # Check if there's a remove_contact method
+                        if hasattr(self.bot.meshcore.commands, 'remove_contact'):
+                            # Try different parameter combinations
+                            try:
+                                # Try with contact_data
+                                result = await self.bot.meshcore.commands.remove_contact(contact_data)
+                                if result:
+                                    self.logger.info(f"Successfully removed contact '{contact_name}' via meshcore commands (contact_data)")
+                                    device_removal_successful = True
+                            except Exception as e1:
+                                self.logger.debug(f"remove_contact(contact_data) failed: {e1}")
+                                try:
+                                    # Try with public_key
+                                    result = await self.bot.meshcore.commands.remove_contact(public_key)
+                                    if result:
+                                        self.logger.info(f"Successfully removed contact '{contact_name}' via meshcore commands (public_key)")
+                                        device_removal_successful = True
+                                except Exception as e2:
+                                    self.logger.debug(f"remove_contact(public_key) failed: {e2}")
+                                    try:
+                                        # Try with contact_key
+                                        result = await self.bot.meshcore.commands.remove_contact(contact_key)
+                                        if result:
+                                            self.logger.info(f"Successfully removed contact '{contact_name}' via meshcore commands (contact_key)")
+                                            device_removal_successful = True
+                                    except Exception as e3:
+                                        self.logger.debug(f"remove_contact(contact_key) failed: {e3}")
+                                        self.logger.warning(f"All meshcore commands remove_contact attempts failed")
+                        else:
+                            self.logger.info("No remove_contact method found in meshcore commands")
+                    except Exception as e:
+                        self.logger.warning(f"Meshcore commands removal failed: {e}")
+                
+                # Method 3: Try CLI as fallback
+                if not device_removal_successful:
+                    try:
+                        self.logger.info(f"Method 3: Attempting removal via CLI...")
+                        import asyncio
+                        import sys
+                        import io
+                        
+                        # Use asyncio.wait_for to add timeout for LoRa communication
+                        start_time = asyncio.get_event_loop().time()
+                        
+                        # Use the meshcore-cli API for device commands
+                        from meshcore_cli.meshcore_cli import next_cmd
+                        
+                        # Capture stdout/stderr to catch "Unknown contact" messages
+                        old_stdout = sys.stdout
+                        old_stderr = sys.stderr
+                        captured_output = io.StringIO()
+                        captured_errors = io.StringIO()
+                        
+                        try:
+                            sys.stdout = captured_output
+                            sys.stderr = captured_errors
+                            
+                            # Try using the contact key instead of public key
+                            result = await asyncio.wait_for(
+                                next_cmd(self.bot.meshcore, ["remove_contact", contact_key]),
+                                timeout=30.0  # 30 second timeout for LoRa communication
+                            )
+                        finally:
+                            sys.stdout = old_stdout
+                            sys.stderr = old_stderr
+                        
+                        # Get captured output
+                        stdout_content = captured_output.getvalue()
+                        stderr_content = captured_errors.getvalue()
+                        all_output = stdout_content + stderr_content
+                        
+                        end_time = asyncio.get_event_loop().time()
+                        duration = end_time - start_time
+                        self.logger.info(f"CLI remove command completed in {duration:.2f} seconds")
+                        
+                        # Check if removal was successful
+                        self.logger.debug(f"CLI command result: {result}")
+                        self.logger.debug(f"CLI captured output: {all_output}")
+                        
+                        # Check if the captured output indicates the contact was unknown (doesn't exist)
+                        if "unknown contact" in all_output.lower():
+                            self.logger.warning(f"CLI: Contact '{contact_name}' was not found on device")
+                        elif result is not None:
+                            self.logger.info(f"CLI: Successfully removed contact '{contact_name}' from device")
+                            device_removal_successful = True
+                        else:
+                            self.logger.warning(f"CLI: Contact removal command returned no result for '{contact_name}'")
+                            
+                    except Exception as e:
+                        self.logger.warning(f"CLI removal failed: {e}")
+                
+                # Verify removal and ensure persistence
+                if device_removal_successful:
+                    import asyncio
+                    await asyncio.sleep(3)  # Give device more time to process and save
+                    
+                    # Try to force device to save changes
+                    try:
+                        self.logger.info(f"Attempting to force device to save contact changes...")
+                        from meshcore_cli.meshcore_cli import next_cmd
+                        
+                        # Try to refresh contacts from device
+                        try:
+                            self.logger.info("Refreshing contacts from device...")
+                            await asyncio.wait_for(
+                                next_cmd(self.bot.meshcore, ["contacts"]),
+                                timeout=15.0
+                            )
+                            self.logger.info("Contacts refreshed from device")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to refresh contacts: {e}")
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Failed to force device persistence: {e}")
+                    
+                    # Wait a bit more after refresh
+                    await asyncio.sleep(1)
+                    
+                    # Check if contact still exists in the bot's memory after refresh
+                    contact_still_exists = contact_key in self.bot.meshcore.contacts
+                    
+                    if contact_still_exists:
+                        self.logger.warning(f"Contact '{contact_name}' still exists after removal and refresh - removal may have failed")
+                        device_removal_successful = False
+                    else:
+                        self.logger.info(f"Verified: Contact '{contact_name}' successfully removed from device")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to remove contact '{contact_name}' from device: {e}")
+                self.logger.debug(f"Error type: {type(e).__name__}")
+                device_removal_successful = False
+            
+            # Only mark as inactive in database if device removal was successful
+            if device_removal_successful:
+                self.db_manager.execute_update(
+                    'UPDATE repeater_contacts SET is_active = 0, purge_count = purge_count + 1 WHERE public_key = ?',
+                    (public_key,)
+                )
+                
+                # Log the purge action
+                self.db_manager.execute_update('''
+                    INSERT INTO purging_log (action, public_key, name, reason)
+                    VALUES ('purged', ?, ?, ?)
+                ''', (public_key, contact_name, reason))
+                
+                self.logger.info(f"Successfully purged repeater {contact_name}: {reason}")
+                self.logger.debug(f"Purge process completed successfully for {contact_name}")
+                return True
+            else:
+                self.logger.error(f"Failed to remove repeater {contact_name} from device - not marking as purged in database")
+                # Log the failed attempt
+                self.db_manager.execute_update('''
+                    INSERT INTO purging_log (action, public_key, name, reason)
+                    VALUES ('purge_failed', ?, ?, ?)
+                ''', (public_key, contact_name, f"{reason} - Device removal failed"))
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"Error purging repeater {contact_key}: {e}")
+            self.logger.debug(f"Error type: {type(e).__name__}")
+            return False
+    
+    async def force_purge_repeater_from_contacts(self, public_key: str, reason: str = "Force purge") -> bool:
+        """Force remove a repeater from device contacts using multiple methods"""
+        self.logger.info(f"Starting FORCE purge process for public_key: {public_key}")
+        self.logger.debug(f"Force purge reason: {reason}")
+        
+        try:
+            # Find the contact in meshcore
+            contact_to_remove = None
+            contact_name = None
+            
+            for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                if contact_data.get('public_key', contact_key) == public_key:
+                    contact_to_remove = contact_data
+                    contact_name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
+                    break
+            
+            if not contact_to_remove:
+                self.logger.warning(f"Repeater with public key {public_key} not found in current contacts")
+                return False
+            
+            # Method 1: Try standard removal
+            self.logger.info(f"Method 1: Attempting standard removal for '{contact_name}'")
+            success = await self.purge_repeater_from_contacts(public_key, reason)
+            if success:
+                self.logger.info(f"Standard removal successful for '{contact_name}'")
+                return True
+            
+            # Method 2: Try alternative removal commands
+            self.logger.info(f"Method 2: Attempting alternative removal for '{contact_name}'")
+            try:
+                from meshcore_cli.meshcore_cli import next_cmd
+                
+                # Try different removal commands
+                alternative_commands = [
+                    ["delete_contact", public_key],
+                    ["remove", public_key],
+                    ["del", public_key],
+                    ["clear_contact", public_key]
+                ]
+                
+                for cmd in alternative_commands:
+                    try:
+                        self.logger.info(f"Trying command: {' '.join(cmd)}")
+                        
+                        # Capture stdout/stderr to catch "Unknown contact" messages
+                        import sys
+                        import io
+                        old_stdout = sys.stdout
+                        old_stderr = sys.stderr
+                        captured_output = io.StringIO()
+                        captured_errors = io.StringIO()
+                        
+                        try:
+                            sys.stdout = captured_output
+                            sys.stderr = captured_errors
+                            
+                            result = await asyncio.wait_for(
+                                next_cmd(self.bot.meshcore, cmd),
+                                timeout=15.0
+                            )
+                        finally:
+                            sys.stdout = old_stdout
+                            sys.stderr = old_stderr
+                        
+                        # Get captured output
+                        stdout_content = captured_output.getvalue()
+                        stderr_content = captured_errors.getvalue()
+                        all_output = stdout_content + stderr_content
+                        
+                        if result is not None:
+                            self.logger.debug(f"Alternative command {' '.join(cmd)} result: {result}")
+                            self.logger.debug(f"Captured output: {all_output}")
+                            
+                            # Check if the captured output indicates the contact was unknown (doesn't exist)
+                            if "unknown contact" in all_output.lower():
+                                self.logger.warning(f"Contact '{contact_name}' was not found on device - this suggests the contact list is out of sync")
+                                # Don't mark as successful - we need to actually remove contacts that exist
+                                continue  # Try next command
+                            else:
+                                self.logger.info(f"Alternative command {' '.join(cmd)} succeeded")
+                                # Verify removal
+                                await asyncio.sleep(1)
+                                contact_still_exists = False
+                                for check_key, check_data in self.bot.meshcore.contacts.items():
+                                    if check_data.get('public_key', check_key) == public_key:
+                                        contact_still_exists = True
+                                        break
+                                
+                                if not contact_still_exists:
+                                    # Mark as purged in database
+                                    self.db_manager.execute_update(
+                                        'UPDATE repeater_contacts SET is_active = 0, purge_count = purge_count + 1 WHERE public_key = ?',
+                                        (public_key,)
+                                    )
+                                    
+                                    self.db_manager.execute_update('''
+                                        INSERT INTO purging_log (action, public_key, name, reason)
+                                        VALUES ('force_purged', ?, ?, ?)
+                                    ''', (public_key, contact_name, f"{reason} - Alternative command: {' '.join(cmd)}"))
+                                    
+                                    self.logger.info(f"Force purge successful for '{contact_name}' using {' '.join(cmd)}")
+                                    return True
+                    except Exception as e:
+                        self.logger.debug(f"Alternative command {' '.join(cmd)} failed: {e}")
+                        continue
+                        
+            except Exception as e:
+                self.logger.error(f"Error with alternative removal methods: {e}")
+            
+            # Method 3: Mark as purged anyway and log the issue
+            self.logger.warning(f"All removal methods failed for '{contact_name}' - marking as purged anyway")
             self.db_manager.execute_update(
                 'UPDATE repeater_contacts SET is_active = 0, purge_count = purge_count + 1 WHERE public_key = ?',
                 (public_key,)
             )
             
-            # Log the purge action
             self.db_manager.execute_update('''
                 INSERT INTO purging_log (action, public_key, name, reason)
-                VALUES ('purged', ?, ?, ?)
-            ''', (public_key, contact_name, reason))
+                VALUES ('force_purged_failed', ?, ?, ?)
+            ''', (public_key, contact_name, f"{reason} - All removal methods failed, marked as purged anyway"))
             
-            self.logger.info(f"Successfully purged repeater {contact_name}: {reason}")
-            self.logger.debug(f"Purge process completed successfully for {contact_name}")
             return True
             
         except Exception as e:
-            self.logger.error(f"Error purging repeater {public_key}: {e}")
-            self.logger.debug(f"Error type: {type(e).__name__}")
+            self.logger.error(f"Error in force purge for repeater {public_key}: {e}")
             return False
     
     async def purge_old_repeaters(self, days_old: int = 30, reason: str = "Automatic purge - old contacts") -> int:
@@ -775,53 +1205,117 @@ class RepeaterManager:
             return 0
     
     async def add_discovered_contact(self, contact_name: str, public_key: str = None, reason: str = "Manual addition") -> bool:
-        """Add a discovered contact to the contact list"""
+        """Add a discovered contact to the contact list using multiple methods"""
         try:
-            from meshcore_cli.meshcore_cli import next_cmd
-            
             self.logger.info(f"Adding discovered contact: {contact_name}")
             
-            # Use the add_contact command if available, or try to add via discovery
-            try:
-                result = await asyncio.wait_for(
-                    next_cmd(self.bot.meshcore, ["add_contact", contact_name, public_key]),
-                    timeout=15.0
-                )
-                
-                if result is not None:
-                    self.logger.info(f"Successfully added contact: {contact_name}")
+            # Track whether contact addition was successful
+            contact_addition_successful = False
+            
+            # Method 1: Try using meshcore commands if available
+            if hasattr(self.bot.meshcore, 'commands'):
+                try:
+                    self.logger.info(f"Method 1: Attempting addition via meshcore commands...")
+                    # Check if there's an add_contact method
+                    if hasattr(self.bot.meshcore.commands, 'add_contact'):
+                        # Try different parameter combinations
+                        try:
+                            # Try with contact_name and public_key
+                            result = await self.bot.meshcore.commands.add_contact(contact_name, public_key)
+                            if result:
+                                self.logger.info(f"Successfully added contact '{contact_name}' via meshcore commands (name+key)")
+                                contact_addition_successful = True
+                        except Exception as e1:
+                            self.logger.debug(f"add_contact(name, key) failed: {e1}")
+                            try:
+                                # Try with just contact_name
+                                result = await self.bot.meshcore.commands.add_contact(contact_name)
+                                if result:
+                                    self.logger.info(f"Successfully added contact '{contact_name}' via meshcore commands (name only)")
+                                    contact_addition_successful = True
+                            except Exception as e2:
+                                self.logger.debug(f"add_contact(name) failed: {e2}")
+                                self.logger.warning(f"All meshcore commands add_contact attempts failed")
+                    else:
+                        self.logger.info("No add_contact method found in meshcore commands")
+                except Exception as e:
+                    self.logger.warning(f"Meshcore commands addition failed: {e}")
+            
+            # Method 2: Try CLI as fallback
+            if not contact_addition_successful:
+                try:
+                    self.logger.info(f"Method 2: Attempting addition via CLI...")
+                    from meshcore_cli.meshcore_cli import next_cmd
+                    import sys
+                    import io
                     
-                    # Log the addition
-                    self.db_manager.execute_update(
-                        'INSERT INTO purging_log (action, details) VALUES (?, ?)',
-                        ('contact_addition', f'Added discovered contact: {contact_name} - {reason}')
+                    # Capture stdout/stderr to catch any error messages
+                    old_stdout = sys.stdout
+                    old_stderr = sys.stderr
+                    captured_output = io.StringIO()
+                    captured_errors = io.StringIO()
+                    
+                    try:
+                        sys.stdout = captured_output
+                        sys.stderr = captured_errors
+                        
+                        result = await asyncio.wait_for(
+                            next_cmd(self.bot.meshcore, ["add_contact", contact_name, public_key] if public_key else ["add_contact", contact_name]),
+                            timeout=15.0
+                        )
+                    finally:
+                        sys.stdout = old_stdout
+                        sys.stderr = old_stderr
+                    
+                    # Get captured output
+                    stdout_content = captured_output.getvalue()
+                    stderr_content = captured_errors.getvalue()
+                    all_output = stdout_content + stderr_content
+                    
+                    self.logger.debug(f"CLI command result: {result}")
+                    self.logger.debug(f"CLI captured output: {all_output}")
+                    
+                    if result is not None:
+                        self.logger.info(f"CLI: Successfully added contact '{contact_name}' from device")
+                        contact_addition_successful = True
+                    else:
+                        self.logger.warning(f"CLI: Contact addition command returned no result for '{contact_name}'")
+                        
+                except Exception as e:
+                    self.logger.warning(f"CLI addition failed: {e}")
+            
+            # Method 3: Try discovery approach as last resort
+            if not contact_addition_successful:
+                try:
+                    self.logger.info(f"Method 3: Attempting addition via discovery...")
+                    from meshcore_cli.meshcore_cli import next_cmd
+                    
+                    result = await asyncio.wait_for(
+                        next_cmd(self.bot.meshcore, ["discover_companion_contacts"]),
+                        timeout=30.0
                     )
                     
-                    return True
-                else:
-                    self.logger.warning(f"Failed to add contact: {contact_name}")
-                    return False
-                    
-            except AttributeError:
-                # add_contact command might not be available, try alternative approach
-                self.logger.info("add_contact command not available, trying discovery approach")
-                
-                # Try to discover the contact
-                result = await asyncio.wait_for(
-                    next_cmd(self.bot.meshcore, ["discover_companion_contacts"]),
-                    timeout=30.0
-                )
-                
-                if result is not None:
-                    self.logger.info("Contact discovery initiated")
-                    return True
-                else:
-                    self.logger.warning("Contact discovery failed")
-                    return False
+                    if result is not None:
+                        self.logger.info("Contact discovery initiated")
+                        contact_addition_successful = True
+                    else:
+                        self.logger.warning("Contact discovery failed")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Discovery addition failed: {e}")
             
-        except asyncio.TimeoutError:
-            self.logger.warning("Timeout adding discovered contact (LoRa communication)")
-            return False
+            # Log the addition if successful
+            if contact_addition_successful:
+                self.db_manager.execute_update(
+                    'INSERT INTO purging_log (action, details) VALUES (?, ?)',
+                    ('contact_addition', f'Added discovered contact: {contact_name} - {reason}')
+                )
+                self.logger.info(f"Successfully added contact '{contact_name}': {reason}")
+                return True
+            else:
+                self.logger.error(f"Failed to add contact '{contact_name}' - all methods failed")
+                return False
+            
         except Exception as e:
             self.logger.error(f"Error adding discovered contact: {e}")
             return False
