@@ -36,6 +36,13 @@ class SportsCommand(BaseCommand):
         'soccer': '⚽'
     }
     
+    # Custom team abbreviations to distinguish between leagues
+    TEAM_ABBREVIATIONS = {
+        # NWSL teams - use custom abbreviations to distinguish from MLS
+        '15363': 'SEA-W',  # Seattle Reign (Women's)
+        '20905': 'LOU-W',  # Racing Louisville (Women's)
+    }
+    
     # Team mappings for common searches
     TEAM_MAPPINGS = {
         # NFL Teams
@@ -238,6 +245,13 @@ class SportsCommand(BaseCommand):
         # MLS Teams
         'sounders': {'sport': 'soccer', 'league': 'usa.1', 'team_id': '9726'},
         'seattle sounders': {'sport': 'soccer', 'league': 'usa.1', 'team_id': '9726'},
+        
+        # NWSL Teams
+        'reign': {'sport': 'soccer', 'league': 'usa.nwsl', 'team_id': '15363'},
+        'seattle reign': {'sport': 'soccer', 'league': 'usa.nwsl', 'team_id': '15363'},
+        'racing': {'sport': 'soccer', 'league': 'usa.nwsl', 'team_id': '20905'},
+        'racing louisville': {'sport': 'soccer', 'league': 'usa.nwsl', 'team_id': '20905'},
+        'louisville': {'sport': 'soccer', 'league': 'usa.nwsl', 'team_id': '20905'},
         'atlanta united': {'sport': 'soccer', 'league': 'usa.1', 'team_id': '18418'},
         'atl': {'sport': 'soccer', 'league': 'usa.1', 'team_id': '18418'},
         'austin fc': {'sport': 'soccer', 'league': 'usa.1', 'team_id': '20906'},
@@ -349,6 +363,29 @@ class SportsCommand(BaseCommand):
         """Load sports channels from config"""
         channels_str = self.bot.config.get('Sports', 'channels', fallback='')
         return [channel.strip() for channel in channels_str.split(',') if channel.strip()]
+    
+    def matches_keyword(self, message: MeshMessage) -> bool:
+        """Check if this command matches the message content - sports must be first word"""
+        if not self.keywords:
+            return False
+        
+        # Strip exclamation mark if present (for command-style messages)
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
+        
+        # Split into words and check if first word matches any keyword
+        words = content.split()
+        if not words:
+            return False
+        
+        first_word = words[0].lower()
+        
+        for keyword in self.keywords:
+            if first_word == keyword.lower():
+                return True
+        
+        return False
     
     def can_execute(self, message: MeshMessage) -> bool:
         """Check if this command can execute with the given message"""
@@ -476,6 +513,11 @@ class SportsCommand(BaseCommand):
             'mls': {'sport': 'soccer', 'league': 'usa.1'},
             'soccer': {'sport': 'soccer', 'league': 'usa.1'},
             
+            # NWSL
+            'nwsl': {'sport': 'soccer', 'league': 'usa.nwsl'},
+            'womens soccer': {'sport': 'soccer', 'league': 'usa.nwsl'},
+            'womens': {'sport': 'soccer', 'league': 'usa.nwsl'},
+            
             # Premier League
             'epl': {'sport': 'soccer', 'league': 'eng.1'},
             'premier league': {'sport': 'soccer', 'league': 'eng.1'},
@@ -483,6 +525,144 @@ class SportsCommand(BaseCommand):
         }
         
         return league_mappings.get(league_name.lower())
+    
+    def get_city_teams(self, city_name: str) -> List[Dict[str, str]]:
+        """Get all teams for a given city"""
+        city_name_lower = city_name.lower()
+        
+        # Define city mappings to team names
+        city_mappings = {
+            'seattle': ['seahawks', 'mariners', 'sounders', 'kraken', 'reign'],
+            'chicago': ['bears', 'cubs', 'white sox', 'fire'],
+            'new york': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls'],
+            'ny': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls'],
+            'los angeles': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc'],
+            'la': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc'],
+            'miami': ['dolphins', 'marlins', 'heat', 'inter miami'],
+            'boston': ['patriots', 'red sox', 'celtics', 'revolution'],
+            'philadelphia': ['eagles', 'phillies', '76ers', 'union'],
+            'philadelphia': ['eagles', 'phillies', '76ers', 'union'],
+            'atlanta': ['falcons', 'braves', 'hawks', 'atlanta united'],
+            'houston': ['texans', 'astros', 'dynamo'],
+            'dallas': ['cowboys', 'rangers', 'stars', 'fc dallas'],
+            'denver': ['broncos', 'rockies', 'rapids'],
+            'detroit': ['lions', 'tigers', 'pistons'],
+            'minnesota': ['vikings', 'twins', 'timberwolves', 'minnesota united'],
+            'minneapolis': ['vikings', 'twins', 'timberwolves', 'minnesota united'],
+            'cleveland': ['browns', 'guardians', 'cavaliers'],
+            'cincinnati': ['bengals', 'reds', 'fc cincinnati'],
+            'pittsburgh': ['steelers', 'pirates', 'penguins'],
+            'baltimore': ['ravens', 'orioles'],
+            'tampa': ['buccaneers', 'rays', 'lightning'],
+            'tampa bay': ['buccaneers', 'rays', 'lightning'],
+            'kansas city': ['chiefs', 'royals', 'sporting kc'],
+            'kc': ['chiefs', 'royals', 'sporting kc'],
+            'arizona': ['cardinals', 'diamondbacks', 'coyotes'],
+            'phoenix': ['cardinals', 'diamondbacks', 'coyotes'],
+            'san francisco': ['49ers', 'giants', 'warriors', 'earthquakes'],
+            'sf': ['49ers', 'giants', 'warriors', 'earthquakes'],
+            'san diego': ['chargers', 'padres', 'san diego fc'],
+            'sd': ['chargers', 'padres', 'san diego fc'],
+            'washington': ['commanders', 'nationals', 'wizards', 'dc united'],
+            'dc': ['commanders', 'nationals', 'wizards', 'dc united'],
+            'indianapolis': ['colts', 'pacers'],
+            'ind': ['colts', 'pacers'],
+            'nashville': ['titans', 'predators', 'nashville sc'],
+            'tennessee': ['titans', 'predators', 'nashville sc'],
+            'ten': ['titans', 'predators', 'nashville sc'],
+            'las vegas': ['raiders', 'golden knights'],
+            'lv': ['raiders', 'golden knights'],
+            'louisville': ['racing'],
+            'carolina': ['panthers', 'hornets'],
+            'charlotte': ['panthers', 'hornets', 'charlotte fc'],
+            'new orleans': ['saints', 'pelicans'],
+            'no': ['saints', 'pelicans'],
+            'green bay': ['packers'],
+            'gb': ['packers'],
+            'buffalo': ['bills', 'sabres'],
+            'buf': ['bills', 'sabres'],
+            'milwaukee': ['bucks', 'brewers'],
+            'mil': ['bucks', 'brewers'],
+            'portland': ['trail blazers', 'timbers'],
+            'por': ['trail blazers', 'timbers'],
+            'salt lake': ['jazz', 'real salt lake'],
+            'utah': ['jazz', 'real salt lake'],
+            'orlando': ['magic', 'orlando city'],
+            'orl': ['magic', 'orlando city'],
+            'toronto': ['raptors', 'blue jays', 'toronto fc', 'maple leafs'],
+            'tor': ['raptors', 'blue jays', 'toronto fc', 'maple leafs'],
+            'vancouver': ['canucks', 'whitecaps'],
+            'van': ['canucks', 'whitecaps'],
+            'montreal': ['canadiens', 'cf montreal'],
+            'mtl': ['canadiens', 'cf montreal'],
+            'calgary': ['flames'],
+            'edmonton': ['oilers'],
+            'winnipeg': ['jets'],
+            'ottawa': ['senators'],
+            'columbus': ['blue jackets', 'crew'],
+            'clb': ['blue jackets', 'crew'],
+            'st louis': ['blues', 'st louis city'],
+            'stl': ['blues', 'st louis city'],
+            'colorado': ['avalanche', 'rockies', 'rapids'],
+            'col': ['avalanche', 'rockies', 'rapids'],
+            'san jose': ['sharks', 'earthquakes'],
+            'sj': ['sharks', 'earthquakes'],
+            'anaheim': ['ducks', 'angels'],
+            'austin': ['austin fc'],
+            'atx': ['austin fc'],
+        }
+        
+        # Get team names for this city
+        team_names = city_mappings.get(city_name_lower, [])
+        if not team_names:
+            return []
+        
+        # Get team info for each team name
+        city_teams = []
+        for team_name in team_names:
+            team_info = self.TEAM_MAPPINGS.get(team_name)
+            if team_info:
+                city_teams.append(team_info)
+        
+        return city_teams
+    
+    async def get_city_scores(self, city_teams: List[Dict[str, str]], city_name: str) -> str:
+        """Get scores for all teams in a city"""
+        if not city_teams:
+            return f"No teams found for {city_name}"
+        
+        game_data = []
+        for team_info in city_teams:
+            try:
+                game_info = await self.fetch_team_game_data(team_info)
+                if game_info:
+                    game_data.append(game_info)
+            except Exception as e:
+                self.logger.warning(f"Error fetching score for {team_info}: {e}")
+        
+        if not game_data:
+            return f"No games found for {city_name} teams"
+        
+        # Sort by game time (earliest first)
+        game_data.sort(key=lambda x: x['timestamp'])
+        
+        # Format responses with sport emojis
+        responses = []
+        for game in game_data:
+            sport_emoji = self.SPORT_EMOJIS.get(game['sport'], '🏆')
+            responses.append(f"{sport_emoji} {game['formatted']}")
+        
+        # Join responses with newlines and ensure under 130 characters
+        result = "\n".join(responses)
+        if len(result) > 130:
+            # If still too long, truncate the last response
+            while len(result) > 130 and len(responses) > 1:
+                responses.pop()
+                result = "\n".join(responses)
+            if len(result) > 130:
+                result = result[:127] + "..."
+        
+        return result
     
     async def get_league_scores(self, league_info: Dict[str, str]) -> str:
         """Get upcoming games for a league"""
@@ -552,12 +732,28 @@ class SportsCommand(BaseCommand):
             team1 = competitors[0]
             team2 = competitors[1]
             
-            team1_name = team1.get('team', {}).get('abbreviation', 'UNK')
-            team2_name = team2.get('team', {}).get('abbreviation', 'UNK')
+            # For soccer, determine home/away teams
+            if sport == 'soccer':
+                home_team = team1 if team1.get('homeAway') == 'home' else team2
+                away_team = team2 if team1.get('homeAway') == 'home' else team1
+                home_team_id = home_team.get('team', {}).get('id', '')
+                away_team_id = away_team.get('team', {}).get('id', '')
+                home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
+                away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
+                home_score = home_team.get('score', '0')
+                away_score = away_team.get('score', '0')
+            else:
+                # For other sports, use original order
+                home_name = team1.get('team', {}).get('abbreviation', 'UNK')
+                away_name = team2.get('team', {}).get('abbreviation', 'UNK')
+                home_score = team1.get('score', '0')
+                away_score = team2.get('score', '0')
             
-            # Get scores
-            team1_score = team1.get('score', '0')
-            team2_score = team2.get('score', '0')
+            # Keep original variables for backward compatibility
+            team1_name = away_name  # away team first
+            team2_name = home_name  # home team second (gets @ symbol)
+            team1_score = away_score
+            team2_score = home_score
             
             # Get game status
             status = event.get('status', {})
@@ -583,21 +779,22 @@ class SportsCommand(BaseCommand):
                 # Format period based on sport
                 if sport == 'baseball':
                     period_str = f"{period}I"  # Innings - no clock needed
-                    formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} ({period_str})"
+                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} ({period_str})"
                 elif sport == 'soccer':
                     # For soccer, use displayClock if available (e.g., "90'+5'"), otherwise use half
+                    # For soccer, show home team first (traditional soccer format)
                     if clock and clock != '0:00' and clock != "0'":
                         period_str = clock  # Use displayClock directly (e.g., "90'+5'")
-                        formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} ({period_str})"
+                        formatted = f"{home_name} {home_score}-{away_score} @{away_name} ({period_str})"
                     else:
                         period_str = f"{period}H"  # Fallback to half
-                        formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} ({clock} {period_str})"
+                        formatted = f"{home_name} {home_score}-{away_score} @{away_name} ({clock} {period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
-                    formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} ({clock} {period_str})"
+                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} ({clock} {period_str})"
                 else:
                     period_str = f"P{period}"  # Generic periods
-                    formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} ({clock} {period_str})"
+                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} ({clock} {period_str})"
                 
                 timestamp = -1  # Live games first
                 
@@ -608,25 +805,37 @@ class SportsCommand(BaseCommand):
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         local_dt = dt.astimezone()
                         time_str = local_dt.strftime("%m/%d %I:%M %p")
-                        formatted = f"{team1_name} vs {team2_name} ({time_str})"
+                        if sport == 'soccer':
+                            formatted = f"{home_name} @ {away_name} ({time_str})"
+                        else:
+                            formatted = f"{away_name} @ {home_name} ({time_str})"
                     except:
-                        formatted = f"{team1_name} vs {team2_name} (TBD)"
+                        if sport == 'soccer':
+                            formatted = f"{home_name} @ {away_name} (TBD)"
+                        else:
+                            formatted = f"{away_name} @ {home_name} (TBD)"
                         timestamp = 9999999999  # Put TBD games last
                 else:
-                    formatted = f"{team1_name} vs {team2_name} (TBD)"
+                    if sport == 'soccer':
+                        formatted = f"{home_name} @ {away_name} (TBD)"
+                    else:
+                        formatted = f"{away_name} @ {home_name} (TBD)"
                     timestamp = 9999999999  # Put TBD games last
                     
             elif status_name == 'STATUS_HALFTIME':
                 # Game is at halftime
-                formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} (HT)"
+                if sport == 'soccer':
+                    formatted = f"{home_name} {home_score}-{away_score} @{away_name} (HT)"
+                else:
+                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} (HT)"
                 timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
-                formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} (FT)"
+                formatted = f"{home_name} {home_score}-{away_score} @{away_name} (FT)"
                 timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
-                formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} (F)"
+                formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} (F)"
                 timestamp = 9999999998  # Final games second to last
                 
             else:
@@ -652,7 +861,12 @@ class SportsCommand(BaseCommand):
         if league_info:
             return await self.get_league_scores(league_info)
         
-        # Otherwise, treat as team query
+        # Check if this is a city search that should return multiple teams
+        city_teams = self.get_city_teams(team_name)
+        if city_teams:
+            return await self.get_city_scores(city_teams, team_name)
+        
+        # Otherwise, treat as single team query
         team_info = self.TEAM_MAPPINGS.get(team_name)
         if not team_info:
             return f"Team/League '{team_name}' not found. Try: seahawks, mariners, sounders, kraken, chiefs, lfc, mlb, nfl, mls, epl, etc."
@@ -728,13 +942,35 @@ class SportsCommand(BaseCommand):
             if not our_team or not other_team:
                 return None
             
-            # Extract team info
-            our_team_name = our_team.get('team', {}).get('abbreviation', 'UNK')
-            other_team_name = other_team.get('team', {}).get('abbreviation', 'UNK')
-            
-            # Get scores
-            our_score = our_team.get('score', '0')
-            other_score = other_team.get('score', '0')
+            # For soccer, determine home/away teams and format accordingly
+            if sport == 'soccer':
+                home_team = our_team if our_team.get('homeAway') == 'home' else other_team
+                away_team = other_team if our_team.get('homeAway') == 'home' else our_team
+                home_team_id = home_team.get('team', {}).get('id', '')
+                away_team_id = away_team.get('team', {}).get('id', '')
+                home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
+                away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
+                home_score = home_team.get('score', '0')
+                away_score = away_team.get('score', '0')
+                
+                # For individual team queries, we still want to show our team first
+                # but in the correct home/away order for soccer
+                if our_team.get('homeAway') == 'home':
+                    our_team_name = home_name
+                    other_team_name = away_name
+                    our_score = home_score
+                    other_score = away_score
+                else:
+                    our_team_name = away_name
+                    other_team_name = home_name
+                    our_score = away_score
+                    other_score = home_score
+            else:
+                # For other sports, use original order
+                our_team_name = our_team.get('team', {}).get('abbreviation', 'UNK')
+                other_team_name = other_team.get('team', {}).get('abbreviation', 'UNK')
+                our_score = our_team.get('score', '0')
+                other_score = other_team.get('score', '0')
             
             # Get game status
             status = event.get('status', {})
@@ -760,21 +996,22 @@ class SportsCommand(BaseCommand):
                 # Format period based on sport
                 if sport == 'baseball':
                     period_str = f"{period}I"  # Innings - no clock needed
-                    formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} ({period_str})"
+                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} ({period_str})"
                 elif sport == 'soccer':
                     # For soccer, use displayClock if available (e.g., "90'+5'"), otherwise use half
+                    # For soccer, show home team first (traditional soccer format)
                     if clock and clock != '0:00' and clock != "0'":
                         period_str = clock  # Use displayClock directly (e.g., "90'+5'")
-                        formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} ({period_str})"
+                        formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({period_str})"
                     else:
                         period_str = f"{period}H"  # Fallback to half
-                        formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} ({clock} {period_str})"
+                        formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({clock} {period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
-                    formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} ({clock} {period_str})"
+                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} ({clock} {period_str})"
                 else:
                     period_str = f"P{period}"  # Generic periods
-                    formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} ({clock} {period_str})"
+                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} ({clock} {period_str})"
                 
                 timestamp = -1  # Live games first
                 
@@ -785,25 +1022,28 @@ class SportsCommand(BaseCommand):
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         local_dt = dt.astimezone()
                         time_str = local_dt.strftime("%m/%d %I:%M %p")
-                        formatted = f"{our_team_name} vs {other_team_name} ({time_str})"
+                        formatted = f"{away_name} @ {home_name} ({time_str})"
                     except:
-                        formatted = f"{our_team_name} vs {other_team_name} (TBD)"
+                        formatted = f"{away_name} @ {home_name} (TBD)"
                         timestamp = 9999999999  # Put TBD games last
                 else:
-                    formatted = f"{our_team_name} vs {other_team_name} (TBD)"
+                    formatted = f"{away_name} @ {home_name} (TBD)"
                     timestamp = 9999999999  # Put TBD games last
                     
             elif status_name == 'STATUS_HALFTIME':
                 # Game is at halftime
-                formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} (HT)"
+                if sport == 'soccer':
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} (HT)"
+                else:
+                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} (HT)"
                 timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
-                formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} (FT)"
+                formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT)"
                 timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
-                formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} (F)"
+                formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} (F)"
                 timestamp = 9999999998  # Final games second to last
                 
             else:
@@ -852,6 +1092,21 @@ class SportsCommand(BaseCommand):
             our_team_name = our_team.get('team', {}).get('abbreviation', 'UNK')
             other_team_name = other_team.get('team', {}).get('abbreviation', 'UNK')
             
+            # Determine home/away teams
+            our_home_away = our_team.get('homeAway', '')
+            other_home_away = other_team.get('homeAway', '')
+            
+            if our_home_away == 'home':
+                home_team_name = our_team_name
+                away_team_name = other_team_name
+            elif other_home_away == 'home':
+                home_team_name = other_team_name
+                away_team_name = our_team_name
+            else:
+                # Fallback if homeAway is not available
+                home_team_name = other_team_name
+                away_team_name = our_team_name
+            
             # Get scores
             our_score = our_team.get('score', '0')
             other_score = other_team.get('score', '0')
@@ -876,7 +1131,7 @@ class SportsCommand(BaseCommand):
                 else:
                     period_str = f"{period}I"  # Likely baseball (innings)
                 
-                return f"{our_team_name} {our_score}-{other_score} {other_team_name} ({clock} {period_str})"
+                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} ({clock} {period_str})"
             
             elif status_name == 'STATUS_SCHEDULED':
                 # Game is scheduled
@@ -888,21 +1143,21 @@ class SportsCommand(BaseCommand):
                         # Convert to local time (assuming Pacific for Seattle teams)
                         local_dt = dt.astimezone()
                         time_str = local_dt.strftime("%m/%d %I:%M %p")
-                        return f"{our_team_name} vs {other_team_name} ({time_str})"
+                        return f"{away_team_name} @ {home_team_name} ({time_str})"
                     except:
-                        return f"{our_team_name} vs {other_team_name} (TBD)"
+                        return f"{away_team_name} @ {home_team_name} (TBD)"
                 else:
-                    return f"{our_team_name} vs {other_team_name} (TBD)"
+                    return f"{away_team_name} @ {home_team_name} (TBD)"
             
             elif status_name == 'STATUS_HALFTIME':
                 # Game is at halftime
-                return f"{our_team_name} {our_score}-{other_score} {other_team_name} (HT)"
+                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (HT)"
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished
-                return f"{our_team_name} {our_score}-{other_score} {other_team_name} (FT)"
+                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (FT)"
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished
-                return f"{our_team_name} {our_score}-{other_score} {other_team_name} (F)"
+                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (F)"
             
             else:
                 # Other status
