@@ -211,7 +211,7 @@ auto_manage_contacts = false
 # {snr}: Signal-to-noise ratio in dB
 # {timestamp}: Message timestamp in HH:MM:SS format
 # {path}: Message routing path (e.g., "01,5f (2 hops)")
-test = "Message received from {sender} | {connection_info} | Received at: {timestamp}"
+test = "ack {sender}{phrase_part} | {connection_info} | Received at: {timestamp}"
 ping = "Pong!"
 pong = "Ping!"
 help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass | Use 'help <command>' for details"
@@ -274,9 +274,6 @@ meshcore_log_level = INFO
 # Example: "t hello world" -> "ack {sender}: hello world | {connection_info}"
 t_phrase = "ack {sender}: {phrase} | {connection_info}"
 
-# Special syntax: Messages starting with "@" followed by a phrase (DM only)
-# Example: "@hello world" -> "ack {sender}: hello world | {connection_info}"
-@_phrase = "ack {sender}: {phrase} | {connection_info}"
 
 [External_Data]
 # Weather API key (future feature)

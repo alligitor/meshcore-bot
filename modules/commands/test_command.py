@@ -22,14 +22,18 @@ class TestCommand(BaseCommand):
         return self.description
     
     def matches_keyword(self, message: MeshMessage) -> bool:
-        """Override to implement special test keyword matching"""
-        content_lower = message.content.lower().strip()
+        """Override to implement special test keyword matching with optional phrase"""
+        # Strip exclamation mark if present (for command-style messages)
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
         
-        # For "test", only match if it's the first word or its own word
-        # Split by whitespace and clean up punctuation
-        words = re.findall(r'\b\w+\b', content_lower)
-        if words and (words[0] == "test" or "test" in words):
-            return True
+        # Handle "test" alone or "test " with phrase
+        if content.lower() == "test":
+            return True  # Just "test" by itself
+        elif (content.startswith('test ') or content.startswith('Test ')) and len(content) > 5:
+            phrase = content[5:].strip()  # Get everything after "test " and strip whitespace
+            return bool(phrase)  # Make sure there's actually a phrase
         
         return False
     
@@ -39,6 +43,39 @@ class TestCommand(BaseCommand):
             format_str = self.bot.config.get('Keywords', 'test', fallback=None)
             return self._strip_quotes_from_config(format_str) if format_str else None
         return None
+    
+    def format_response(self, message: MeshMessage, response_format: str) -> str:
+        """Override to handle phrase extraction"""
+        # Strip exclamation mark if present (for command-style messages)
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
+        
+        # Extract phrase if present, otherwise use empty string
+        if content.lower() == "test":
+            phrase = ""
+        else:
+            phrase = content[5:].strip()  # Get everything after "test "
+        
+        try:
+            connection_info = self.build_enhanced_connection_info(message)
+            timestamp = self.format_timestamp(message)
+            
+            # Format phrase part - add colon and space if phrase exists
+            phrase_part = f": {phrase}" if phrase else ""
+            
+            return response_format.format(
+                sender=message.sender_id or "Unknown",
+                phrase=phrase,
+                phrase_part=phrase_part,
+                connection_info=connection_info,
+                path=message.path or "Unknown",
+                timestamp=timestamp,
+                snr=message.snr or "Unknown"
+            )
+        except (KeyError, ValueError) as e:
+            self.logger.warning(f"Error formatting test response: {e}")
+            return response_format
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the test command"""

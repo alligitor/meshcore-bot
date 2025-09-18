@@ -347,7 +347,7 @@ class CommandManager:
         
         # Group commands by category
         basic_commands = ['test', 'ping', 'help', 'cmd']
-        custom_syntax = ['t_phrase', 'at_phrase']  # Use the actual command key
+        custom_syntax = ['t_phrase']  # Use the actual command key
         special_commands = ['advert']
         weather_commands = ['wx', 'aqi']
         solar_commands = ['sun', 'moon', 'solar', 'hfcond', 'satpass']
@@ -366,8 +366,6 @@ class CommandManager:
                 # Add user-friendly aliases
                 if cmd == 't_phrase':
                     commands_list += f"• `t phrase` - {help_text}\n"
-                elif cmd == 'at_phrase':
-                    commands_list += f"• `@{{string}}` - {help_text}\n"
                 else:
                     commands_list += f"• `{cmd}` - {help_text}\n"
         

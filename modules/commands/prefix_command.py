@@ -37,7 +37,7 @@ class PrefixCommand(BaseCommand):
         self.session = None
     
     def get_help_text(self) -> str:
-        return "Look up repeaters by two-character prefix. Uses API data with local database fallback. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
+        return "Look up repeaters by two-character prefix. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with 'prefix' keyword"""
@@ -47,8 +47,9 @@ class PrefixCommand(BaseCommand):
         if content.startswith('!'):
             content = content[1:].strip()
         
-        # Check if message starts with 'prefix'
-        return content.lower().startswith('prefix ')
+        # Check if message starts with 'prefix' (with or without space)
+        content_lower = content.lower()
+        return content_lower == 'prefix' or content_lower.startswith('prefix ')
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the prefix command"""
@@ -61,7 +62,7 @@ class PrefixCommand(BaseCommand):
         # Parse the command
         parts = content.split()
         if len(parts) < 2:
-            response = "Usage: prefix <two-character-prefix> (e.g., 'prefix 1A'), 'prefix free', or 'prefix refresh'"
+            response = self.get_help_text()
             return await self.send_response(message, response)
         
         command = parts[1].upper()
@@ -266,7 +267,7 @@ class PrefixCommand(BaseCommand):
         if not free_prefixes:
             return "❌ No free prefixes found (all 254 valid prefixes are in use)"
         
-        response = f"🆓 Available Prefixes ({len(free_prefixes)} of {total_free} free shown):\n"
+        response = f"Available Prefixes ({len(free_prefixes)} of {total_free} free):\n"
         
         # Format as a grid for better readability
         for i, prefix in enumerate(free_prefixes, 1):
@@ -280,7 +281,7 @@ class PrefixCommand(BaseCommand):
         if len(free_prefixes) % 5 != 0:
             response += "\n"
         
-        response += f"\n💡 Generate a key for a specific prefix at https://gessaman.com/mc-keygen"
+        response += f"\n💡 Generate a custom key: https://gessaman.com/mc-keygen"
         
         return response
     

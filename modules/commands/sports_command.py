@@ -39,8 +39,34 @@ class SportsCommand(BaseCommand):
     # Custom team abbreviations to distinguish between leagues
     TEAM_ABBREVIATIONS = {
         # NWSL teams - use custom abbreviations to distinguish from MLS
-        '15363': 'SEA-W',  # Seattle Reign (Women's)
-        '20905': 'LOU-W',  # Racing Louisville (Women's)
+        '21422': 'LA-W',   # Angel City FC (Women's)
+        '22187': 'BAY-W',  # Bay FC (Women's)
+        '15360': 'CHI-W',  # Chicago Stars FC (Women's)
+        '15364': 'GFC-W',  # Gotham FC (Women's)
+        '17346': 'HOU-W',  # Houston Dash (Women's)
+        '20907': 'KC-W',   # Kansas City Current (Women's)
+        '15366': 'NC-W',   # North Carolina Courage (Women's)
+        '18206': 'ORL-W',  # Orlando Pride (Women's)
+        '15362': 'POR-W',  # Portland Thorns FC (Women's)
+        '20905': 'LOU-W',  # Racing Louisville FC (Women's)
+        '21423': 'SD-W',   # San Diego Wave FC (Women's)
+        '15363': 'SEA-W',  # Seattle Reign FC (Women's)
+        '19141': 'UTA-W',  # Utah Royals (Women's)
+        '15365': 'WAS-W',  # Washington Spirit (Women's)
+        # WNBA teams - use custom abbreviations to distinguish from NBA
+        '14': 'SEA-W',     # Seattle Storm (Women's)
+        '9': 'NY-W',       # New York Liberty (Women's)
+        '6': 'LA-W',       # Los Angeles Sparks (Women's)
+        '19': 'CHI-W',     # Chicago Sky (Women's)
+        '20': 'ATL-W',     # Atlanta Dream (Women's)
+        '18': 'CON-W',     # Connecticut Sun (Women's)
+        '3': 'DAL-W',      # Dallas Wings (Women's)
+        '129689': 'GS-W',  # Golden State Valkyries (Women's)
+        '5': 'IND-W',      # Indiana Fever (Women's)
+        '17': 'LV-W',      # Las Vegas Aces (Women's)
+        '8': 'MIN-W',      # Minnesota Lynx (Women's)
+        '11': 'PHX-W',     # Phoenix Mercury (Women's)
+        '16': 'WSH-W',     # Washington Mystics (Women's)
     }
     
     # Team mappings for common searches
@@ -235,6 +261,34 @@ class SportsCommand(BaseCommand):
         '76ers': {'sport': 'basketball', 'league': 'nba', 'team_id': '20'},
         'knicks': {'sport': 'basketball', 'league': 'nba', 'team_id': '18'},
         'pelicans': {'sport': 'basketball', 'league': 'nba', 'team_id': '3'},
+        
+        # WNBA Teams
+        'storm': {'sport': 'basketball', 'league': 'wnba', 'team_id': '14'},
+        'seattle storm': {'sport': 'basketball', 'league': 'wnba', 'team_id': '14'},
+        'liberty': {'sport': 'basketball', 'league': 'wnba', 'team_id': '9'},
+        'new york liberty': {'sport': 'basketball', 'league': 'wnba', 'team_id': '9'},
+        'sparks': {'sport': 'basketball', 'league': 'wnba', 'team_id': '6'},
+        'los angeles sparks': {'sport': 'basketball', 'league': 'wnba', 'team_id': '6'},
+        'sky': {'sport': 'basketball', 'league': 'wnba', 'team_id': '19'},
+        'chicago sky': {'sport': 'basketball', 'league': 'wnba', 'team_id': '19'},
+        'dream': {'sport': 'basketball', 'league': 'wnba', 'team_id': '20'},
+        'atlanta dream': {'sport': 'basketball', 'league': 'wnba', 'team_id': '20'},
+        'sun': {'sport': 'basketball', 'league': 'wnba', 'team_id': '18'},
+        'connecticut sun': {'sport': 'basketball', 'league': 'wnba', 'team_id': '18'},
+        'wings': {'sport': 'basketball', 'league': 'wnba', 'team_id': '3'},
+        'dallas wings': {'sport': 'basketball', 'league': 'wnba', 'team_id': '3'},
+        'valkyries': {'sport': 'basketball', 'league': 'wnba', 'team_id': '129689'},
+        'golden state valkyries': {'sport': 'basketball', 'league': 'wnba', 'team_id': '129689'},
+        'fever': {'sport': 'basketball', 'league': 'wnba', 'team_id': '5'},
+        'indiana fever': {'sport': 'basketball', 'league': 'wnba', 'team_id': '5'},
+        'aces': {'sport': 'basketball', 'league': 'wnba', 'team_id': '17'},
+        'las vegas aces': {'sport': 'basketball', 'league': 'wnba', 'team_id': '17'},
+        'lynx': {'sport': 'basketball', 'league': 'wnba', 'team_id': '8'},
+        'minnesota lynx': {'sport': 'basketball', 'league': 'wnba', 'team_id': '8'},
+        'mercury': {'sport': 'basketball', 'league': 'wnba', 'team_id': '11'},
+        'phoenix mercury': {'sport': 'basketball', 'league': 'wnba', 'team_id': '11'},
+        'mystics': {'sport': 'basketball', 'league': 'wnba', 'team_id': '16'},
+        'washington mystics': {'sport': 'basketball', 'league': 'wnba', 'team_id': '16'},
         
         # NHL Teams (limited data available from API)
         'kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '58'},
@@ -505,6 +559,11 @@ class SportsCommand(BaseCommand):
             'nba': {'sport': 'basketball', 'league': 'nba'},
             'basketball': {'sport': 'basketball', 'league': 'nba'},
             
+            # WNBA
+            'wnba': {'sport': 'basketball', 'league': 'wnba'},
+            'womens basketball': {'sport': 'basketball', 'league': 'wnba'},
+            'womens': {'sport': 'basketball', 'league': 'wnba'},
+            
             # NHL
             'nhl': {'sport': 'hockey', 'league': 'nhl'},
             'hockey': {'sport': 'hockey', 'league': 'nhl'},
@@ -532,23 +591,23 @@ class SportsCommand(BaseCommand):
         
         # Define city mappings to team names
         city_mappings = {
-            'seattle': ['seahawks', 'mariners', 'sounders', 'kraken', 'reign'],
-            'chicago': ['bears', 'cubs', 'white sox', 'fire'],
-            'new york': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls'],
-            'ny': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls'],
-            'los angeles': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc'],
-            'la': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc'],
+            'seattle': ['seahawks', 'mariners', 'sounders', 'kraken', 'reign', 'storm'],
+            'chicago': ['bears', 'cubs', 'white sox', 'fire', 'sky'],
+            'new york': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls', 'liberty'],
+            'ny': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls', 'liberty'],
+            'los angeles': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc', 'sparks'],
+            'la': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc', 'sparks'],
             'miami': ['dolphins', 'marlins', 'heat', 'inter miami'],
             'boston': ['patriots', 'red sox', 'celtics', 'revolution'],
             'philadelphia': ['eagles', 'phillies', '76ers', 'union'],
             'philadelphia': ['eagles', 'phillies', '76ers', 'union'],
-            'atlanta': ['falcons', 'braves', 'hawks', 'atlanta united'],
+            'atlanta': ['falcons', 'braves', 'hawks', 'atlanta united', 'dream'],
             'houston': ['texans', 'astros', 'dynamo'],
-            'dallas': ['cowboys', 'rangers', 'stars', 'fc dallas'],
+            'dallas': ['cowboys', 'rangers', 'stars', 'fc dallas', 'wings'],
             'denver': ['broncos', 'rockies', 'rapids'],
             'detroit': ['lions', 'tigers', 'pistons'],
-            'minnesota': ['vikings', 'twins', 'timberwolves', 'minnesota united'],
-            'minneapolis': ['vikings', 'twins', 'timberwolves', 'minnesota united'],
+            'minnesota': ['vikings', 'twins', 'timberwolves', 'minnesota united', 'lynx'],
+            'minneapolis': ['vikings', 'twins', 'timberwolves', 'minnesota united', 'lynx'],
             'cleveland': ['browns', 'guardians', 'cavaliers'],
             'cincinnati': ['bengals', 'reds', 'fc cincinnati'],
             'pittsburgh': ['steelers', 'pirates', 'penguins'],
@@ -557,20 +616,23 @@ class SportsCommand(BaseCommand):
             'tampa bay': ['buccaneers', 'rays', 'lightning'],
             'kansas city': ['chiefs', 'royals', 'sporting kc'],
             'kc': ['chiefs', 'royals', 'sporting kc'],
+            'washington': ['commanders', 'nationals', 'wizards', 'dc united', 'mystics'],
+            'dc': ['commanders', 'nationals', 'wizards', 'dc united', 'mystics'],
+            'phoenix': ['cardinals', 'diamondbacks', 'suns', 'mercury'],
+            'indiana': ['colts', 'pacers', 'fever'],
+            'indianapolis': ['colts', 'pacers', 'fever'],
+            'las vegas': ['raiders', 'aces', 'golden knights'],
+            'connecticut': ['sun'],
             'arizona': ['cardinals', 'diamondbacks', 'coyotes'],
-            'phoenix': ['cardinals', 'diamondbacks', 'coyotes'],
-            'san francisco': ['49ers', 'giants', 'warriors', 'earthquakes'],
-            'sf': ['49ers', 'giants', 'warriors', 'earthquakes'],
+            'golden state': ['warriors', 'valkyries'],
+            'san francisco': ['49ers', 'giants', 'warriors', 'earthquakes', 'valkyries'],
+            'sf': ['49ers', 'giants', 'warriors', 'earthquakes', 'valkyries'],
             'san diego': ['chargers', 'padres', 'san diego fc'],
             'sd': ['chargers', 'padres', 'san diego fc'],
-            'washington': ['commanders', 'nationals', 'wizards', 'dc united'],
-            'dc': ['commanders', 'nationals', 'wizards', 'dc united'],
-            'indianapolis': ['colts', 'pacers'],
             'ind': ['colts', 'pacers'],
             'nashville': ['titans', 'predators', 'nashville sc'],
             'tennessee': ['titans', 'predators', 'nashville sc'],
             'ten': ['titans', 'predators', 'nashville sc'],
-            'las vegas': ['raiders', 'golden knights'],
             'lv': ['raiders', 'golden knights'],
             'louisville': ['racing'],
             'carolina': ['panthers', 'hornets'],
@@ -869,7 +931,7 @@ class SportsCommand(BaseCommand):
         # Otherwise, treat as single team query
         team_info = self.TEAM_MAPPINGS.get(team_name)
         if not team_info:
-            return f"Team/League '{team_name}' not found. Try: seahawks, mariners, sounders, kraken, chiefs, lfc, mlb, nfl, mls, epl, etc."
+            return f"Team/League '{team_name}' not found. Try: seahawks, mariners, sounders, kraken, storm, chiefs, lfc, mlb, nfl, mls, wnba, epl, etc."
         
         try:
             score_info = await self.fetch_team_score(team_info)
