@@ -129,7 +129,7 @@ class CommandManager:
         # Check remaining keywords that don't have plugins
         for keyword, response_format in self.keywords.items():
             # Skip if we already have a plugin handling this keyword
-            if any(cmd.matches_keyword(message) for cmd in self.commands.values()):
+            if any(keyword.lower() in [k.lower() for k in cmd.keywords] for cmd in self.commands.values()):
                 continue
                 
             if keyword.lower() in content_lower:
