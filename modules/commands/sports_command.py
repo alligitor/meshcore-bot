@@ -839,24 +839,24 @@ class SportsCommand(BaseCommand):
                 period = status.get('period', 0)
                 
                 # Format period based on sport
-                if sport == 'baseball':
-                    period_str = f"{period}I"  # Innings - no clock needed
-                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} ({period_str})"
-                elif sport == 'soccer':
+                if sport == 'soccer':
                     # For soccer, use displayClock if available (e.g., "90'+5'"), otherwise use half
                     # For soccer, show home team first (traditional soccer format)
                     if clock and clock != '0:00' and clock != "0'":
                         period_str = clock  # Use displayClock directly (e.g., "90'+5'")
-                        formatted = f"{home_name} {home_score}-{away_score} @{away_name} ({period_str})"
+                        formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({period_str})"
                     else:
                         period_str = f"{period}H"  # Fallback to half
-                        formatted = f"{home_name} {home_score}-{away_score} @{away_name} ({clock} {period_str})"
+                        formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({clock} {period_str})"
+                elif sport == 'baseball':
+                    period_str = f"{period}I"  # Innings - no clock needed
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
-                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} ({clock} {period_str})"
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 else:
                     period_str = f"P{period}"  # Generic periods
-                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} ({clock} {period_str})"
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 
                 timestamp = -1  # Live games first
                 
@@ -887,22 +887,25 @@ class SportsCommand(BaseCommand):
             elif status_name == 'STATUS_HALFTIME':
                 # Game is at halftime
                 if sport == 'soccer':
-                    formatted = f"{home_name} {home_score}-{away_score} @{away_name} (HT)"
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} (HT)"
                 else:
-                    formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} (HT)"
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} (HT)"
                 timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
-                formatted = f"{home_name} {home_score}-{away_score} @{away_name} (FT)"
+                formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT)"
                 timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
-                formatted = f"{team1_name} {team1_score}-{team2_score} @{team2_name} (F)"
+                formatted = f"{away_name} {away_score}-{home_score} @{home_name} (F)"
                 timestamp = 9999999998  # Final games second to last
                 
             else:
                 # Other status
-                formatted = f"{team1_name} {team1_score}-{team2_score} {team2_name} ({status_name})"
+                if sport == 'soccer':
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({status_name})"
+                else:
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({status_name})"
                 timestamp = 9999999997  # Other statuses third to last
             
             return {
@@ -1004,35 +1007,28 @@ class SportsCommand(BaseCommand):
             if not our_team or not other_team:
                 return None
             
-            # For soccer, determine home/away teams and format accordingly
-            if sport == 'soccer':
-                home_team = our_team if our_team.get('homeAway') == 'home' else other_team
-                away_team = other_team if our_team.get('homeAway') == 'home' else our_team
-                home_team_id = home_team.get('team', {}).get('id', '')
-                away_team_id = away_team.get('team', {}).get('id', '')
-                home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
-                away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
-                home_score = home_team.get('score', '0')
-                away_score = away_team.get('score', '0')
-                
-                # For individual team queries, we still want to show our team first
-                # but in the correct home/away order for soccer
-                if our_team.get('homeAway') == 'home':
-                    our_team_name = home_name
-                    other_team_name = away_name
-                    our_score = home_score
-                    other_score = away_score
-                else:
-                    our_team_name = away_name
-                    other_team_name = home_name
-                    our_score = away_score
-                    other_score = home_score
+            # Determine home/away teams for all sports
+            home_team = our_team if our_team.get('homeAway') == 'home' else other_team
+            away_team = other_team if our_team.get('homeAway') == 'home' else our_team
+            home_team_id = home_team.get('team', {}).get('id', '')
+            away_team_id = away_team.get('team', {}).get('id', '')
+            home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
+            away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
+            home_score = home_team.get('score', '0')
+            away_score = away_team.get('score', '0')
+            
+            # For individual team queries, we still want to show our team first
+            # but in the correct home/away order for each sport
+            if our_team.get('homeAway') == 'home':
+                our_team_name = home_name
+                other_team_name = away_name
+                our_score = home_score
+                other_score = away_score
             else:
-                # For other sports, use original order
-                our_team_name = our_team.get('team', {}).get('abbreviation', 'UNK')
-                other_team_name = other_team.get('team', {}).get('abbreviation', 'UNK')
-                our_score = our_team.get('score', '0')
-                other_score = other_team.get('score', '0')
+                our_team_name = away_name
+                other_team_name = home_name
+                our_score = away_score
+                other_score = home_score
             
             # Get game status
             status = event.get('status', {})
@@ -1056,10 +1052,7 @@ class SportsCommand(BaseCommand):
                 period = status.get('period', 0)
                 
                 # Format period based on sport
-                if sport == 'baseball':
-                    period_str = f"{period}I"  # Innings - no clock needed
-                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} ({period_str})"
-                elif sport == 'soccer':
+                if sport == 'soccer':
                     # For soccer, use displayClock if available (e.g., "90'+5'"), otherwise use half
                     # For soccer, show home team first (traditional soccer format)
                     if clock and clock != '0:00' and clock != "0'":
@@ -1068,12 +1061,15 @@ class SportsCommand(BaseCommand):
                     else:
                         period_str = f"{period}H"  # Fallback to half
                         formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({clock} {period_str})"
+                elif sport == 'baseball':
+                    period_str = f"{period}I"  # Innings - no clock needed
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
-                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} ({clock} {period_str})"
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 else:
                     period_str = f"P{period}"  # Generic periods
-                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} ({clock} {period_str})"
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 
                 timestamp = -1  # Live games first
                 
@@ -1084,12 +1080,21 @@ class SportsCommand(BaseCommand):
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         local_dt = dt.astimezone()
                         time_str = local_dt.strftime("%m/%d %I:%M %p")
-                        formatted = f"{away_name} @ {home_name} ({time_str})"
+                        if sport == 'soccer':
+                            formatted = f"{home_name} @ {away_name} ({time_str})"
+                        else:
+                            formatted = f"{away_name} @ {home_name} ({time_str})"
                     except:
-                        formatted = f"{away_name} @ {home_name} (TBD)"
+                        if sport == 'soccer':
+                            formatted = f"{home_name} @ {away_name} (TBD)"
+                        else:
+                            formatted = f"{away_name} @ {home_name} (TBD)"
                         timestamp = 9999999999  # Put TBD games last
                 else:
-                    formatted = f"{away_name} @ {home_name} (TBD)"
+                    if sport == 'soccer':
+                        formatted = f"{home_name} @ {away_name} (TBD)"
+                    else:
+                        formatted = f"{away_name} @ {home_name} (TBD)"
                     timestamp = 9999999999  # Put TBD games last
                     
             elif status_name == 'STATUS_HALFTIME':
@@ -1097,7 +1102,7 @@ class SportsCommand(BaseCommand):
                 if sport == 'soccer':
                     formatted = f"@{home_name} {home_score}-{away_score} {away_name} (HT)"
                 else:
-                    formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} (HT)"
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} (HT)"
                 timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
@@ -1105,12 +1110,15 @@ class SportsCommand(BaseCommand):
                 timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
-                formatted = f"{our_team_name} {our_score}-{other_score} @{other_team_name} (F)"
+                formatted = f"{away_name} {away_score}-{home_score} @{home_name} (F)"
                 timestamp = 9999999998  # Final games second to last
                 
             else:
                 # Other status
-                formatted = f"{our_team_name} {our_score}-{other_score} {other_team_name} ({status_name})"
+                if sport == 'soccer':
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({status_name})"
+                else:
+                    formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({status_name})"
                 timestamp = 9999999997  # Other statuses third to last
             
             return {

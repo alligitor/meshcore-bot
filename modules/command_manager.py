@@ -304,8 +304,20 @@ class CommandManager:
     
     def get_help_for_command(self, command_name: str, message: MeshMessage = None) -> str:
         """Get help text for a specific command (LoRa-friendly compact format)"""
+        # Map command aliases to their actual command names
+        command_aliases = {
+            't': 't_phrase',
+            'advert': 'advert',
+            'test': 'test',
+            'ping': 'ping',
+            'help': 'help'
+        }
+        
+        # Normalize the command name using aliases
+        normalized_name = command_aliases.get(command_name, command_name)
+        
         # First, try to find a command by exact name
-        command = self.commands.get(command_name)
+        command = self.commands.get(normalized_name)
         if command:
             # Try to pass message context to get_help_text if supported
             try:
