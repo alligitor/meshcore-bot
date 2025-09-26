@@ -794,22 +794,15 @@ class SportsCommand(BaseCommand):
             team1 = competitors[0]
             team2 = competitors[1]
             
-            # For soccer, determine home/away teams
-            if sport == 'soccer':
-                home_team = team1 if team1.get('homeAway') == 'home' else team2
-                away_team = team2 if team1.get('homeAway') == 'home' else team1
-                home_team_id = home_team.get('team', {}).get('id', '')
-                away_team_id = away_team.get('team', {}).get('id', '')
-                home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
-                away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
-                home_score = home_team.get('score', '0')
-                away_score = away_team.get('score', '0')
-            else:
-                # For other sports, use original order
-                home_name = team1.get('team', {}).get('abbreviation', 'UNK')
-                away_name = team2.get('team', {}).get('abbreviation', 'UNK')
-                home_score = team1.get('score', '0')
-                away_score = team2.get('score', '0')
+            # Determine home/away teams for all sports
+            home_team = team1 if team1.get('homeAway') == 'home' else team2
+            away_team = team2 if team1.get('homeAway') == 'home' else team1
+            home_team_id = home_team.get('team', {}).get('id', '')
+            away_team_id = away_team.get('team', {}).get('id', '')
+            home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
+            away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
+            home_score = home_team.get('score', '0')
+            away_score = away_team.get('score', '0')
             
             # Keep original variables for backward compatibility
             team1_name = away_name  # away team first
@@ -868,18 +861,18 @@ class SportsCommand(BaseCommand):
                         local_dt = dt.astimezone()
                         time_str = local_dt.strftime("%m/%d %I:%M %p")
                         if sport == 'soccer':
-                            formatted = f"{home_name} @ {away_name} ({time_str})"
+                            formatted = f"@{home_name} vs. {away_name} ({time_str})"
                         else:
                             formatted = f"{away_name} @ {home_name} ({time_str})"
                     except:
                         if sport == 'soccer':
-                            formatted = f"{home_name} @ {away_name} (TBD)"
+                            formatted = f"@{home_name} vs. {away_name} (TBD)"
                         else:
                             formatted = f"{away_name} @ {home_name} (TBD)"
                         timestamp = 9999999999  # Put TBD games last
                 else:
                     if sport == 'soccer':
-                        formatted = f"{home_name} @ {away_name} (TBD)"
+                        formatted = f"@{home_name} vs. {away_name} (TBD)"
                     else:
                         formatted = f"{away_name} @ {home_name} (TBD)"
                     timestamp = 9999999999  # Put TBD games last
@@ -1081,18 +1074,18 @@ class SportsCommand(BaseCommand):
                         local_dt = dt.astimezone()
                         time_str = local_dt.strftime("%m/%d %I:%M %p")
                         if sport == 'soccer':
-                            formatted = f"{home_name} @ {away_name} ({time_str})"
+                            formatted = f"@{home_name} vs. {away_name} ({time_str})"
                         else:
                             formatted = f"{away_name} @ {home_name} ({time_str})"
                     except:
                         if sport == 'soccer':
-                            formatted = f"{home_name} @ {away_name} (TBD)"
+                            formatted = f"@{home_name} vs. {away_name} (TBD)"
                         else:
                             formatted = f"{away_name} @ {home_name} (TBD)"
                         timestamp = 9999999999  # Put TBD games last
                 else:
                     if sport == 'soccer':
-                        formatted = f"{home_name} @ {away_name} (TBD)"
+                        formatted = f"@{home_name} vs. {away_name} (TBD)"
                     else:
                         formatted = f"{away_name} @ {home_name} (TBD)"
                     timestamp = 9999999999  # Put TBD games last
