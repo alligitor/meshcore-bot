@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
 AQI command for the MeshCore Bot
-Provides Air Quality Index information using zip codes and AirNow API
+Provides Air Quality Index information using OpenMeteo API
 """
 
 import re
-import requests
+import openmeteo_requests
+import requests_cache
+from retry_requests import retry
 from datetime import datetime
 from geopy.geocoders import Nominatim
 from .base_command import BaseCommand
@@ -13,12 +15,12 @@ from ..models import MeshMessage
 
 
 class AqiCommand(BaseCommand):
-    """Handles AQI commands with zipcode and city support"""
+    """Handles AQI commands with location support using OpenMeteo API"""
     
     # Plugin metadata
     name = "aqi"
     keywords = ['aqi', 'air', 'airquality', 'air_quality']
-    description = "Get Air Quality Index for a zip code, city, or coordinates (usage: aqi 12345, aqi seattle, or aqi 47.6,-122.3)"
+    description = "Get Air Quality Index for a location (usage: aqi seattle, aqi greenwood, aqi vancouver canada, aqi 47.6,-122.3, or aqi help)"
     category = "weather"
     cooldown_seconds = 5  # 5 second cooldown per user to prevent API abuse
     
@@ -36,21 +38,19 @@ class AqiCommand(BaseCommand):
         # Get default state from config for city disambiguation
         self.default_state = self.bot.config.get('Weather', 'default_state', fallback='WA')
         
-        # Get AirNow API key from config
-        self.api_key = self.bot.config.get('External_Data', 'airnow_api_key', fallback='')
-        if not self.api_key:
-            self.logger.warning("AirNow API key not configured in config.ini")
+        # Get timezone from config
+        self.timezone = self.bot.config.get('Bot', 'timezone', fallback='America/Los_Angeles')
         
         # Initialize geocoder
         self.geolocator = Nominatim(user_agent="meshcore-bot")
         
-        # US boundary coordinates (approximate bounding box)
-        self.us_bounds = {
-            'min_lat': 24.396308,  # Southern tip of Florida
-            'max_lat': 71.538800,  # Northern Alaska
-            'min_lon': -179.148909, # Western Alaska (Aleutian Islands)
-            'max_lon': -66.885444   # Eastern Maine
-        }
+        # Get database manager for geocoding cache
+        self.db_manager = bot.db_manager
+        
+        # Setup the Open-Meteo API client with cache and retry on error
+        cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
+        retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+        self.openmeteo = openmeteo_requests.Client(session=retry_session)
         
         # Snarky responses for astronomical objects
         self.astronomical_responses = {
@@ -82,7 +82,12 @@ class AqiCommand(BaseCommand):
         }
     
     def get_help_text(self) -> str:
-        return f"Usage: aqi <zipcode|city|lat,lon> - Get AQI for US zipcode, city in {self.default_state}, or coordinates"
+        return f"Usage: aqi <city|neighborhood|city country|lat,lon|help> - Get AQI for city/neighborhood in {self.default_state}, international cities, coordinates, or pollutant help"
+    
+    def get_pollutant_help(self) -> str:
+        """Get help text explaining pollutant types within 130 characters"""
+        # Compact explanation of all pollutants - fits within 130 chars
+        return "AQI Help: PM2.5=fine particles, PM10=coarse, O3=ozone, NO2=nitrogen dioxide, CO=carbon monoxide, SO2=sulfur dioxide"
     
     def can_execute(self, message: MeshMessage) -> bool:
         """Override cooldown check to be per-user instead of per-command-instance"""
@@ -123,125 +128,21 @@ class AqiCommand(BaseCommand):
         import time
         self.user_cooldowns[user_id] = time.time()
     
-    def is_coordinate_in_us(self, lat: float, lon: float) -> bool:
-        """Check if coordinates are within US boundaries"""
-        
-        # Check Hawaii first (separate from continental US)
-        hawaii_bounds = {
-            'min_lat': 18.9, 'max_lat': 22.2,
-            'min_lon': -162.0, 'max_lon': -154.8
-        }
-        if (hawaii_bounds['min_lat'] <= lat <= hawaii_bounds['max_lat'] and
-            hawaii_bounds['min_lon'] <= lon <= hawaii_bounds['max_lon']):
-            return True
-        
-        # Check Puerto Rico (separate from continental US)
-        puerto_rico_bounds = {
-            'min_lat': 17.8, 'max_lat': 18.5,
-            'min_lon': -67.3, 'max_lon': -65.2
-        }
-        if (puerto_rico_bounds['min_lat'] <= lat <= puerto_rico_bounds['max_lat'] and
-            puerto_rico_bounds['min_lon'] <= lon <= puerto_rico_bounds['max_lon']):
-            return True
-        
-        # Check Alaska (separate from continental US)
-        alaska_bounds = {
-            'min_lat': 51.0, 'max_lat': 71.5,
-            'min_lon': -179.0, 'max_lon': -129.0
-        }
-        if (alaska_bounds['min_lat'] <= lat <= alaska_bounds['max_lat'] and
-            alaska_bounds['min_lon'] <= lon <= alaska_bounds['max_lon']):
-            return True
-        
-        # Continental US bounds (excluding Alaska, Hawaii, Puerto Rico)
-        continental_us_bounds = {
-            'min_lat': 24.4,   # Southern tip of Florida
-            'max_lat': 49.0,   # US-Canada border (49th parallel)
-            'min_lon': -125.0, # West coast
-            'max_lon': -66.0   # East coast
-        }
-        
-        # Check if coordinates are within continental US bounds
-        if not (continental_us_bounds['min_lat'] <= lat <= continental_us_bounds['max_lat']):
-            return False
-        if not (continental_us_bounds['min_lon'] <= lon <= continental_us_bounds['max_lon']):
-            return False
-        
-        # Additional exclusions for areas that might be in Canada or Mexico
-        # Northern border with Canada (above 49th parallel)
-        if lat > 49.0:
-            return False
-        
-        # Southern border with Mexico (below 25th parallel, west of -97)
-        if lat < 25.0 and lon < -97.0:
-            return False
-        
-        # Great Lakes region - exclude Canadian side
-        # Lake Superior area (north of 48.5, between -92 and -84)
-        if lat > 48.5 and -92.0 <= lon <= -84.0:
-            return False
-        
-        # Lake Huron area (north of 45.5, between -84 and -79)
-        if lat > 45.5 and -84.0 <= lon <= -79.0:
-            return False
-        
-        # Lake Ontario area (north of 44.0, between -79 and -76)
-        if lat > 44.0 and -79.0 <= lon <= -76.0:
-            return False
-        
-        # Additional Canadian exclusions
-        # Toronto area (around 43.7, -79.4)
-        if 43.5 <= lat <= 43.9 and -79.8 <= lon <= -79.0:
-            return False
-        
-        # Montreal area (around 45.5, -73.6)
-        if 45.3 <= lat <= 45.7 and -74.0 <= lon <= -73.2:
-            return False
-        
-        # Vancouver area (around 49.3, -123.1)
-        if 49.0 <= lat <= 49.5 and -123.5 <= lon <= -122.5:
-            return False
-        
-        return True
-    
-    def validate_coordinates_with_geocoding(self, lat: float, lon: float) -> tuple:
-        """Validate coordinates are in US using both boundary check and geocoding"""
-        # First check if coordinates are within US boundaries
-        if not self.is_coordinate_in_us(lat, lon):
-            return False, f"Coordinates {lat:.3f},{lon:.3f} are outside the United States. AirNow API only supports US locations."
-        
-        # Additional validation using reverse geocoding
-        try:
-            # Use reverse geocoding to get location info
-            location = self.geolocator.reverse(f"{lat}, {lon}")
-            if location:
-                address = location.raw.get('address', {})
-                country = address.get('country', '').lower()
-                country_code = address.get('country_code', '').lower()
-                
-                # Check if the location is in the US
-                if country in ['united states', 'usa', 'us'] or country_code in ['us', 'usa']:
-                    return True, None
-                else:
-                    return False, f"Coordinates {lat:.3f},{lon:.3f} are in {country.title()}. AirNow API only supports US locations."
-            else:
-                # If geocoding fails but coordinates are within US bounds, allow it
-                return True, None
-                
-        except Exception as e:
-            self.logger.warning(f"Error in reverse geocoding for {lat},{lon}: {e}")
-            # If geocoding fails but coordinates are within US bounds, allow it
-            return True, None
-    
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the AQI command"""
         content = message.content.strip()
         
         # Parse the command to extract location
-        # Support formats: "aqi 12345", "aqi seattle", "aqi paris, tx", "aqi 47.6,-122.3", "air everett"
+        # Support formats: "aqi seattle", "aqi paris, tx", "aqi 47.6,-122.3", "air everett", "aqi help"
         parts = content.split()
         if len(parts) < 2:
-            await self.send_response(message, f"Usage: aqi <zipcode|city|lat,lon> - Example: aqi 12345 or aqi seattle or aqi 47.6,-122.3")
+            await self.send_response(message, f"Usage: aqi <city|neighborhood|city country|lat,lon> - Example: aqi seattle, aqi greenwood, aqi vancouver canada, or aqi 47.6,-122.3")
+            return True
+        
+        # Check for help command
+        if len(parts) >= 2 and parts[1].lower() == 'help':
+            help_text = self.get_pollutant_help()
+            await self.send_response(message, help_text)
             return True
         
         # Join all parts after the command to handle "city, state" format
@@ -253,14 +154,143 @@ class AqiCommand(BaseCommand):
             await self.send_response(message, self.astronomical_responses[location_lower])
             return True
         
-        # Check if it's a zipcode (5 digits)
-        if re.match(r'^\d{5}$', location):
-            location_type = "zipcode"
-        # Check if it's lat,lon coordinates (decimal numbers separated by comma)
-        elif re.match(r'^-?\d+\.?\d*,-?\d+\.?\d*$', location):
+        # Check if it's lat,lon coordinates (decimal numbers separated by comma, with optional spaces)
+        # Handle formats like: "47.6,-122.3", "47.6, -122.3", "47.980525, -122.150649", " -47.6 , 122.3 "
+        if re.match(r'^\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*$', location):
             location_type = "coordinates"
         else:
-            # It's a city name (possibly with state)
+            # It's a city name (possibly with state/country)
+            # Check if it might be "city country" format (space-separated)
+            location_parts = location.split()
+            if len(location_parts) >= 2:
+                potential_city = location_parts[0]
+                potential_country = location_parts[1]
+                country_indicators = ['canada', 'mexico', 'uk', 'united', 'kingdom', 'france', 'germany', 'italy', 'spain', 'australia', 'japan', 'china', 'india', 'brazil']
+                
+                # Check if second word is a country indicator
+                if potential_country.lower() in country_indicators:
+                    # Convert space-separated to comma-separated format
+                    if potential_country.lower() in ['united', 'kingdom']:
+                        # Handle "united kingdom" case
+                        if len(location_parts) >= 3 and location_parts[2].lower() == 'kingdom':
+                            location = f"{potential_city}, uk"
+                        else:
+                            location = f"{potential_city}, {potential_country}"
+                    else:
+                        location = f"{potential_city}, {potential_country}"
+            else:
+                # Single word city - check if it's a well-known international city
+                international_cities = {
+                    'beijing': 'beijing, china',
+                    'shanghai': 'shanghai, china',
+                    'tokyo': 'tokyo, japan',
+                    'london': 'london, uk',
+                    'paris': 'paris, france',
+                    'berlin': 'berlin, germany',
+                    'rome': 'rome, italy',
+                    'madrid': 'madrid, spain',
+                    'moscow': 'moscow, russia',
+                    'sydney': 'sydney, australia',
+                    'melbourne': 'melbourne, australia',
+                    'toronto': 'toronto, canada',
+                    'vancouver': 'vancouver, canada',
+                    'mumbai': 'mumbai, india',
+                    'delhi': 'delhi, india',
+                    'bangalore': 'bangalore, india',
+                    'sao paulo': 'sao paulo, brazil',
+                    'rio de janeiro': 'rio de janeiro, brazil',
+                    'mexico city': 'mexico city, mexico',
+                    'cairo': 'cairo, egypt',
+                    'istanbul': 'istanbul, turkey',
+                    'seoul': 'seoul, south korea',
+                    'bangkok': 'bangkok, thailand',
+                    'singapore': 'singapore, singapore',
+                    'hong kong': 'hong kong, china',
+                    'dubai': 'dubai, uae',
+                    'tel aviv': 'tel aviv, israel',
+                    'johannesburg': 'johannesburg, south africa',
+                    'nairobi': 'nairobi, kenya',
+                    'lagos': 'lagos, nigeria',
+                    'buenos aires': 'buenos aires, argentina',
+                    'lima': 'lima, peru',
+                    'santiago': 'santiago, chile',
+                    'bogota': 'bogota, colombia',
+                    'caracas': 'caracas, venezuela',
+                    'havana': 'havana, cuba',
+                    'kingston': 'kingston, jamaica',
+                    'san juan': 'san juan, puerto rico',
+                    'reykjavik': 'reykjavik, iceland',
+                    'oslo': 'oslo, norway',
+                    'stockholm': 'stockholm, sweden',
+                    'copenhagen': 'copenhagen, denmark',
+                    'helsinki': 'helsinki, finland',
+                    'warsaw': 'warsaw, poland',
+                    'prague': 'prague, czech republic',
+                    'budapest': 'budapest, hungary',
+                    'bucharest': 'bucharest, romania',
+                    'sofia': 'sofia, bulgaria',
+                    'zagreb': 'zagreb, croatia',
+                    'belgrade': 'belgrade, serbia',
+                    'athens': 'athens, greece',
+                    'lisbon': 'lisbon, portugal',
+                    'dublin': 'dublin, ireland',
+                    'brussels': 'brussels, belgium',
+                    'amsterdam': 'amsterdam, netherlands',
+                    'zurich': 'zurich, switzerland',
+                    'vienna': 'vienna, austria',
+                    'lucerne': 'lucerne, switzerland',
+                    'geneva': 'geneva, switzerland',
+                    'monaco': 'monaco, monaco',
+                    'andorra': 'andorra, andorra',
+                    'san marino': 'san marino, san marino',
+                    'vatican': 'vatican city, vatican',
+                    'luxembourg': 'luxembourg, luxembourg',
+                    'malta': 'valletta, malta',
+                    'cyprus': 'nicosia, cyprus',
+                    'albania': 'tirana, albania',
+                    'macedonia': 'skopje, macedonia',
+                    'montenegro': 'podgorica, montenegro',
+                    'bosnia': 'sarajevo, bosnia',
+                    'slovenia': 'ljubljana, slovenia',
+                    'slovakia': 'bratislava, slovakia',
+                    'lithuania': 'vilnius, lithuania',
+                    'latvia': 'riga, latvia',
+                    'estonia': 'tallinn, estonia',
+                    'belarus': 'minsk, belarus',
+                    'ukraine': 'kiev, ukraine',
+                    'moldova': 'chisinau, moldova',
+                    'georgia': 'tbilisi, georgia',
+                    'armenia': 'yerevan, armenia',
+                    'azerbaijan': 'baku, azerbaijan',
+                    'kazakhstan': 'almaty, kazakhstan',
+                    'uzbekistan': 'tashkent, uzbekistan',
+                    'kyrgyzstan': 'bishkek, kyrgyzstan',
+                    'tajikistan': 'dushanbe, tajikistan',
+                    'turkmenistan': 'ashgabat, turkmenistan',
+                    'afghanistan': 'kabul, afghanistan',
+                    'pakistan': 'islamabad, pakistan',
+                    'bangladesh': 'dhaka, bangladesh',
+                    'sri lanka': 'colombo, sri lanka',
+                    'nepal': 'kathmandu, nepal',
+                    'bhutan': 'thimphu, bhutan',
+                    'myanmar': 'yangon, myanmar',
+                    'laos': 'vientiane, laos',
+                    'cambodia': 'phnom penh, cambodia',
+                    'vietnam': 'hanoi, vietnam',
+                    'malaysia': 'kuala lumpur, malaysia',
+                    'indonesia': 'jakarta, indonesia',
+                    'philippines': 'manila, philippines',
+                    'taiwan': 'taipei, taiwan',
+                    'north korea': 'pyongyang, north korea',
+                    'mongolia': 'ulaanbaatar, mongolia',
+                    'kazakhstan': 'nur-sultan, kazakhstan'
+                }
+                
+                # Check if it's a known international city
+                city_lower = location.lower()
+                if city_lower in international_cities:
+                    location = international_cities[city_lower]
+            
             location_type = "city"
         
         try:
@@ -280,18 +310,10 @@ class AqiCommand(BaseCommand):
             return True
     
     async def get_aqi_for_location(self, location: str, location_type: str) -> str:
-        """Get AQI data for a location (zipcode, city, or coordinates)"""
+        """Get AQI data for a location (city or coordinates)"""
         try:
-            if not self.api_key:
-                return "AirNow API key not configured. Please add airnow_api_key to [External_Data] section in config.ini"
-            
             # Convert location to lat/lon
-            if location_type == "zipcode":
-                lat, lon = self.zipcode_to_lat_lon(location)
-                if lat is None or lon is None:
-                    return f"Could not find location for zipcode {location}"
-                address_info = None
-            elif location_type == "coordinates":
+            if location_type == "coordinates":
                 # Parse lat,lon coordinates
                 try:
                     lat_str, lon_str = location.split(',')
@@ -304,15 +326,27 @@ class AqiCommand(BaseCommand):
                     if not (-180 <= lon <= 180):
                         return f"Invalid longitude: {lon}. Must be between -180 and 180."
                     
-                    # Validate coordinates are in US
-                    is_valid, error_msg = self.validate_coordinates_with_geocoding(lat, lon)
-                    if not is_valid:
-                        return error_msg
-                    
                     address_info = None
                 except ValueError:
                     return f"Invalid coordinates format: {location}. Use format: lat,lon (e.g., 47.6,-122.3)"
             else:  # city
+                # Define state abbreviation map for US states (needed for both US and international cities)
+                state_abbrev_map = {
+                    'Washington': 'WA', 'California': 'CA', 'New York': 'NY', 'Texas': 'TX',
+                    'Florida': 'FL', 'Illinois': 'IL', 'Pennsylvania': 'PA', 'Ohio': 'OH',
+                    'Georgia': 'GA', 'North Carolina': 'NC', 'Michigan': 'MI', 'New Jersey': 'NJ',
+                    'Virginia': 'VA', 'Tennessee': 'TN', 'Indiana': 'IN', 'Arizona': 'AZ',
+                    'Massachusetts': 'MA', 'Missouri': 'MO', 'Maryland': 'MD', 'Wisconsin': 'WI',
+                    'Colorado': 'CO', 'Minnesota': 'MN', 'South Carolina': 'SC', 'Alabama': 'AL',
+                    'Louisiana': 'LA', 'Kentucky': 'KY', 'Oregon': 'OR', 'Oklahoma': 'OK',
+                    'Connecticut': 'CT', 'Utah': 'UT', 'Iowa': 'IA', 'Nevada': 'NV',
+                    'Arkansas': 'AR', 'Mississippi': 'MS', 'Kansas': 'KS', 'New Mexico': 'NM',
+                    'Nebraska': 'NE', 'West Virginia': 'WV', 'Idaho': 'ID', 'Hawaii': 'HI',
+                    'New Hampshire': 'NH', 'Maine': 'ME', 'Montana': 'MT', 'Rhode Island': 'RI',
+                    'Delaware': 'DE', 'South Dakota': 'SD', 'North Dakota': 'ND', 'Alaska': 'AK',
+                    'Vermont': 'VT', 'Wyoming': 'WY'
+                }
+                
                 result = self.city_to_lat_lon(location)
                 if len(result) == 3:
                     lat, lon, address_info = result
@@ -321,11 +355,16 @@ class AqiCommand(BaseCommand):
                     address_info = None
                 
                 if lat is None or lon is None:
-                    return f"Could not find city '{location}' in {self.default_state}"
+                    # Check if it's an international city to provide better error message
+                    if ',' in location and any(country in location.lower() for country in ['canada', 'mexico', 'uk', 'france', 'germany', 'italy', 'spain', 'australia', 'japan', 'china', 'india', 'brazil', 'uae', 'russia', 'korea', 'thailand', 'singapore', 'egypt', 'turkey']):
+                        return f"Could not find city '{location}'"
+                    else:
+                        return f"Could not find city '{location}' in {self.default_state}"
                 
                 # Check if the found city is in a different state than default
                 actual_city = location
                 actual_state = self.default_state
+                
                 if address_info:
                     # Try to get the best city name from various address fields
                     actual_city = (address_info.get('city') or 
@@ -334,25 +373,26 @@ class AqiCommand(BaseCommand):
                                  address_info.get('hamlet') or 
                                  address_info.get('municipality') or 
                                  location)
-                    actual_state = address_info.get('state', self.default_state)
-                    # Convert full state name to abbreviation if needed
-                    if len(actual_state) > 2:
-                        state_abbrev_map = {
-                            'Washington': 'WA', 'California': 'CA', 'New York': 'NY', 'Texas': 'TX',
-                            'Florida': 'FL', 'Illinois': 'IL', 'Pennsylvania': 'PA', 'Ohio': 'OH',
-                            'Georgia': 'GA', 'North Carolina': 'NC', 'Michigan': 'MI', 'New Jersey': 'NJ',
-                            'Virginia': 'VA', 'Tennessee': 'TN', 'Indiana': 'IN', 'Arizona': 'AZ',
-                            'Massachusetts': 'MA', 'Missouri': 'MO', 'Maryland': 'MD', 'Wisconsin': 'WI',
-                            'Colorado': 'CO', 'Minnesota': 'MN', 'South Carolina': 'SC', 'Alabama': 'AL',
-                            'Louisiana': 'LA', 'Kentucky': 'KY', 'Oregon': 'OR', 'Oklahoma': 'OK',
-                            'Connecticut': 'CT', 'Utah': 'UT', 'Iowa': 'IA', 'Nevada': 'NV',
-                            'Arkansas': 'AR', 'Mississippi': 'MS', 'Kansas': 'KS', 'New Mexico': 'NM',
-                            'Nebraska': 'NE', 'West Virginia': 'WV', 'Idaho': 'ID', 'Hawaii': 'HI',
-                            'New Hampshire': 'NH', 'Maine': 'ME', 'Montana': 'MT', 'Rhode Island': 'RI',
-                            'Delaware': 'DE', 'South Dakota': 'SD', 'North Dakota': 'ND', 'Alaska': 'AK',
-                            'Vermont': 'VT', 'Wyoming': 'WY'
-                        }
-                        actual_state = state_abbrev_map.get(actual_state, actual_state)
+                    
+                    # Get state/province/country info - handle US vs international addresses
+                    country = address_info.get('country', '')
+                    state = address_info.get('state', '')
+                    
+                    # For US cities, use the state; for international cities, use the country
+                    if country == "United States" or country == "US":
+                        # US city - use the state
+                        actual_state = state or self.default_state
+                        # Convert full state name to abbreviation if needed
+                        if len(actual_state) > 2 and actual_state in state_abbrev_map:
+                            actual_state = state_abbrev_map.get(actual_state, actual_state)
+                    else:
+                        # International city - use the country
+                        actual_state = (country or 
+                                      address_info.get('province') or 
+                                      self.default_state)
+                        # Abbreviate "United States" to "US" to save characters
+                        if actual_state == "United States":
+                            actual_state = "US"
                     
                     # Also check if the default state needs to be converted for comparison
                     default_state_full = self.default_state
@@ -361,24 +401,28 @@ class AqiCommand(BaseCommand):
                         abbrev_to_full_map = {v: k for k, v in state_abbrev_map.items()}
                         default_state_full = abbrev_to_full_map.get(self.default_state, self.default_state)
             
-            # Get AQI forecast - use zipcode API if available, otherwise lat/lon
-            if location_type == "zipcode":
-                aqi_data = self.get_airnow_aqi_by_zipcode(location)
-            else:
-                # Use lat/lon API for both city and coordinates
-                aqi_data = self.get_airnow_aqi(lat, lon)
+            # Get AQI data from OpenMeteo
+            aqi_data = self.get_openmeteo_aqi(lat, lon)
             
             if aqi_data == self.ERROR_FETCHING_DATA:
-                return "Error fetching AQI data from AirNow"
+                return "Error fetching AQI data from OpenMeteo"
             
-            # Add location info if city is in a different state than default, or for coordinates
+            # Add location info for better user confirmation
             location_prefix = ""
             if location_type == "city" and address_info:
-                # Compare states (handle both full names and abbreviations)
-                states_different = (actual_state != self.default_state and 
-                                  actual_state != default_state_full)
-                if states_different:
-                    location_prefix = f"{actual_city}, {actual_state}: "
+                # Always try to include city name if there's space
+                city_display = f"{actual_city}, {actual_state}"
+                
+                # Check if we have space for the city name
+                test_output = f"{city_display}: {aqi_data}"
+                if len(test_output) <= 130:
+                    location_prefix = f"{city_display}: "
+                else:
+                    # If no space, only show if it's a different state than default
+                    states_different = (actual_state != self.default_state and 
+                                      actual_state != default_state_full)
+                    if states_different:
+                        location_prefix = f"{actual_city}, {actual_state}: "
             elif location_type == "coordinates":
                 # Add coordinate info for clarity
                 location_prefix = f"{lat:.3f},{lon:.3f}: "
@@ -389,41 +433,65 @@ class AqiCommand(BaseCommand):
             self.logger.error(f"Error getting AQI for {location_type} {location}: {e}")
             return f"Error getting AQI data: {e}"
     
-    def zipcode_to_lat_lon(self, zipcode: str) -> tuple:
-        """Convert zipcode to latitude and longitude"""
-        try:
-            # Use Nominatim to geocode the zipcode
-            location = self.geolocator.geocode(f"{zipcode}, USA")
-            if location:
-                return location.latitude, location.longitude
-            else:
-                return None, None
-        except Exception as e:
-            self.logger.error(f"Error geocoding zipcode {zipcode}: {e}")
-            return None, None
-    
     def city_to_lat_lon(self, city: str) -> tuple:
         """Convert city name to latitude and longitude using default state"""
         try:
-            # Check if the input contains a comma (city, state format)
+            # Check cache first for default state query
+            cache_query = f"{city}, {self.default_state}, USA"
+            cached_lat, cached_lon = self.db_manager.get_cached_geocoding(cache_query)
+            if cached_lat is not None and cached_lon is not None:
+                self.logger.debug(f"Using cached geocoding for {city}")
+                # Still need to do reverse geocoding for address details
+                try:
+                    reverse_location = self.geolocator.reverse(f"{cached_lat}, {cached_lon}")
+                    if reverse_location:
+                        return cached_lat, cached_lon, reverse_location.raw.get('address', {})
+                except:
+                    pass
+                return cached_lat, cached_lon, {}
+            
+            # Check if the input contains a comma (city, state/country format)
             if ',' in city:
-                # Parse city, state format
+                # Parse city, state/country format
                 city_parts = [part.strip() for part in city.split(',')]
                 if len(city_parts) >= 2:
                     city_name = city_parts[0]
-                    state = city_parts[1]
+                    state_or_country = city_parts[1]
                     
-                    # Try the specific city, state combination first
-                    location = self.geolocator.geocode(f"{city_name}, {state}, USA")
-                    if location:
-                        # Use reverse geocoding to get detailed address info
-                        try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                            if reverse_location:
-                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                        except:
-                            pass
-                        return location.latitude, location.longitude, location.raw.get('address', {})
+                    # Check if it's a country (not a US state)
+                    country_indicators = ['canada', 'mexico', 'uk', 'united kingdom', 'france', 'germany', 'italy', 'spain', 'australia', 'japan', 'china', 'india', 'brazil', 'uae', 'russia', 'korea', 'thailand', 'singapore', 'egypt', 'turkey', 'israel', 'south africa', 'kenya', 'nigeria', 'argentina', 'peru', 'chile', 'colombia', 'venezuela', 'cuba', 'jamaica', 'puerto rico', 'iceland', 'norway', 'sweden', 'denmark', 'finland', 'poland', 'czech republic', 'hungary', 'romania', 'bulgaria', 'croatia', 'serbia', 'greece', 'portugal', 'ireland', 'belgium', 'netherlands', 'switzerland', 'austria', 'monaco', 'andorra', 'san marino', 'vatican', 'luxembourg', 'malta', 'cyprus', 'albania', 'macedonia', 'montenegro', 'bosnia', 'slovenia', 'slovakia', 'lithuania', 'latvia', 'estonia', 'belarus', 'ukraine', 'moldova', 'georgia', 'armenia', 'azerbaijan', 'kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'afghanistan', 'pakistan', 'bangladesh', 'sri lanka', 'nepal', 'bhutan', 'myanmar', 'laos', 'cambodia', 'vietnam', 'malaysia', 'indonesia', 'philippines', 'taiwan', 'north korea', 'mongolia']
+                    is_country = state_or_country.lower() in country_indicators
+                    
+                    if is_country:
+                        # Handle international cities
+                        location = self.geolocator.geocode(f"{city_name}, {state_or_country}")
+                        if location:
+                            # Cache the result
+                            self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}", location.latitude, location.longitude)
+                            
+                            # Use reverse geocoding to get detailed address info
+                            try:
+                                reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                                if reverse_location:
+                                    return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                            except:
+                                pass
+                            return location.latitude, location.longitude, location.raw.get('address', {})
+                    else:
+                        # Handle US city, state format
+                        location = self.geolocator.geocode(f"{city_name}, {state_or_country}, USA")
+                        if location:
+                            # Cache the result
+                            self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}, USA", location.latitude, location.longitude)
+                            
+                            # Use reverse geocoding to get detailed address info
+                            try:
+                                reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                                if reverse_location:
+                                    return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                            except:
+                                pass
+                            return location.latitude, location.longitude, location.raw.get('address', {})
             
             # For common city names, try major cities first to avoid small towns
             major_city_mappings = {
@@ -437,58 +505,7 @@ class AqiCommand(BaseCommand):
                 'madison': ['Madison, WI, USA', 'Madison, AL, USA'],
                 'auburn': ['Auburn, AL, USA', 'Auburn, WA, USA'],
                 'troy': ['Troy, NY, USA', 'Troy, MI, USA'],
-                'clinton': ['Clinton, IA, USA', 'Clinton, MS, USA'],
-                # Major US cities that should be unambiguous
-                'los angeles': ['Los Angeles, CA, USA'],
-                'new york': ['New York, NY, USA'],
-                'chicago': ['Chicago, IL, USA'],
-                'houston': ['Houston, TX, USA'],
-                'phoenix': ['Phoenix, AZ, USA'],
-                'philadelphia': ['Philadelphia, PA, USA'],
-                'san antonio': ['San Antonio, TX, USA'],
-                'san diego': ['San Diego, CA, USA'],
-                'dallas': ['Dallas, TX, USA'],
-                'san jose': ['San Jose, CA, USA'],
-                'austin': ['Austin, TX, USA'],
-                'jacksonville': ['Jacksonville, FL, USA'],
-                'fort worth': ['Fort Worth, TX, USA'],
-                'columbus': ['Columbus, OH, USA'],
-                'charlotte': ['Charlotte, NC, USA'],
-                'san francisco': ['San Francisco, CA, USA'],
-                'indianapolis': ['Indianapolis, IN, USA'],
-                'seattle': ['Seattle, WA, USA'],
-                'denver': ['Denver, CO, USA'],
-                'washington': ['Washington, DC, USA'],
-                'boston': ['Boston, MA, USA'],
-                'el paso': ['El Paso, TX, USA'],
-                'nashville': ['Nashville, TN, USA'],
-                'detroit': ['Detroit, MI, USA'],
-                'oklahoma city': ['Oklahoma City, OK, USA'],
-                'portland': ['Portland, OR, USA', 'Portland, ME, USA'],
-                'las vegas': ['Las Vegas, NV, USA'],
-                'memphis': ['Memphis, TN, USA'],
-                'louisville': ['Louisville, KY, USA'],
-                'baltimore': ['Baltimore, MD, USA'],
-                'milwaukee': ['Milwaukee, WI, USA'],
-                'albuquerque': ['Albuquerque, NM, USA'],
-                'tucson': ['Tucson, AZ, USA'],
-                'fresno': ['Fresno, CA, USA'],
-                'sacramento': ['Sacramento, CA, USA'],
-                'mesa': ['Mesa, AZ, USA'],
-                'kansas city': ['Kansas City, MO, USA'],
-                'atlanta': ['Atlanta, GA, USA'],
-                'long beach': ['Long Beach, CA, USA'],
-                'colorado springs': ['Colorado Springs, CO, USA'],
-                'raleigh': ['Raleigh, NC, USA'],
-                'miami': ['Miami, FL, USA'],
-                'virginia beach': ['Virginia Beach, VA, USA'],
-                'omaha': ['Omaha, NE, USA'],
-                'oakland': ['Oakland, CA, USA'],
-                'minneapolis': ['Minneapolis, MN, USA'],
-                'tulsa': ['Tulsa, OK, USA'],
-                'arlington': ['Arlington, TX, USA'],
-                'tampa': ['Tampa, FL, USA'],
-                'new orleans': ['New Orleans, LA, USA']
+                'clinton': ['Clinton, IA, USA', 'Clinton, MS, USA']
             }
             
             # If it's a major city with multiple locations, try the major ones first
@@ -496,6 +513,9 @@ class AqiCommand(BaseCommand):
                 for major_city_query in major_city_mappings[city.lower()]:
                     location = self.geolocator.geocode(major_city_query)
                     if location:
+                        # Cache the result
+                        self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
+                        
                         # Use reverse geocoding to get detailed address info
                         try:
                             reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
@@ -508,6 +528,9 @@ class AqiCommand(BaseCommand):
             # First try with default state
             location = self.geolocator.geocode(f"{city}, {self.default_state}, USA")
             if location:
+                # Cache the result
+                self.db_manager.cache_geocoding(f"{city}, {self.default_state}, USA", location.latitude, location.longitude)
+                
                 # Use reverse geocoding to get detailed address info
                 try:
                     reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
@@ -517,9 +540,29 @@ class AqiCommand(BaseCommand):
                     pass
                 return location.latitude, location.longitude, location.raw.get('address', {})
             else:
-                # Try without state as fallback
+                # Try neighborhood-specific queries for major cities
+                neighborhood_queries = self.get_neighborhood_queries(city)
+                for query in neighborhood_queries:
+                    location = self.geolocator.geocode(query)
+                    if location:
+                        # Cache the result
+                        self.db_manager.cache_geocoding(query, location.latitude, location.longitude)
+                        
+                        # Use reverse geocoding to get detailed address info
+                        try:
+                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            if reverse_location:
+                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                        except:
+                            pass
+                        return location.latitude, location.longitude, location.raw.get('address', {})
+                
+                # Try without state as final fallback
                 location = self.geolocator.geocode(f"{city}, USA")
                 if location:
+                    # Cache the result
+                    self.db_manager.cache_geocoding(f"{city}, USA", location.latitude, location.longitude)
+                    
                     # Use reverse geocoding to get detailed address info
                     try:
                         reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
@@ -529,262 +572,246 @@ class AqiCommand(BaseCommand):
                         pass
                     return location.latitude, location.longitude, location.raw.get('address', {})
                 else:
-                    return None, None, None
+                    return (None, None, None)
         except Exception as e:
             self.logger.error(f"Error geocoding city {city}: {e}")
-            return None, None, None
+            return (None, None, None)
     
-    def get_airnow_aqi(self, lat: float, lon: float) -> str:
-        """Get AQI forecast from AirNow API"""
-        try:
-            # Get current date for the forecast
-            today = datetime.now().strftime('%Y-%m-%d')
-            
-            # Try with increasing distance radii if no data found
-            distances = [25, 50, 100]
-            
-            for distance in distances:
-                # Build the API URL for lat/long
-                api_url = f"https://www.airnowapi.org/aq/forecast/latLong/"
-                params = {
-                    'format': 'text/csv',  # Use CSV format for more reliable parsing
-                    'latitude': lat,
-                    'longitude': lon,
-                    'date': today,
-                    'distance': distance,
-                    'API_KEY': self.api_key
-                }
-                
-                # Make the API request
-                response = requests.get(api_url, params=params, timeout=self.url_timeout)
-                if not response.ok:
-                    self.logger.warning(f"Error fetching AQI data from AirNow: {response.status_code}")
-                    return self.ERROR_FETCHING_DATA
-                
-                # Parse CSV response
-                csv_data = response.text.strip()
-                if not csv_data:
-                    continue
-                
-                # Parse the CSV data
-                aqi_info = self.parse_csv_aqi_data(csv_data)
-                
-                # If we found data, return it
-                if aqi_info != self.NO_DATA_AVAILABLE and "No AQI monitoring stations" not in aqi_info:
-                    return aqi_info
-                
-                # If this was the last distance to try, return the result
-                if distance == distances[-1]:
-                    return aqi_info
-            
-            return self.NO_DATA_AVAILABLE
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching AirNow AQI: {e}")
-            return self.ERROR_FETCHING_DATA
+    def get_neighborhood_queries(self, city: str) -> list:
+        """Generate neighborhood-specific search queries for major cities"""
+        city_lower = city.lower()
+        
+        # Seattle neighborhoods
+        if city_lower in ['greenwood', 'ballard', 'capitol hill', 'fremont', 'queen anne', 
+                         'wallingford', 'university district', 'pike place', 'pioneer square',
+                         'belltown', 'first hill', 'central district', 'beacon hill', 'columbia city',
+                         'west seattle', 'magnolia', 'phinney ridge', 'crown hill', 'loyal heights']:
+            return [
+                f"{city}, Seattle, WA, USA",
+                f"{city}, Seattle, USA"
+            ]
+        
+        # New York neighborhoods
+        elif city_lower in ['greenwich village', 'soho', 'tribeca', 'chinatown', 'little italy',
+                           'east village', 'west village', 'chelsea', 'hells kitchen', 'upper east side',
+                           'upper west side', 'harlem', 'brooklyn heights', 'dumbo', 'williamsburg',
+                           'park slope', 'red hook', 'coney island']:
+            return [
+                f"{city}, New York, NY, USA",
+                f"{city}, New York, USA"
+            ]
+        
+        # San Francisco neighborhoods
+        elif city_lower in ['mission district', 'haight-ashbury', 'castro', 'soma', 'financial district',
+                           'north beach', 'chinatown', 'russian hill', 'pacific heights', 'marina district',
+                           'sunset district', 'richmond district', 'bernal heights', 'noe valley']:
+            return [
+                f"{city}, San Francisco, CA, USA",
+                f"{city}, San Francisco, USA"
+            ]
+        
+        # Los Angeles neighborhoods
+        elif city_lower in ['hollywood', 'beverly hills', 'santa monica', 'venice', 'manhattan beach',
+                           'hermosa beach', 'redondo beach', 'pasadena', 'glendale', 'burbank',
+                           'west hollywood', 'culver city', 'marina del rey', 'playa del rey']:
+            return [
+                f"{city}, Los Angeles, CA, USA",
+                f"{city}, Los Angeles, USA"
+            ]
+        
+        # Chicago neighborhoods
+        elif city_lower in ['loop', 'magnificent mile', 'gold coast', 'lincoln park', 'wrigleyville',
+                           'lakeview', 'wicker park', 'bucktown', 'logan square', 'pilsen', 'hyde park']:
+            return [
+                f"{city}, Chicago, IL, USA",
+                f"{city}, Chicago, USA"
+            ]
+        
+        # Boston neighborhoods
+        elif city_lower in ['back bay', 'beacon hill', 'north end', 'south end', 'charlestown',
+                           'east boston', 'dorchester', 'roxbury', 'jamaica plain', 'allston',
+                           'brighton', 'cambridge', 'somerville']:
+            return [
+                f"{city}, Boston, MA, USA",
+                f"{city}, Boston, USA"
+            ]
+        
+        # Portland neighborhoods
+        elif city_lower in ['pearl district', 'alphabet district', 'nob hill', 'mississippi district',
+                           'hawthorne', 'belmont', 'sellwood', 'st. johns', 'kenton', 'overlook']:
+            return [
+                f"{city}, Portland, OR, USA",
+                f"{city}, Portland, USA"
+            ]
+        
+        # No neighborhood-specific queries for this city
+        return []
     
-    def get_airnow_aqi_by_zipcode(self, zipcode: str) -> str:
-        """Get AQI forecast from AirNow API using zipcode"""
+    def get_openmeteo_aqi(self, lat: float, lon: float) -> str:
+        """Get AQI data from OpenMeteo API"""
         try:
-            # Get current date for the forecast
-            today = datetime.now().strftime('%Y-%m-%d')
-            
-            # Build the API URL for zipcode
-            api_url = f"https://www.airnowapi.org/aq/forecast/zipCode/"
+            # Make sure all required weather variables are listed here
+            # The order of variables in current is important to assign them correctly below
+            url = "https://air-quality-api.open-meteo.com/v1/air-quality"
             params = {
-                'format': 'text/csv',  # Use CSV format for more reliable parsing
-                'zipCode': zipcode,
-                'date': today,
-                'distance': 25,  # 25 mile radius
-                'API_KEY': self.api_key
+                "latitude": lat,
+                "longitude": lon,
+                "current": ["us_aqi", "european_aqi", "pm10", "pm2_5", "carbon_monoxide", "nitrogen_dioxide", "sulphur_dioxide", "ozone", "dust"],
+                "timezone": self.timezone,
+                "forecast_days": 1,
             }
-            
-            # Make the API request
-            response = requests.get(api_url, params=params, timeout=self.url_timeout)
-            if not response.ok:
-                self.logger.warning(f"Error fetching AQI data from AirNow: {response.status_code}")
-                return self.ERROR_FETCHING_DATA
-            
-            # Parse CSV response
-            csv_data = response.text.strip()
-            if not csv_data:
-                return self.NO_DATA_AVAILABLE
-            
-            # Parse the CSV data
-            aqi_info = self.parse_csv_aqi_data(csv_data)
-            return aqi_info
+            responses = self.openmeteo.weather_api(url, params=params)
+
+            # Process first location
+            response = responses[0]
+
+            # Process current data. The order of variables needs to be the same as requested.
+            current = response.Current()
+            current_us_aqi = current.Variables(0).Value()
+            current_european_aqi = current.Variables(1).Value()
+            current_pm10 = current.Variables(2).Value()
+            current_pm2_5 = current.Variables(3).Value()
+            current_carbon_monoxide = current.Variables(4).Value()
+            current_nitrogen_dioxide = current.Variables(5).Value()
+            current_sulphur_dioxide = current.Variables(6).Value()
+            current_ozone = current.Variables(7).Value()
+            current_dust = current.Variables(8).Value()
+
+            # Format the AQI response
+            return self.format_aqi_response(
+                current_us_aqi, current_european_aqi, current_pm10, current_pm2_5,
+                current_carbon_monoxide, current_nitrogen_dioxide, current_sulphur_dioxide,
+                current_ozone, current_dust
+            )
             
         except Exception as e:
-            self.logger.error(f"Error fetching AirNow AQI: {e}")
+            self.logger.error(f"Error fetching OpenMeteo AQI: {e}")
             return self.ERROR_FETCHING_DATA
     
-    def parse_csv_aqi_data(self, csv_data: str) -> str:
-        """Parse AirNow CSV response and format for display"""
+    def format_aqi_response(self, us_aqi, european_aqi, pm10, pm2_5, co, no2, so2, ozone, dust) -> str:
+        """Format AQI data for display within 130 characters"""
         try:
-            import csv
-            from io import StringIO
-            
-            if not csv_data:
-                return self.NO_DATA_AVAILABLE
-            
-            # Parse CSV data
-            csv_reader = csv.DictReader(StringIO(csv_data))
-            rows = list(csv_reader)
-            
-            if not rows:
-                # Check if we have headers but no data (remote location)
-                if csv_data.strip() and 'DateIssue' in csv_data and 'ReportingArea' in csv_data:
-                    return "No AQI monitoring stations within 100 miles of this location"
-                return self.NO_DATA_AVAILABLE
-            
-            # Group by reporting area
-            areas = {}
-            for row in rows:
-                area = row.get('ReportingArea', 'Unknown')
-                if area not in areas:
-                    areas[area] = []
-                areas[area].append(row)
-            
-            # Format the response
-            aqi_parts = []
-            
-            for area, items in areas.items():
-                # Get the primary pollutant (usually PM2.5 or Ozone)
-                primary_item = None
-                for item in items:
-                    param = item.get('ParameterName', '')
-                    if param in ['PM2.5', 'Ozone', 'PM10']:
-                        primary_item = item
-                        break
-                
-                # If no primary pollutant found, use the first item
-                if not primary_item:
-                    primary_item = items[0]
-                
-                # Extract key information
-                aqi = primary_item.get('AQI', '')
-                category = primary_item.get('CategoryName', 'Unknown')
-                parameter = primary_item.get('ParameterName', 'Unknown')
-                state = primary_item.get('StateCode', '')
-                
-                # Get emoji for AQI category
-                aqi_emoji = self.get_aqi_emoji(category)
-                
-                # Format the area name
-                area_display = area
-                if state and state != 'Unknown':
-                    area_display = f"{area}, {state}"
-                
-                # Format AQI value
-                if not aqi or aqi == '-1':
-                    aqi_display = "N/A"
-                else:
-                    aqi_display = str(aqi)
-                
-                # Create compact AQI string
-                aqi_str = f"{area_display}: {aqi_emoji} {aqi_display} ({category})"
-                if parameter != 'Unknown':
-                    aqi_str += f" {parameter}"
-                
-                aqi_parts.append(aqi_str)
-            
-            # Join all areas
-            if len(aqi_parts) == 1:
-                return aqi_parts[0]
+            # Start with US AQI as primary
+            if us_aqi is not None and us_aqi > 0:
+                aqi_emoji = self.get_aqi_emoji(us_aqi)
+                aqi_category = self.get_aqi_category(us_aqi)
+                aqi_str = f"{aqi_emoji} {us_aqi:.0f} ({aqi_category})"
             else:
-                return " | ".join(aqi_parts)
+                # Fallback to European AQI
+                if european_aqi is not None and european_aqi > 0:
+                    aqi_emoji = self.get_european_aqi_emoji(european_aqi)
+                    aqi_str = f"{aqi_emoji} {european_aqi:.0f} (EU)"
+                else:
+                    aqi_str = "🌫️ N/A"
+            
+            # Add key pollutants if space allows - prioritize by health impact
+            # Priority order: PM2.5 > PM10 > O3 > NO2 > CO > SO2
+            pollutants = []
+            
+            # PM2.5 is most important (fine particles - most harmful to health)
+            if pm2_5 is not None and pm2_5 > 0:
+                pollutants.append(f"PM2.5:{pm2_5:.0f}")
+            
+            # PM10 is second most important (coarse particles)
+            if pm10 is not None and pm10 > 0 and len(aqi_str + " ".join(pollutants)) < 100:
+                pollutants.append(f"PM10:{pm10:.0f}")
+            
+            # Ozone if space allows (ground-level ozone - respiratory irritant)
+            if ozone is not None and ozone > 0 and len(aqi_str + " ".join(pollutants)) < 110:
+                pollutants.append(f"O3:{ozone:.0f}")
+            
+            # NO2 if space allows (nitrogen dioxide - respiratory irritant)
+            if no2 is not None and no2 > 0 and len(aqi_str + " ".join(pollutants)) < 120:
+                pollutants.append(f"NO2:{no2:.0f}")
+            
+            # CO if space allows (carbon monoxide - toxic gas)
+            if co is not None and co > 0 and len(aqi_str + " ".join(pollutants)) < 125:
+                pollutants.append(f"CO:{co:.0f}")
+            
+            # SO2 if space allows (sulfur dioxide - respiratory irritant)
+            if so2 is not None and so2 > 0 and len(aqi_str + " ".join(pollutants)) < 130:
+                pollutants.append(f"SO2:{so2:.0f}")
+            
+            # Combine everything
+            if pollutants:
+                result = f"{aqi_str} {' '.join(pollutants)}"
+            else:
+                result = aqi_str
+            
+            # Ensure we don't exceed 130 characters
+            if len(result) > 130:
+                # Try with fewer pollutants - remove least important ones first
+                pollutants = []
+                if pm2_5 is not None and pm2_5 > 0:
+                    pollutants.append(f"PM2.5:{pm2_5:.0f}")
+                if pm10 is not None and pm10 > 0:
+                    pollutants.append(f"PM10:{pm10:.0f}")
+                if ozone is not None and ozone > 0:
+                    pollutants.append(f"O3:{ozone:.0f}")
+                if no2 is not None and no2 > 0:
+                    pollutants.append(f"NO2:{no2:.0f}")
+                
+                result = f"{aqi_str} {' '.join(pollutants)}"
+                
+                # If still too long, try with just the most important
+                if len(result) > 130:
+                    pollutants = []
+                    if pm2_5 is not None and pm2_5 > 0:
+                        pollutants.append(f"PM2.5:{pm2_5:.0f}")
+                    if pm10 is not None and pm10 > 0:
+                        pollutants.append(f"PM10:{pm10:.0f}")
+                    
+                    result = f"{aqi_str} {' '.join(pollutants)}"
+                    
+                    # If still too long, just return the AQI
+                    if len(result) > 130:
+                        result = aqi_str
+            
+            return result
             
         except Exception as e:
-            self.logger.error(f"Error parsing CSV AQI data: {e}")
-            return "Error parsing AQI data"
+            self.logger.error(f"Error formatting AQI response: {e}")
+            return "Error formatting AQI data"
     
-    def parse_aqi_data(self, data: list) -> str:
-        """Parse AirNow API response and format for display"""
-        try:
-            if not data:
-                return self.NO_DATA_AVAILABLE
-            
-            # Group by reporting area
-            areas = {}
-            for item in data:
-                area = item.get('ReportingArea', 'Unknown')
-                if area not in areas:
-                    areas[area] = []
-                areas[area].append(item)
-            
-            # Format the response
-            aqi_parts = []
-            
-            for area, items in areas.items():
-                # Get the primary pollutant (usually PM2.5 or Ozone)
-                primary_item = None
-                for item in items:
-                    param = item.get('ParameterName', '')
-                    if param in ['PM2.5', 'Ozone', 'PM10']:
-                        primary_item = item
-                        break
-                
-                # If no primary pollutant found, use the first item
-                if not primary_item:
-                    primary_item = items[0]
-                
-                # Extract key information
-                aqi = primary_item.get('AQI', -1)
-                category_info = primary_item.get('Category', {})
-                category = category_info.get('Name', 'Unknown') if isinstance(category_info, dict) else 'Unknown'
-                parameter = primary_item.get('ParameterName', 'Unknown')
-                state = primary_item.get('StateCode', '')
-                
-                # Get emoji for AQI category
-                aqi_emoji = self.get_aqi_emoji(category)
-                
-                # Format the area name
-                area_display = area
-                if state and state != 'Unknown':
-                    area_display = f"{area}, {state}"
-                
-                # Format AQI value
-                if aqi == -1:
-                    aqi_display = "N/A"
-                else:
-                    aqi_display = str(aqi)
-                
-                # Create compact AQI string
-                aqi_str = f"{area_display}: {aqi_emoji}{aqi_display} ({category})"
-                if parameter != 'Unknown':
-                    aqi_str += f" {parameter}"
-                
-                aqi_parts.append(aqi_str)
-            
-            # Join all areas
-            if len(aqi_parts) == 1:
-                return aqi_parts[0]
-            else:
-                return " | ".join(aqi_parts)
-            
-        except Exception as e:
-            self.logger.error(f"Error parsing AQI data: {e}")
-            return "Error parsing AQI data"
-    
-    def get_aqi_emoji(self, category: str) -> str:
-        """Get emoji for AQI category"""
-        if not category:
-            return "🌫️"
-        
-        category_lower = category.lower()
-        
-        # AQI category emojis
-        if 'good' in category_lower:
-            return "🟢"
-        elif 'moderate' in category_lower:
-            return "🟡"
-        elif 'unhealthy for sensitive groups' in category_lower:
-            return "🟠"
-        elif 'unhealthy' in category_lower:
-            return "🔴"
-        elif 'very unhealthy' in category_lower:
-            return "🟣"
-        elif 'hazardous' in category_lower:
-            return "🟤"
+    def get_aqi_emoji(self, aqi: float) -> str:
+        """Get emoji for US AQI value"""
+        if aqi <= 50:
+            return "🟢"  # Good
+        elif aqi <= 100:
+            return "🟡"  # Moderate
+        elif aqi <= 150:
+            return "🟠"  # Unhealthy for Sensitive Groups
+        elif aqi <= 200:
+            return "🔴"  # Unhealthy
+        elif aqi <= 300:
+            return "🟣"  # Very Unhealthy
         else:
-            return "🌫️"  # Default air quality emoji
+            return "🟤"  # Hazardous
+    
+    def get_european_aqi_emoji(self, aqi: float) -> str:
+        """Get emoji for European AQI value"""
+        if aqi <= 25:
+            return "🟢"  # Good
+        elif aqi <= 50:
+            return "🟡"  # Fair
+        elif aqi <= 75:
+            return "🟠"  # Moderate
+        elif aqi <= 100:
+            return "🔴"  # Poor
+        else:
+            return "🟣"  # Very Poor
+    
+    def get_aqi_category(self, aqi: float) -> str:
+        """Get category name for US AQI value"""
+        if aqi <= 50:
+            return "Good"
+        elif aqi <= 100:
+            return "Moderate"
+        elif aqi <= 150:
+            return "Unhealthy for Sensitive Groups"
+        elif aqi <= 200:
+            return "Unhealthy"
+        elif aqi <= 300:
+            return "Very Unhealthy"
+        else:
+            return "Hazardous"
