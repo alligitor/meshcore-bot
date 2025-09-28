@@ -158,6 +158,11 @@ class AqiCommand(BaseCommand):
         # Handle formats like: "47.6,-122.3", "47.6, -122.3", "47.980525, -122.150649", " -47.6 , 122.3 "
         if re.match(r'^\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*$', location):
             location_type = "coordinates"
+        # Check if it's a US ZIP code (5 digits)
+        elif re.match(r'^\s*\d{5}\s*$', location):
+            location_type = "zipcode"
+            # Keep the original ZIP code for structured queries
+            # Don't modify the location string here - let the geocoding logic handle it
         else:
             # It's a city name (possibly with state/country)
             # Check if it might be "city country" format (space-separated)
@@ -312,6 +317,22 @@ class AqiCommand(BaseCommand):
     async def get_aqi_for_location(self, location: str, location_type: str) -> str:
         """Get AQI data for a location (city or coordinates)"""
         try:
+            # Define state abbreviation map for US states (needed for all location types)
+            state_abbrev_map = {
+                'Washington': 'WA', 'California': 'CA', 'New York': 'NY', 'Texas': 'TX',
+                'Florida': 'FL', 'Illinois': 'IL', 'Pennsylvania': 'PA', 'Ohio': 'OH',
+                'Georgia': 'GA', 'North Carolina': 'NC', 'Michigan': 'MI', 'New Jersey': 'NJ',
+                'Virginia': 'VA', 'Tennessee': 'TN', 'Indiana': 'IN', 'Arizona': 'AZ',
+                'Massachusetts': 'MA', 'Missouri': 'MO', 'Maryland': 'MD', 'Wisconsin': 'WI',
+                'Colorado': 'CO', 'Minnesota': 'MN', 'South Carolina': 'SC', 'Alabama': 'AL',
+                'Louisiana': 'LA', 'Kentucky': 'KY', 'Oregon': 'OR', 'Oklahoma': 'OK',
+                'Connecticut': 'CT', 'Utah': 'UT', 'Iowa': 'IA', 'Nevada': 'NV',
+                'Arkansas': 'AR', 'Mississippi': 'MS', 'Kansas': 'KS', 'New Mexico': 'NM',
+                'Nebraska': 'NE', 'West Virginia': 'WV', 'Idaho': 'ID', 'Hawaii': 'HI',
+                'New Hampshire': 'NH', 'Maine': 'ME', 'Montana': 'MT', 'Rhode Island': 'RI',
+                'Delaware': 'DE', 'South Dakota': 'SD', 'North Dakota': 'ND', 'Alaska': 'AK',
+                'Vermont': 'VT', 'Wyoming': 'WY'
+            }
             # Convert location to lat/lon
             if location_type == "coordinates":
                 # Parse lat,lon coordinates
@@ -329,23 +350,108 @@ class AqiCommand(BaseCommand):
                     address_info = None
                 except ValueError:
                     return f"Invalid coordinates format: {location}. Use format: lat,lon (e.g., 47.6,-122.3)"
+            elif location_type == "zipcode":
+                # Handle ZIP code geocoding using structured Nominatim queries
+                try:
+                    # Use the original ZIP code directly
+                    zip_code = location.strip()
+                    
+                    # Use structured query approach for better ZIP code handling
+                    # Try different structured approaches based on Nominatim documentation
+                    structured_queries = [
+                        # Direct postalcode search
+                        {"postalcode": zip_code, "country": "US"},
+                        # Postalcode with state
+                        {"postalcode": zip_code, "state": self.default_state, "country": "US"},
+                        # Postalcode with country code
+                        {"postalcode": zip_code, "countrycode": "US"},
+                        # Fallback to text-based search
+                        f"{zip_code} USA",
+                        f"{zip_code} United States"
+                    ]
+                    
+                    # Check for known problematic ZIP codes that need specific mapping
+                    zip_code_mappings = {
+                        '98013': 'Vashon, WA, USA',
+                        '98014': 'Vashon Island, WA, USA',
+                        # Add other problematic ZIP codes here as needed
+                    }
+                    
+                    location_result = None
+                    
+                    # First check if we have a specific mapping for this ZIP code
+                    if zip_code in zip_code_mappings:
+                        mapped_location = zip_code_mappings[zip_code]
+                        self.logger.debug(f"Using specific mapping for ZIP {zip_code}: {mapped_location}")
+                        try:
+                            result = self.geolocator.geocode(mapped_location)
+                            if result and result.address:
+                                location_result = result
+                                self.logger.debug(f"Found mapped location for ZIP {zip_code}: {result.address}")
+                        except Exception as e:
+                            self.logger.debug(f"Mapping failed for ZIP {zip_code}: {e}")
+                    
+                    # If no mapping or mapping failed, try structured queries
+                    if not location_result:
+                        for query in structured_queries:
+                            try:
+                                if isinstance(query, dict):
+                                    # Use structured query
+                                    result = self.geolocator.geocode(query=query)
+                                else:
+                                    # Use text-based query
+                                    result = self.geolocator.geocode(query)
+                                
+                                if result and result.address:
+                                    # Check if it's a US location
+                                    if 'united states' in result.address.lower() or 'usa' in result.address.lower():
+                                        # Additional validation: check if it's in the expected state
+                                        if self.default_state in result.address or 'washington' in result.address.lower():
+                                            location_result = result
+                                            self.logger.debug(f"Found US location in {self.default_state} for ZIP {zip_code}: {result.address}")
+                                            break
+                                        else:
+                                            # Found US location but not in expected state - log warning but continue searching
+                                            self.logger.warning(f"ZIP {zip_code} found in wrong state: {result.address}")
+                                            if not location_result:  # Keep as fallback if no better result found
+                                                location_result = result
+                            except Exception as e:
+                                self.logger.debug(f"Structured query failed for {query}: {e}")
+                                continue
+                    
+                    if location_result:
+                        lat = location_result.latitude
+                        lon = location_result.longitude
+                        
+                        # Get detailed address info via reverse geocoding
+                        try:
+                            reverse_location = self.geolocator.reverse(f"{lat}, {lon}")
+                            if reverse_location:
+                                address_info = reverse_location.raw.get('address', {})
+                            else:
+                                address_info = {}
+                        except:
+                            address_info = {}
+                        
+                        # Validate that the found location makes sense for the ZIP code
+                        # Check if the found location is in the expected state or region
+                        if address_info:
+                            found_state = address_info.get('state', '')
+                            found_country = address_info.get('country', '')
+                            
+                            # If we found a location but it's not in the expected state, warn the user
+                            if found_country == 'United States' and found_state != self.default_state:
+                                self.logger.warning(f"ZIP code {zip_code} found in {found_state} instead of {self.default_state}")
+                    else:
+                        lat, lon = None, None
+                        address_info = None
+                    
+                    if lat is None or lon is None:
+                        return f"Could not find ZIP code '{zip_code}'"
+                except Exception as e:
+                    self.logger.error(f"Error geocoding ZIP code {location}: {e}")
+                    return f"Error geocoding ZIP code: {e}"
             else:  # city
-                # Define state abbreviation map for US states (needed for both US and international cities)
-                state_abbrev_map = {
-                    'Washington': 'WA', 'California': 'CA', 'New York': 'NY', 'Texas': 'TX',
-                    'Florida': 'FL', 'Illinois': 'IL', 'Pennsylvania': 'PA', 'Ohio': 'OH',
-                    'Georgia': 'GA', 'North Carolina': 'NC', 'Michigan': 'MI', 'New Jersey': 'NJ',
-                    'Virginia': 'VA', 'Tennessee': 'TN', 'Indiana': 'IN', 'Arizona': 'AZ',
-                    'Massachusetts': 'MA', 'Missouri': 'MO', 'Maryland': 'MD', 'Wisconsin': 'WI',
-                    'Colorado': 'CO', 'Minnesota': 'MN', 'South Carolina': 'SC', 'Alabama': 'AL',
-                    'Louisiana': 'LA', 'Kentucky': 'KY', 'Oregon': 'OR', 'Oklahoma': 'OK',
-                    'Connecticut': 'CT', 'Utah': 'UT', 'Iowa': 'IA', 'Nevada': 'NV',
-                    'Arkansas': 'AR', 'Mississippi': 'MS', 'Kansas': 'KS', 'New Mexico': 'NM',
-                    'Nebraska': 'NE', 'West Virginia': 'WV', 'Idaho': 'ID', 'Hawaii': 'HI',
-                    'New Hampshire': 'NH', 'Maine': 'ME', 'Montana': 'MT', 'Rhode Island': 'RI',
-                    'Delaware': 'DE', 'South Dakota': 'SD', 'North Dakota': 'ND', 'Alaska': 'AK',
-                    'Vermont': 'VT', 'Wyoming': 'WY'
-                }
                 
                 result = self.city_to_lat_lon(location)
                 if len(result) == 3:
@@ -423,6 +529,65 @@ class AqiCommand(BaseCommand):
                                       actual_state != default_state_full)
                     if states_different:
                         location_prefix = f"{actual_city}, {actual_state}: "
+            elif location_type == "zipcode":
+                # Add location info for ZIP codes to confirm geocoding accuracy
+                if address_info:
+                    # Try to get city from address_info first
+                    actual_city = (address_info.get('city') or 
+                                 address_info.get('town') or 
+                                 address_info.get('village') or 
+                                 address_info.get('hamlet') or 
+                                 address_info.get('municipality'))
+                    
+                    # If no city found in address_info, try to extract from the original geocoding result
+                    if not actual_city and location_result and location_result.address:
+                        # Extract city name from the geocoding result address
+                        address_parts = location_result.address.split(',')
+                        if len(address_parts) > 0:
+                            # The first part usually contains the city name
+                            potential_city = address_parts[0].strip()
+                            # Remove any house numbers or road names
+                            if not any(char.isdigit() for char in potential_city):
+                                actual_city = potential_city
+                    
+                    # Fallback to 'Unknown' if still no city found
+                    if not actual_city:
+                        actual_city = 'Unknown'
+                    
+                    # Get state info
+                    country = address_info.get('country', '')
+                    state = address_info.get('state', '')
+                    
+                    if country == "United States" or country == "US":
+                        # US city - use the state
+                        actual_state = state or self.default_state
+                        # Convert full state name to abbreviation if needed
+                        if len(actual_state) > 2 and actual_state in state_abbrev_map:
+                            actual_state = state_abbrev_map.get(actual_state, actual_state)
+                    else:
+                        # International city - use the country
+                        actual_state = (country or 
+                                      address_info.get('province') or 
+                                      self.default_state)
+                        # Abbreviate "United States" to "US" to save characters
+                        if actual_state == "United States":
+                            actual_state = "US"
+                    
+                    city_display = f"{actual_city}, {actual_state}"
+                    
+                    # Check if we have space for the city name
+                    test_output = f"{city_display}: {aqi_data}"
+                    if len(test_output) <= 130:
+                        location_prefix = f"{city_display}: "
+                    else:
+                        # If no space, only show if it's a different state than default
+                        states_different = (actual_state != self.default_state and 
+                                          actual_state != default_state_full)
+                        if states_different:
+                            location_prefix = f"{actual_city}, {actual_state}: "
+                else:
+                    # No address info available
+                    location_prefix = f"{zip_code}: "
             elif location_type == "coordinates":
                 # Add coordinate info for clarity
                 location_prefix = f"{lat:.3f},{lon:.3f}: "
@@ -480,18 +645,18 @@ class AqiCommand(BaseCommand):
                     else:
                         # Handle US city, state format
                         location = self.geolocator.geocode(f"{city_name}, {state_or_country}, USA")
-                        if location:
-                            # Cache the result
-                            self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}, USA", location.latitude, location.longitude)
-                            
-                            # Use reverse geocoding to get detailed address info
-                            try:
-                                reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                                if reverse_location:
-                                    return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                            except:
-                                pass
-                            return location.latitude, location.longitude, location.raw.get('address', {})
+                    if location:
+                        # Cache the result
+                        self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}, USA", location.latitude, location.longitude)
+                        
+                        # Use reverse geocoding to get detailed address info
+                        try:
+                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            if reverse_location:
+                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
+                        except:
+                            pass
+                        return location.latitude, location.longitude, location.raw.get('address', {})
             
             # For common city names, try major cities first to avoid small towns
             major_city_mappings = {

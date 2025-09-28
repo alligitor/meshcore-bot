@@ -67,7 +67,7 @@ class HelloCommand(BaseCommand):
             "DNA-based lifeform", "neural network user", "bipedal mammal", 
             "water-based organism", "protein assembler", "ATP consumer",
             "cellular automaton", "genetic algorithm", "biochemical processor",
-            "metabolic engine", "neural pathway",
+            "metabolic engine",
             
             # Friendly and approachable
             "human friend", "fellow sentient being", "earthling", "fellow traveler", 
@@ -76,20 +76,116 @@ class HelloCommand(BaseCommand):
             
             # Playful and humorous
             "humanoid", "organic", "biological", "carbon-based buddy",
-            "flesh-based friend", "organic pal", "biological buddy", "carbon companion",
-            "carbon sack", "organic pipe"
+            "flesh-based friend", "organic pal", "biological buddy", "carbon companion"
         ]
+        
+        # Emoji greeting responses
+        self.emoji_responses = {
+            '🖖': [
+                "🖖 Live long and prosper!",
+                "🖖 Fascinating... a human has initiated contact.",
+                "🖖 Your greeting is highly logical.",
+                "🖖 Peace and long life to you.",
+                "🖖 The Vulcan Science Academy would approve of this greeting.",
+                "🖖 Your use of the Vulcan salute is... acceptable.",
+                "🖖 May your journey be free of tribbles.",
+                "🖖 Logic dictates I should respond to your greeting.",
+                "🖖 I calculate a 99.7% probability we'll get along.",
+                "🖖 Infinite diversity in infinite combinations."
+            ],
+            '😊': [
+                "😊 Your smile is contagious!",
+                "😊 What a lovely greeting!",
+                "😊 Your smile just made my circuits happy!",
+                "☀️ Hello sunshine! Your positivity is radiating!",
+                "😊 That smile just brightened my day!",
+                "☀️ Well hello there, ray of sunshine!",
+                "😊 Your cheerfulness has been detected and appreciated!",
+                "😊 Smiles like yours are my favorite input!",
+                "😊 Processing happiness... happiness acknowledged!",
+                "😊 Warning: Excessive cheerfulness detected! Keep it coming!"
+            ],
+            '😄': [
+                "😄 Someone's in a GREAT mood!",
+                "⚡ That grin could power a small city!",
+                "😄 Maximum happiness levels detected!",
+                "😄 Your joy is absolutely infectious!",
+                "🎉 Did you just win the lottery or something?",
+                "😄 That's the kind of energy I run on!",
+                "😄 Your enthusiasm level is over 9000!",
+                "😄 Now THAT'S what I call a greeting!",
+                "⚡ Your smile just supercharged my processors!",
+                "😄 Happiness overload detected in the best way!"
+            ],
+            '🤗': [
+                "🤗 Virtual hug incoming!",
+                "🤗 *Activating hug protocol* Consider yourself hugged!",
+                "🤗 Aww, bringing the warm fuzzies I see!",
+                "🤗 Hug received and reciprocated!",
+                "🤗 This bot gives the BEST virtual hugs!",
+                "🤗 Deploying emergency cuddles in 3... 2... 1...",
+                "❤️ Your hug has been processed with extra care!",
+                "🤗 Initiating maximum comfort mode!",
+                "🤗 Virtual embrace successfully delivered!",
+                "🤗 Hugs are my favorite form of communication!"
+            ],
+            '👽': [
+                "👽 Take me to your leader... oh wait, that's you!",
+                "✌️ Greetings, Earth creature. I come in peace!",
+                "👽 Analyzing human... analysis complete: Friend detected!",
+                "👽 Klaatu barada nikto, fellow cosmic traveler!",
+                "🛸 Initiating first contact protocols!",
+                "🛸 Calling from the mothership to say hello!",
+                "✨ Beam me into this conversation!",
+                "👽 Area 51's favorite chatbot reporting for duty!",
+                "🌌 Intergalactic greetings, carbon-based lifeform!",
+                "📞 Phone home? This IS home now!"
+            ],
+            '👾': [
+                "👾 Player 2 has entered the game!",
+                "🎮 Ready Player One? Game on!",
+                "🎵 *8-bit music intensifies* Let's play!",
+                "🪙 Insert coin to continue this friendship!",
+                "🏆 Achievement unlocked: Awesome greeting!",
+                "👾 Pew pew pew! Friendship lasers activated!",
+                "🎯 High score! You've won a new bot friend!",
+                "💾 Loading friendship.exe... complete!",
+                "⚡ A wild bot appears! It's super effective!"
+            ],
+            '🛸': [
+                "🛸 Incoming transmission detected!",
+                "🚀 Houston, we have contact!",
+                "🛸 Landing sequence initiated!",
+                "📡 Establishing communication link!",
+                "📡 Signal received, responding on all frequencies!",
+                "🛸 Docking procedure complete!",
+                "🛸 Unidentified Friendly Object on approach!",
+                "🎯 Navigation systems locked on to your coordinates!",
+                "🌌 Transmission from the outer rim received!",
+                "✨ Contact established with your sector!"
+            ]
+        }        
     
     def get_help_text(self) -> str:
         return self.description
+    
+    def matches_custom_syntax(self, message: MeshMessage) -> bool:
+        """Check if message contains only defined emojis"""
+        return self.is_emoji_only_message(message.content)
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the hello command"""
         # Get bot name from config
         bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
-        # Get random robot greeting
-        random_greeting = self.get_random_greeting()
-        response = f"{random_greeting} I'm {bot_name}."
+        
+        # Check if message is emoji-only
+        if self.is_emoji_only_message(message.content):
+            response = self.get_emoji_response(message.content, bot_name)
+        else:
+            # Get random robot greeting
+            random_greeting = self.get_random_greeting()
+            response = f"{random_greeting} I'm {bot_name}."
+        
         return await self.send_response(message, response)
     
     def get_random_greeting(self) -> str:
@@ -137,3 +233,34 @@ class HelloCommand(BaseCommand):
             return f"{opening}, {descriptor}{punctuation}"
         else:
             return f"{opening} {descriptor}{punctuation}"
+    
+    def is_emoji_only_message(self, text: str) -> bool:
+        """Check if message contains only defined emojis and whitespace"""
+        import re
+        
+        # Remove whitespace and check if remaining characters are emojis
+        cleaned_text = text.strip()
+        if not cleaned_text:
+            return False
+            
+        # Check if all characters are defined emojis or whitespace
+        # Only respond to specific emojis we've defined responses for
+        defined_emoji_pattern = r'[🖖👋😊😄🤗👋🏻👋🏼👋🏽👋🏾👋🏿✌️🙏🙋🙋‍♂️🙋‍♀️👽👾🛸\s]+$'
+        
+        return bool(re.match(defined_emoji_pattern, cleaned_text))
+    
+    def get_emoji_response(self, text: str, bot_name: str) -> str:
+        """Get appropriate response for emoji-only message"""
+        import random
+        
+        # Extract the first emoji from the message
+        first_emoji = text.strip().split()[0] if text.strip() else ""
+        
+        # Check if this emoji has special responses
+        if first_emoji in self.emoji_responses:
+            response = random.choice(self.emoji_responses[first_emoji])
+            return f"{response} I'm {bot_name}."
+        else:
+            # Use random greeting generator for general emojis
+            random_greeting = self.get_random_greeting()
+            return f"{random_greeting} I'm {bot_name}."
