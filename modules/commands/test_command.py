@@ -21,10 +21,21 @@ class TestCommand(BaseCommand):
     def get_help_text(self) -> str:
         return self.description
     
+    def clean_content(self, content: str) -> str:
+        """Clean content by removing control characters and normalizing whitespace"""
+        import re
+        # Remove control characters (except newline, tab, carriage return)
+        cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', content)
+        # Normalize whitespace
+        cleaned = ' '.join(cleaned.split())
+        return cleaned
+    
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Override to implement special test keyword matching with optional phrase"""
+        # Clean content to remove control characters and normalize whitespace
+        content = self.clean_content(message.content)
+        
         # Strip exclamation mark if present (for command-style messages)
-        content = message.content.strip()
         if content.startswith('!'):
             content = content[1:].strip()
         
@@ -46,8 +57,10 @@ class TestCommand(BaseCommand):
     
     def format_response(self, message: MeshMessage, response_format: str) -> str:
         """Override to handle phrase extraction"""
+        # Clean content to remove control characters and normalize whitespace
+        content = self.clean_content(message.content)
+        
         # Strip exclamation mark if present (for command-style messages)
-        content = message.content.strip()
         if content.startswith('!'):
             content = content[1:].strip()
         

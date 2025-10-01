@@ -37,7 +37,8 @@ class SportsCommand(BaseCommand):
     }
     
     # Custom team abbreviations to distinguish between leagues
-    TEAM_ABBREVIATIONS = {
+    # Only use -W suffixes for women's leagues
+    WOMENS_TEAM_ABBREVIATIONS = {
         # NWSL teams - use custom abbreviations to distinguish from MLS
         '21422': 'LA-W',   # Angel City FC (Women's)
         '22187': 'BAY-W',  # Bay FC (Women's)
@@ -418,6 +419,45 @@ class SportsCommand(BaseCommand):
         channels_str = self.bot.config.get('Sports', 'channels', fallback='')
         return [channel.strip() for channel in channels_str.split(',') if channel.strip()]
     
+    def is_womens_league(self, sport: str, league: str) -> bool:
+        """Check if the league is a women's league"""
+        womens_leagues = {
+            ('basketball', 'wnba'),
+            ('soccer', 'usa.nwsl')
+        }
+        return (sport, league) in womens_leagues
+    
+    def get_team_abbreviation(self, team_id: str, team_abbreviation: str, sport: str, league: str) -> str:
+        """Get team abbreviation, using -W suffix only for women's leagues"""
+        if self.is_womens_league(sport, league):
+            return self.WOMENS_TEAM_ABBREVIATIONS.get(team_id, team_abbreviation)
+        else:
+            return team_abbreviation
+    
+    def format_clean_date_time(self, dt) -> str:
+        """Format date and time without leading zeros"""
+        month = dt.month
+        day = dt.day
+        minute = dt.minute
+        ampm = dt.strftime("%p")
+        
+        # Convert to 12-hour format
+        hour_12 = dt.hour
+        if hour_12 == 0:
+            hour_12 = 12
+        elif hour_12 > 12:
+            hour_12 = hour_12 - 12
+        
+        # Remove leading zeros
+        time_str = f"{month}/{day} {hour_12}:{minute:02d} {ampm}"
+        return time_str
+    
+    def format_clean_date(self, dt) -> str:
+        """Format date without leading zeros"""
+        month = dt.month
+        day = dt.day
+        return f"{month}/{day}"
+    
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if this command matches the message content - sports must be first word"""
         if not self.keywords:
@@ -745,7 +785,7 @@ class SportsCommand(BaseCommand):
             # Parse all games and sort by time
             game_data = []
             for event in events:
-                game_info = self.parse_league_game_event(event, league_info['sport'])
+                game_info = self.parse_league_game_event(event, league_info['sport'], league_info['league'])
                 if game_info:
                     game_data.append(game_info)
             
@@ -777,7 +817,7 @@ class SportsCommand(BaseCommand):
             self.logger.error(f"Error fetching league scores: {e}")
             return f"Error fetching {league_info['sport']} data"
     
-    def parse_league_game_event(self, event: Dict, sport: str) -> Optional[Dict]:
+    def parse_league_game_event(self, event: Dict, sport: str, league: str) -> Optional[Dict]:
         """Parse a league game event and return structured data with timestamp for sorting"""
         try:
             competitions = event.get('competitions', [])
@@ -799,8 +839,10 @@ class SportsCommand(BaseCommand):
             away_team = team2 if team1.get('homeAway') == 'home' else team1
             home_team_id = home_team.get('team', {}).get('id', '')
             away_team_id = away_team.get('team', {}).get('id', '')
-            home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
-            away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
+            home_abbreviation = home_team.get('team', {}).get('abbreviation', 'UNK')
+            away_abbreviation = away_team.get('team', {}).get('abbreviation', 'UNK')
+            home_name = self.get_team_abbreviation(home_team_id, home_abbreviation, sport, league)
+            away_name = self.get_team_abbreviation(away_team_id, away_abbreviation, sport, league)
             home_score = home_team.get('score', '0')
             away_score = away_team.get('score', '0')
             
@@ -859,7 +901,7 @@ class SportsCommand(BaseCommand):
                     try:
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         local_dt = dt.astimezone()
-                        time_str = local_dt.strftime("%m/%d %I:%M %p")
+                        time_str = self.format_clean_date_time(local_dt)
                         if sport == 'soccer':
                             formatted = f"@{home_name} vs. {away_name} ({time_str})"
                         else:
@@ -886,11 +928,35 @@ class SportsCommand(BaseCommand):
                 timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
-                formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT)"
+                # Check if game was played today or on a different day
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT{date_suffix})"
                 timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
-                formatted = f"{away_name} {away_score}-{home_score} @{home_name} (F)"
+                # Check if game was played today or on a different day
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                formatted = f"{away_name} {away_score}-{home_score} @{home_name} (F{date_suffix})"
                 timestamp = 9999999998  # Final games second to last
                 
             else:
@@ -964,7 +1030,7 @@ class SportsCommand(BaseCommand):
             
             # Find games involving the team
             for event in events:
-                game_data = self.parse_game_event_with_timestamp(event, team_info['team_id'], team_info['sport'])
+                game_data = self.parse_game_event_with_timestamp(event, team_info['team_id'], team_info['sport'], team_info['league'])
                 if game_data:
                     return game_data
             
@@ -974,7 +1040,7 @@ class SportsCommand(BaseCommand):
             self.logger.error(f"Error fetching team game data: {e}")
             return None
     
-    def parse_game_event_with_timestamp(self, event: Dict, team_id: str, sport: str) -> Optional[Dict]:
+    def parse_game_event_with_timestamp(self, event: Dict, team_id: str, sport: str, league: str) -> Optional[Dict]:
         """Parse a game event and return structured data with timestamp for sorting"""
         try:
             competitions = event.get('competitions', [])
@@ -1005,8 +1071,10 @@ class SportsCommand(BaseCommand):
             away_team = other_team if our_team.get('homeAway') == 'home' else our_team
             home_team_id = home_team.get('team', {}).get('id', '')
             away_team_id = away_team.get('team', {}).get('id', '')
-            home_name = self.TEAM_ABBREVIATIONS.get(home_team_id, home_team.get('team', {}).get('abbreviation', 'UNK'))
-            away_name = self.TEAM_ABBREVIATIONS.get(away_team_id, away_team.get('team', {}).get('abbreviation', 'UNK'))
+            home_abbreviation = home_team.get('team', {}).get('abbreviation', 'UNK')
+            away_abbreviation = away_team.get('team', {}).get('abbreviation', 'UNK')
+            home_name = self.get_team_abbreviation(home_team_id, home_abbreviation, sport, league)
+            away_name = self.get_team_abbreviation(away_team_id, away_abbreviation, sport, league)
             home_score = home_team.get('score', '0')
             away_score = away_team.get('score', '0')
             
@@ -1072,7 +1140,7 @@ class SportsCommand(BaseCommand):
                     try:
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         local_dt = dt.astimezone()
-                        time_str = local_dt.strftime("%m/%d %I:%M %p")
+                        time_str = self.format_clean_date_time(local_dt)
                         if sport == 'soccer':
                             formatted = f"@{home_name} vs. {away_name} ({time_str})"
                         else:
@@ -1099,11 +1167,35 @@ class SportsCommand(BaseCommand):
                 timestamp = -2  # Halftime games second priority after live games
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished - put these last
-                formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT)"
+                # Check if game was played today or on a different day
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT{date_suffix})"
                 timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
-                formatted = f"{away_name} {away_score}-{home_score} @{home_name} (F)"
+                # Check if game was played today or on a different day
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                formatted = f"{away_name} {away_score}-{home_score} @{home_name} (F{date_suffix})"
                 timestamp = 9999999998  # Final games second to last
                 
             else:
@@ -1205,7 +1297,7 @@ class SportsCommand(BaseCommand):
                         dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         # Convert to local time (assuming Pacific for Seattle teams)
                         local_dt = dt.astimezone()
-                        time_str = local_dt.strftime("%m/%d %I:%M %p")
+                        time_str = self.format_clean_date_time(local_dt)
                         return f"{away_team_name} @ {home_team_name} ({time_str})"
                     except:
                         return f"{away_team_name} @ {home_team_name} (TBD)"
@@ -1217,10 +1309,36 @@ class SportsCommand(BaseCommand):
                 return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (HT)"
             elif status_name == 'STATUS_FULL_TIME':
                 # Soccer game is finished
-                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (FT)"
+                # Check if game was played today or on a different day
+                date_str = event.get('date', '')
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (FT{date_suffix})"
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished
-                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (F)"
+                # Check if game was played today or on a different day
+                date_str = event.get('date', '')
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                return f"{our_team_name} {our_score}-{other_score} @{other_team_name} (F{date_suffix})"
             
             else:
                 # Other status
