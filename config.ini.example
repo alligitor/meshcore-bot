@@ -231,3 +231,44 @@ url_timeout = 10
 # true: Use 24-hour UTC format
 # false: Use 12-hour local format
 use_zulu_time = false
+
+[Channels_List]
+# Common hashtag channels for the region
+# Format: channel_name = description
+# These channels will be listed when users use the 'channels' command
+# The bot will automatically add the '#' prefix when displaying channels
+
+# General channels (no category prefix)
+general = General discussion and chat
+weather = Weather updates and conditions
+emergency = Emergency communications and alerts
+
+# Sub-command channels (format: subcommand.channel_name = description)
+# Example: channels sports -> sports.sounders = Seattle Sounders FC
+
+# Sports-focused channels
+sports.sounders = Seattle Sounders FC
+sports.kraken = Seattle Kraken
+sports.mariners = Seattle Mariners
+sports.seahawks = Seattle Seahawks
+sports.reign = OL Reign
+sports.storm = Seattle Storm
+sports.huskies = Washington Huskies
+
+# Local area channels
+local.capitolhill = Capitol Hill neighborhood
+local.ballard = Ballard neighborhood
+local.fremont = Fremont neighborhood
+local.queenanne = Queen Anne neighborhood
+
+# Technology channels
+tech.mesh = Mesh networking and technical discussions
+tech.hamradio = Amateur radio and ham radio topics
+tech.programming = Programming and development
+tech.iot = Internet of Things projects
+
+# Emergency-focused channels
+emergency.emergency = Emergency communications and alerts
+emergency.weather = Weather updates and conditions
+emergency.traffic = Traffic updates and road conditions
+emergency.hamradio = Amateur radio emergency net
