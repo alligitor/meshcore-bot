@@ -6,6 +6,7 @@ Decodes hex path data to show which repeaters were involved in message routing
 
 import re
 import time
+import asyncio
 from typing import List, Optional, Dict, Any
 from .base_command import BaseCommand
 from ..models import MeshMessage
@@ -36,7 +37,8 @@ class PathCommand(BaseCommand):
         # Check if message starts with any of our keywords
         content_lower = content.lower()
         for keyword in self.keywords:
-            if content_lower.startswith(keyword + ' '):
+            # Check for exact match or keyword followed by space
+            if content_lower == keyword or content_lower.startswith(keyword + ' '):
                 return True
         return False
     
@@ -44,19 +46,23 @@ class PathCommand(BaseCommand):
         """Execute path decode command"""
         self.logger.info(f"Path command executed with content: {message.content}")
         
+        # Store the current message for use in _extract_path_from_recent_messages
+        self._current_message = message
+        
         # Parse the message content to extract path data
         content = message.content.strip()
         parts = content.split()
         
         if len(parts) < 2:
-            response = self.get_help()
+            # No arguments provided - try to extract path from current message
+            response = await self._extract_path_from_recent_messages()
         else:
             # Extract path data from the command
             path_input = " ".join(parts[1:])
             response = await self._decode_path(path_input)
         
-        # Send the response
-        await self.bot.command_manager.send_response(message, response)
+        # Send the response (may be split into multiple messages if long)
+        await self._send_path_response(message, response)
         return True
     
     async def _decode_path(self, path_input: str) -> str:
@@ -74,11 +80,12 @@ class PathCommand(BaseCommand):
                 return "❌ No valid hex values found in path data. Use format like: 11,98,a4,49,cd,5f,01"
             
             # Convert to uppercase for consistency
+            # hex_matches preserves the order from the original path
             node_ids = [match.upper() for match in hex_matches]
             
             self.logger.info(f"Decoding path with {len(node_ids)} nodes: {','.join(node_ids)}")
             
-            # Look up repeater names for each node ID
+            # Look up repeater names for each node ID (order preserved)
             repeater_info = await self._lookup_repeater_names(node_ids)
             
             # Format the response
@@ -255,70 +262,123 @@ class PathCommand(BaseCommand):
         return None
     
     def _format_path_response(self, node_ids: List[str], repeater_info: Dict[str, Dict[str, Any]]) -> str:
-        """Format the path decode response (max 130 chars per line)"""
-        # Group results by found/not found/collision
-        found_repeaters = []
-        collision_nodes = []
-        unknown_nodes = []
+        """Format the path decode response (max 130 chars per line)
         
-        for node_id in node_ids:
-            info = repeater_info.get(node_id, {})
-            if info.get('found', False):
-                if info.get('collision', False):
-                    collision_nodes.append((node_id, info))
-                else:
-                    found_repeaters.append((node_id, info))
-            else:
-                unknown_nodes.append(node_id)
-        
-        # Build response lines (each max 130 chars)
+        Maintains the order of repeaters as they appear in the path (first to last)
+        """
+        # Build response lines in path order (first to last as message traveled)
         lines = []
         
-        # Show found repeaters (compact format)
-        if found_repeaters:
-            for node_id, info in found_repeaters:
-                name = info['name']
-                
-                # Truncate name if too long
-                if len(name) > 27:
-                    name = name[:24] + "..."
-                
-                line = f"{node_id}: {name}"
-                if len(line) > 130:
-                    line = line[:127] + "..."
-                lines.append(line)
-        
-        # Show collision nodes (compact format)
-        if collision_nodes:
-            for node_id, info in collision_nodes:
-                matches = info.get('matches', 0)
-                line = f"{node_id}: {matches} repeaters"
-                if len(line) > 130:
-                    line = line[:127] + "..."
-                lines.append(line)
-        
-        # Show unknown nodes (compact format)
-        if unknown_nodes:
-            unknown_str = f"Unknown: {','.join(unknown_nodes)}"
-            if len(unknown_str) > 130:
-                # Split if too long
-                for node_id in unknown_nodes:
-                    lines.append(f"Unknown: {node_id}")
+        # Process nodes in path order (first to last as message traveled)
+        for node_id in node_ids:
+            info = repeater_info.get(node_id, {})
+            
+            if info.get('found', False):
+                if info.get('collision', False):
+                    # Multiple repeaters with same prefix
+                    matches = info.get('matches', 0)
+                    line = f"{node_id}: {matches} repeaters"
+                else:
+                    # Single repeater found
+                    name = info['name']
+                    
+                    # Truncate name if too long
+                    if len(name) > 27:
+                        name = name[:24] + "..."
+                    
+                    line = f"{node_id}: {name}"
             else:
-                lines.append(unknown_str)
+                # Unknown repeater
+                line = f"{node_id}: Unknown"
+            
+            # Ensure line fits within 130 character limit
+            if len(line) > 130:
+                line = line[:127] + "..."
+            
+            lines.append(line)
         
+        # Return all lines - let _send_path_response handle the splitting
         return "\n".join(lines)
+    
+    async def _send_path_response(self, message: MeshMessage, response: str):
+        """Send path response, splitting into multiple messages if necessary"""
+        if len(response) <= 130:
+            # Single message is fine
+            await self.bot.command_manager.send_response(message, response)
+        else:
+            # Split into multiple messages
+            lines = response.split('\n')
+            current_message = ""
+            message_count = 0
+            
+            for i, line in enumerate(lines):
+                # Check if adding this line would exceed 130 characters
+                if len(current_message) + len(line) + 1 > 130:  # +1 for newline
+                    # Send current message and start new one
+                    if current_message:
+                        # Add ellipsis on new line to end of continued message (if not the last message)
+                        if i < len(lines):
+                            current_message += "\n..."
+                        await self.bot.command_manager.send_response(message, current_message.rstrip())
+                        await asyncio.sleep(2.0)  # Delay between messages (same as other commands)
+                        message_count += 1
+                    
+                    # Start new message with ellipsis on new line at beginning (if not first message)
+                    if message_count > 0:
+                        current_message = f"...\n{line}"
+                    else:
+                        current_message = line
+                else:
+                    # Add line to current message
+                    if current_message:
+                        current_message += f"\n{line}"
+                    else:
+                        current_message = line
+            
+            # Send the last message if there's content
+            if current_message:
+                await self.bot.command_manager.send_response(message, current_message)
+    
+    async def _extract_path_from_recent_messages(self) -> str:
+        """Extract path from the current message's path information (same as test command)"""
+        try:
+            # Use the path information from the current message being processed
+            # This is the same reliable source that the test command uses
+            if hasattr(self, '_current_message') and self._current_message and self._current_message.path:
+                path_string = self._current_message.path
+                self.logger.info(f"Using path from current message: {path_string}")
+                
+                # Check if it's a direct connection
+                if "Direct" in path_string or "0 hops" in path_string:
+                    return "📡 Direct connection (0 hops)"
+                
+                # Try to extract path nodes from the path string
+                # Path strings are typically in format: "node1,node2,node3 via ROUTE_TYPE_*"
+                if " via ROUTE_TYPE_" in path_string:
+                    # Extract just the path part before the route type
+                    path_part = path_string.split(" via ROUTE_TYPE_")[0]
+                else:
+                    path_part = path_string
+                
+                # Check if it looks like a comma-separated path
+                if ',' in path_part:
+                    path_input = path_part
+                    self.logger.info(f"Found path from current message: {path_input}")
+                    return await self._decode_path(path_input)
+                else:
+                    # Single node or unknown format
+                    return f"📡 Path: {path_string}"
+            else:
+                return "❌ No path information available in current message"
+                
+        except Exception as e:
+            self.logger.error(f"Error extracting path from current message: {e}")
+            return f"❌ Error extracting path from current message: {e}"
     
     def get_help(self) -> str:
         """Get help text for the path command"""
-        return """Path Decode: !path <hex_data>
-
-Decode hex path to show repeaters involved in routing.
-
-Examples:
-• !path 11,98,a4,49,cd,5f,01
-• !path 11 98 a4 49 cd 5f 01
-• !path 1198a449cd5f01
-
-Shows repeater names, collisions, and unknown nodes.
-Uses local database - run !repeater scan to update."""
+        return """Path: !path [hex] - Decode path to show repeaters. Use !path alone for recent message path, or !path [7e,01] for specific path."""
+    
+    def get_help_text(self) -> str:
+        """Get help text for the path command (used by help system)"""
+        return self.get_help()
