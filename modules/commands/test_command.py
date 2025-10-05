@@ -14,8 +14,8 @@ class TestCommand(BaseCommand):
     
     # Plugin metadata
     name = "test"
-    keywords = ['test']
-    description = "Responds to 'test' with connection info"
+    keywords = ['test', 't']
+    description = "Responds to 'test' or 't' with connection info"
     category = "basic"
     
     def get_help_text(self) -> str:
@@ -46,6 +46,13 @@ class TestCommand(BaseCommand):
             phrase = content[5:].strip()  # Get everything after "test " and strip whitespace
             return bool(phrase)  # Make sure there's actually a phrase
         
+        # Handle "t" alone or "t " with phrase
+        elif content.lower() == "t":
+            return True  # Just "t" by itself
+        elif (content.startswith('t ') or content.startswith('T ')) and len(content) > 2:
+            phrase = content[2:].strip()  # Get everything after "t " and strip whitespace
+            return bool(phrase)  # Make sure there's actually a phrase
+        
         return False
     
     def get_response_format(self) -> str:
@@ -67,8 +74,14 @@ class TestCommand(BaseCommand):
         # Extract phrase if present, otherwise use empty string
         if content.lower() == "test":
             phrase = ""
-        else:
+        elif content.lower() == "t":
+            phrase = ""
+        elif content.startswith('test ') or content.startswith('Test '):
             phrase = content[5:].strip()  # Get everything after "test "
+        elif content.startswith('t ') or content.startswith('T '):
+            phrase = content[2:].strip()  # Get everything after "t "
+        else:
+            phrase = ""
         
         try:
             connection_info = self.build_enhanced_connection_info(message)

@@ -408,6 +408,7 @@ class SportsCommand(BaseCommand):
         # Load default teams from config
         self.default_teams = self.load_default_teams()
         self.sports_channels = self.load_sports_channels()
+        self.channel_overrides = self.load_channel_overrides()
         
     def load_default_teams(self) -> List[str]:
         """Load default teams from config"""
@@ -418,6 +419,17 @@ class SportsCommand(BaseCommand):
         """Load sports channels from config"""
         channels_str = self.bot.config.get('Sports', 'channels', fallback='')
         return [channel.strip() for channel in channels_str.split(',') if channel.strip()]
+    
+    def load_channel_overrides(self) -> Dict[str, str]:
+        """Load channel overrides from config"""
+        overrides_str = self.bot.config.get('Sports', 'channel_override', fallback='')
+        overrides = {}
+        if overrides_str:
+            for override in overrides_str.split(','):
+                if '=' in override:
+                    channel, team = override.strip().split('=', 1)
+                    overrides[channel.strip()] = team.strip().lower()
+        return overrides
     
     def is_womens_league(self, sport: str, league: str) -> bool:
         """Check if the league is a women's league"""
@@ -494,7 +506,9 @@ class SportsCommand(BaseCommand):
         
         # Check if command requires specific channels (only for channel messages, not DMs)
         if not message.is_dm and self.sports_channels and message.channel not in self.sports_channels:
-            return False
+            # Check if this channel has an override (allows sports command even if not in main channels list)
+            if message.channel not in self.channel_overrides:
+                return False
         
         # Check per-user cooldown (don't set it here, just check)
         if self.cooldown_seconds > 0:
@@ -535,7 +549,12 @@ class SportsCommand(BaseCommand):
                 team_name = ' '.join(parts[1:]).lower()
                 response = await self.get_team_scores(team_name)
             else:
-                response = await self.get_default_teams_scores()
+                # Check if this channel has an override team
+                if not message.is_dm and message.channel in self.channel_overrides:
+                    override_team = self.channel_overrides[message.channel]
+                    response = await self.get_team_scores(override_team)
+                else:
+                    response = await self.get_default_teams_scores()
             
             # Send response
             return await self.send_response(message, response)

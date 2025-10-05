@@ -21,6 +21,44 @@ class ChannelsCommand(BaseCommand):
     def get_help_text(self) -> str:
         return "Lists hashtag channels with sub-categories. Use 'channels' for general, 'channels list' for all categories, 'channels <category>' for specific categories, 'channels #channel' for specific channel info."
     
+    def matches_keyword(self, message: MeshMessage) -> bool:
+        """Check if this command matches the message content based on keywords"""
+        if not self.keywords:
+            return False
+        
+        # Strip exclamation mark if present (for command-style messages)
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
+        content_lower = content.lower()
+        
+        # Don't match if this looks like a subcommand of another command
+        # (e.g., "stats channels" should not match "channels" command)
+        if ' ' in content_lower:
+            parts = content_lower.split()
+            if len(parts) > 1 and parts[0] not in ['channels', 'channel']:
+                return False
+        
+        for keyword in self.keywords:
+            keyword_lower = keyword.lower()
+            
+            # Check for exact match first
+            if keyword_lower == content_lower:
+                return True
+            
+            # Check for word boundary matches using regex
+            import re
+            # Create a regex pattern that matches the keyword at word boundaries
+            # Use custom word boundary that treats underscores as separators
+            # (?<![a-zA-Z0-9]) = negative lookbehind for alphanumeric characters (not underscore)
+            # (?![a-zA-Z0-9]) = negative lookahead for alphanumeric characters (not underscore)
+            # This allows underscores to act as word boundaries
+            pattern = r'(?<![a-zA-Z0-9])' + re.escape(keyword_lower) + r'(?![a-zA-Z0-9])'
+            if re.search(pattern, content_lower):
+                return True
+        
+        return False
+    
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the channels command"""
         try:

@@ -1256,6 +1256,15 @@ class MessageHandler:
     
     async def process_message(self, message: MeshMessage):
         """Process a received message"""
+        # Record all messages in stats database FIRST (before any filtering)
+        # This ensures we collect stats for all channels, not just monitored ones
+        if 'stats' in self.bot.command_manager.commands:
+            stats_command = self.bot.command_manager.commands['stats']
+            if stats_command:
+                stats_command.record_message(message)
+                stats_command.record_path_stats(message)
+        
+        # Now check if we should process this message for bot responses
         if not self.should_process_message(message):
             return
         
@@ -1274,6 +1283,12 @@ class MessageHandler:
         if keyword_matches:
             for keyword, response in keyword_matches:
                 self.logger.info(f"Keyword '{keyword}' matched, responding")
+                
+                # Record command execution in stats database
+                if 'stats' in self.bot.command_manager.commands:
+                    stats_command = self.bot.command_manager.commands['stats']
+                    if stats_command:
+                        stats_command.record_command(message, keyword, response is not None)
                 
                 # Track if this is a help response
                 if keyword == 'help':

@@ -62,6 +62,23 @@ class MessageScheduler:
                     self.logger.warning(f"Invalid scheduled message format: {message_info}")
                 except Exception as e:
                     self.logger.warning(f"Error setting up scheduled message '{time_str}': {e}")
+        
+        # Setup interval-based advertising
+        self.setup_interval_advertising()
+    
+    def setup_interval_advertising(self):
+        """Setup interval-based advertising from config"""
+        try:
+            advert_interval_hours = self.bot.config.getint('Bot', 'advert_interval_hours', fallback=0)
+            if advert_interval_hours > 0:
+                self.logger.info(f"Setting up interval-based advertising every {advert_interval_hours} hours")
+                # Initialize bot's last advert time to now to prevent immediate advert if not already set
+                if not hasattr(self.bot, 'last_advert_time') or self.bot.last_advert_time is None:
+                    self.bot.last_advert_time = time.time()
+            else:
+                self.logger.info("Interval-based advertising disabled (advert_interval_hours = 0)")
+        except Exception as e:
+            self.logger.warning(f"Error setting up interval advertising: {e}")
     
     def _is_valid_time_format(self, time_str: str) -> bool:
         """Validate time format (HHMM)"""
@@ -118,7 +135,62 @@ class MessageScheduler:
             if pending_jobs:
                 self.logger.debug(f"Found {len(pending_jobs)} scheduled jobs")
             
+            # Check for interval-based advertising
+            self.check_interval_advertising()
+            
             schedule.run_pending()
             time.sleep(1)
         
         self.logger.info("Scheduler thread stopped")
+    
+    def check_interval_advertising(self):
+        """Check if it's time to send an interval-based advert"""
+        try:
+            advert_interval_hours = self.bot.config.getint('Bot', 'advert_interval_hours', fallback=0)
+            if advert_interval_hours <= 0:
+                return  # Interval advertising disabled
+            
+            current_time = time.time()
+            
+            # Check if enough time has passed since last advert
+            if not hasattr(self.bot, 'last_advert_time') or self.bot.last_advert_time is None:
+                # First time, set the timer
+                self.bot.last_advert_time = current_time
+                return
+            
+            time_since_last_advert = current_time - self.bot.last_advert_time
+            interval_seconds = advert_interval_hours * 3600  # Convert hours to seconds
+            
+            if time_since_last_advert >= interval_seconds:
+                self.logger.info(f"Time for interval-based advert (every {advert_interval_hours} hours)")
+                self.send_interval_advert()
+                self.bot.last_advert_time = current_time
+                
+        except Exception as e:
+            self.logger.error(f"Error checking interval advertising: {e}")
+    
+    def send_interval_advert(self):
+        """Send an interval-based advert (synchronous wrapper)"""
+        current_time = self.get_current_time()
+        self.logger.info(f"📢 Sending interval-based flood advert at {current_time.strftime('%H:%M:%S')}")
+        
+        import asyncio
+        
+        # Create a new event loop for this thread if one doesn't exist
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function in the event loop
+        loop.run_until_complete(self._send_interval_advert_async())
+    
+    async def _send_interval_advert_async(self):
+        """Send an interval-based advert (async implementation)"""
+        try:
+            # Use the same advert functionality as the manual advert command
+            await self.bot.meshcore.commands.send_advert(flood=True)
+            self.logger.info("Interval-based flood advert sent successfully")
+        except Exception as e:
+            self.logger.error(f"Error sending interval-based advert: {e}")
