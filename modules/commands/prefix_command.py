@@ -35,9 +35,14 @@ class PrefixCommand(BaseCommand):
         # Get cache duration from config, with fallback to 1 hour
         self.cache_duration = self.bot.config.getint('External_Data', 'repeater_prefix_cache_hours', fallback=1) * 3600
         self.session = None
+        
+        # Get geolocation settings from config
+        self.show_repeater_locations = self.bot.config.getboolean('Prefix_Command', 'show_repeater_locations', fallback=True)
+        self.use_reverse_geocoding = self.bot.config.getboolean('Prefix_Command', 'use_reverse_geocoding', fallback=True)
     
     def get_help_text(self) -> str:
-        return "Look up repeaters by two-character prefix. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
+        location_note = " (with city names)" if self.show_repeater_locations else ""
+        return f"Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with 'prefix' keyword"""
@@ -99,18 +104,66 @@ class PrefixCommand(BaseCommand):
         return await self.send_response(message, response)
     
     async def get_prefix_data(self, prefix: str) -> Optional[Dict[str, Any]]:
-        """Get prefix data from cache, API, or database fallback"""
+        """Get prefix data from API first, enhanced with local database location data"""
         # Check if cache is valid
         current_time = time.time()
         if current_time - self.cache_timestamp > self.cache_duration:
             await self.refresh_cache()
         
-        # Return cached data for the prefix if available
+        # Get API data first (prioritize comprehensive repeater data)
+        api_data = None
         if prefix in self.cache_data:
-            return self.cache_data.get(prefix)
+            api_data = self.cache_data.get(prefix)
         
-        # Fallback to database if API cache is empty or prefix not found
-        return await self.get_prefix_data_from_db(prefix)
+        # Get local database data for location enhancement
+        db_data = await self.get_prefix_data_from_db(prefix)
+        
+        # If we have API data, enhance it with local location data
+        if api_data and db_data:
+            return self._enhance_api_data_with_locations(api_data, db_data)
+        elif api_data:
+            return api_data
+        elif db_data:
+            return db_data
+        
+        return None
+    
+    def _enhance_api_data_with_locations(self, api_data: Dict[str, Any], db_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Enhance API data with location information from local database"""
+        try:
+            # Create a mapping of repeater names to location data from database
+            db_locations = {}
+            for db_repeater in db_data.get('node_names', []):
+                # Extract name and location from database format: "Name (Location)"
+                if ' (' in db_repeater and db_repeater.endswith(')'):
+                    name, location = db_repeater.rsplit(' (', 1)
+                    location = location.rstrip(')')
+                    db_locations[name] = location
+                else:
+                    # No location data in database
+                    db_locations[db_repeater] = None
+            
+            # Enhance API node names with location data
+            enhanced_names = []
+            for api_name in api_data.get('node_names', []):
+                # Check if we have location data for this repeater
+                if api_name in db_locations and db_locations[api_name]:
+                    enhanced_name = f"{api_name} ({db_locations[api_name]})"
+                else:
+                    enhanced_name = api_name
+                enhanced_names.append(enhanced_name)
+            
+            # Return enhanced API data
+            enhanced_data = api_data.copy()
+            enhanced_data['node_names'] = enhanced_names
+            # Keep original source - we're just caching geocoding results
+            
+            return enhanced_data
+            
+        except Exception as e:
+            self.logger.error(f"Error enhancing API data with locations: {e}")
+            # Return original API data if enhancement fails
+            return api_data
     
     async def refresh_cache(self):
         """Refresh the cache from the API"""
@@ -160,11 +213,11 @@ class PrefixCommand(BaseCommand):
             self.logger.info(f"Looking up prefix '{prefix}' in local database")
             
             # Query the repeater_contacts table for repeaters with matching prefix
+            # Include inactive repeaters for location enhancement (they still have valid location data)
             query = '''
-                SELECT name, public_key, device_type, last_seen
+                SELECT name, public_key, device_type, last_seen, latitude, longitude, city, state, country
                 FROM repeater_contacts 
-                WHERE is_active = 1 
-                AND public_key LIKE ?
+                WHERE public_key LIKE ?
                 ORDER BY name
             '''
             
@@ -182,11 +235,62 @@ class PrefixCommand(BaseCommand):
             for row in results:
                 name = row['name']
                 device_type = row['device_type']
+                
                 # Add device type indicator for clarity
                 if device_type == 2:
                     name += " (Repeater)"
                 elif device_type == 3:
                     name += " (Room Server)"
+                
+                # Add location information if enabled and available
+                if self.show_repeater_locations:
+                    location_parts = []
+                    
+                    # Add city if available
+                    if row['city']:
+                        location_parts.append(row['city'])
+                    
+                    # Add state if available and different from city
+                    if row['state'] and row['state'] not in location_parts:
+                        location_parts.append(row['state'])
+                    
+                    # If we have coordinates but no city, try reverse geocoding
+                    # Skip 0,0 coordinates as they indicate "hidden" location
+                    if (not location_parts and 
+                        row['latitude'] is not None and 
+                        row['longitude'] is not None and 
+                        not (row['latitude'] == 0.0 and row['longitude'] == 0.0) and
+                        self.use_reverse_geocoding):
+                        try:
+                            # Use the enhanced reverse geocoding from repeater manager
+                            if hasattr(self.bot, 'repeater_manager'):
+                                city = self.bot.repeater_manager._get_city_from_coordinates(
+                                    row['latitude'], row['longitude']
+                                )
+                                if city:
+                                    location_parts.append(city)
+                            else:
+                                # Fallback to basic geocoding
+                                from geopy.geocoders import Nominatim
+                                geolocator = Nominatim(user_agent="meshcore-bot")
+                                location = geolocator.reverse(f"{row['latitude']}, {row['longitude']}")
+                                if location:
+                                    address = location.raw.get('address', {})
+                                    city = (address.get('city') or
+                                           address.get('town') or
+                                           address.get('village') or
+                                           address.get('hamlet') or
+                                           address.get('municipality'))
+                                    if city:
+                                        location_parts.append(city)
+                        except Exception as e:
+                            self.logger.debug(f"Error reverse geocoding {row['latitude']}, {row['longitude']}: {e}")
+                    
+                    # Add location to name if we have any location info
+                    if location_parts:
+                        location_str = ", ".join(location_parts)
+                        name += f" ({location_str})"
+                
                 node_names.append(name)
             
             self.logger.info(f"Found {len(node_names)} repeaters in database with prefix '{prefix}'")

@@ -26,6 +26,9 @@ class RepeaterManager:
         
         # Initialize repeater-specific tables
         self._init_repeater_tables()
+        
+        # Check for and handle database schema migration
+        self._migrate_database_schema()
     
     def _init_repeater_tables(self):
         """Initialize repeater-specific database tables"""
@@ -39,6 +42,11 @@ class RepeaterManager:
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 contact_data TEXT,
+                latitude REAL,
+                longitude REAL,
+                city TEXT,
+                state TEXT,
+                country TEXT,
                 is_active BOOLEAN DEFAULT 1,
                 purge_count INTEGER DEFAULT 0
             ''')
@@ -68,6 +76,251 @@ class RepeaterManager:
             self.logger.error(f"Failed to initialize repeater database: {e}")
             raise
     
+    def _migrate_database_schema(self):
+        """Handle database schema migration for existing installations"""
+        try:
+            # Check if the new location columns exist
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(repeater_contacts)")
+                columns = [row[1] for row in cursor.fetchall()]
+                
+                # Add missing location columns if they don't exist
+                new_columns = [
+                    ('latitude', 'REAL'),
+                    ('longitude', 'REAL'),
+                    ('city', 'TEXT'),
+                    ('state', 'TEXT'),
+                    ('country', 'TEXT')
+                ]
+                
+                for column_name, column_type in new_columns:
+                    if column_name not in columns:
+                        self.logger.info(f"Adding missing column: {column_name}")
+                        cursor.execute(f"ALTER TABLE repeater_contacts ADD COLUMN {column_name} {column_type}")
+                        conn.commit()
+                
+                self.logger.info("Database schema migration completed")
+                
+        except Exception as e:
+            self.logger.error(f"Error during database schema migration: {e}")
+    
+    def _extract_location_data(self, contact_data: Dict) -> Dict[str, Optional[str]]:
+        """Extract location data from contact_data JSON"""
+        location_info = {
+            'latitude': None,
+            'longitude': None,
+            'city': None,
+            'state': None,
+            'country': None
+        }
+        
+        try:
+            # Check for various possible location field names in contact data
+            location_fields = [
+                'location', 'gps', 'coordinates', 'lat_lon', 'lat_lng',
+                'position', 'geo', 'geolocation', 'loc'
+            ]
+            
+            for field in location_fields:
+                if field in contact_data:
+                    loc_data = contact_data[field]
+                    if isinstance(loc_data, dict):
+                        # Handle structured location data
+                        if 'lat' in loc_data and 'lon' in loc_data:
+                            try:
+                                location_info['latitude'] = float(loc_data['lat'])
+                                location_info['longitude'] = float(loc_data['lon'])
+                            except (ValueError, TypeError):
+                                pass
+                        elif 'latitude' in loc_data and 'longitude' in loc_data:
+                            try:
+                                location_info['latitude'] = float(loc_data['latitude'])
+                                location_info['longitude'] = float(loc_data['longitude'])
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        # Extract city/state/country if available
+                        for addr_field in ['city', 'state', 'country', 'region', 'province']:
+                            if addr_field in loc_data and loc_data[addr_field]:
+                                if addr_field == 'region' or addr_field == 'province':
+                                    location_info['state'] = str(loc_data[addr_field])
+                                else:
+                                    location_info[addr_field] = str(loc_data[addr_field])
+                    
+                    elif isinstance(loc_data, str):
+                        # Handle string location data (e.g., "lat,lon" or "city, state")
+                        if ',' in loc_data:
+                            parts = [p.strip() for p in loc_data.split(',')]
+                            if len(parts) >= 2:
+                                try:
+                                    # Try to parse as coordinates
+                                    lat = float(parts[0])
+                                    lon = float(parts[1])
+                                    location_info['latitude'] = lat
+                                    location_info['longitude'] = lon
+                                except ValueError:
+                                    # Treat as city, state format
+                                    location_info['city'] = parts[0]
+                                    if len(parts) > 1:
+                                        location_info['state'] = parts[1]
+                                    if len(parts) > 2:
+                                        location_info['country'] = parts[2]
+            
+            # Check for individual lat/lon fields (including MeshCore-specific fields)
+            for lat_field in ['adv_lat', 'lat', 'latitude', 'gps_lat']:
+                if lat_field in contact_data:
+                    try:
+                        location_info['latitude'] = float(contact_data[lat_field])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+            
+            for lon_field in ['adv_lon', 'lon', 'lng', 'longitude', 'gps_lon', 'gps_lng']:
+                if lon_field in contact_data:
+                    try:
+                        location_info['longitude'] = float(contact_data[lon_field])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+            
+            # Check for address fields
+            for city_field in ['city', 'town', 'municipality']:
+                if city_field in contact_data and contact_data[city_field]:
+                    location_info['city'] = str(contact_data[city_field])
+                    break
+            
+            for state_field in ['state', 'province', 'region']:
+                if state_field in contact_data and contact_data[state_field]:
+                    location_info['state'] = str(contact_data[state_field])
+                    break
+            
+            for country_field in ['country', 'nation']:
+                if country_field in contact_data and contact_data[country_field]:
+                    location_info['country'] = str(contact_data[country_field])
+                    break
+            
+            # Validate coordinates if we have them
+            if location_info['latitude'] is not None and location_info['longitude'] is not None:
+                lat, lon = location_info['latitude'], location_info['longitude']
+                
+                # Treat 0,0 coordinates as "hidden" location (common in MeshCore)
+                if lat == 0.0 and lon == 0.0:
+                    location_info['latitude'] = None
+                    location_info['longitude'] = None
+                # Check for valid coordinate ranges
+                elif not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                    # Invalid coordinates
+                    location_info['latitude'] = None
+                    location_info['longitude'] = None
+            
+        except Exception as e:
+            self.logger.debug(f"Error extracting location data: {e}")
+        
+        return location_info
+
+    def _get_city_from_coordinates(self, latitude: float, longitude: float) -> Optional[str]:
+        """Get city name from coordinates using reverse geocoding, with neighborhood for large cities"""
+        try:
+            from geopy.geocoders import Nominatim
+            
+            # Initialize geocoder
+            geolocator = Nominatim(user_agent="meshcore-bot")
+            
+            # Perform reverse geocoding
+            location = geolocator.reverse(f"{latitude}, {longitude}")
+            if location:
+                address = location.raw.get('address', {})
+                
+                # Get city name from various fields
+                city = (address.get('city') or 
+                       address.get('town') or 
+                       address.get('village') or 
+                       address.get('hamlet') or 
+                       address.get('municipality') or 
+                       address.get('suburb'))
+                
+                if city:
+                    # For large cities, try to get neighborhood information
+                    neighborhood = self._get_neighborhood_for_large_city(address, city)
+                    if neighborhood:
+                        return f"{neighborhood}, {city}"
+                    else:
+                        return city
+            
+            return None
+            
+        except Exception as e:
+            self.logger.debug(f"Error getting city from coordinates {latitude}, {longitude}: {e}")
+            return None
+    
+    def _get_neighborhood_for_large_city(self, address: dict, city: str) -> Optional[str]:
+        """Get neighborhood information for large cities"""
+        try:
+            # List of large cities where neighborhood info is useful
+            large_cities = [
+                'seattle', 'portland', 'san francisco', 'los angeles', 'san diego',
+                'chicago', 'new york', 'boston', 'philadelphia', 'washington',
+                'atlanta', 'miami', 'houston', 'dallas', 'austin', 'denver',
+                'phoenix', 'las vegas', 'minneapolis', 'detroit', 'cleveland',
+                'pittsburgh', 'baltimore', 'richmond', 'norfolk', 'tampa',
+                'orlando', 'jacksonville', 'nashville', 'memphis', 'kansas city',
+                'st louis', 'milwaukee', 'cincinnati', 'columbus', 'indianapolis',
+                'louisville', 'lexington', 'charlotte', 'raleigh', 'greensboro',
+                'winston-salem', 'durham', 'charleston', 'columbia', 'greenville',
+                'savannah', 'augusta', 'macon', 'columbus', 'atlanta'
+            ]
+            
+            # Check if this is a large city
+            if city.lower() not in large_cities:
+                return None
+            
+            # Try to get neighborhood information from various address fields
+            neighborhood_fields = [
+                'neighbourhood', 'neighborhood', 'suburb', 'quarter', 'district',
+                'area', 'locality', 'hamlet', 'village', 'town'
+            ]
+            
+            for field in neighborhood_fields:
+                if field in address and address[field]:
+                    neighborhood = address[field]
+                    # Skip if it's the same as the city name
+                    if neighborhood.lower() != city.lower():
+                        return neighborhood
+            
+            # For Seattle specifically, try to get more specific area info
+            if city.lower() == 'seattle':
+                # Check for specific Seattle neighborhoods/areas
+                seattle_areas = [
+                    'capitol hill', 'ballard', 'fremont', 'queen anne', 'belltown',
+                    'pioneer square', 'international district', 'chinatown',
+                    'first hill', 'central district', 'central', 'beacon hill',
+                    'columbia city', 'rainier valley', 'west seattle', 'alki',
+                    'magnolia', 'greenwood', 'phinney ridge', 'wallingford',
+                    'university district', 'udistrict', 'ravenna', 'laurelhurst',
+                    'sand point', 'wedgwood', 'view ridge', 'matthews beach',
+                    'lake city', 'bitter lake', 'broadview', 'crown hill',
+                    'loyal heights', 'sunset hill', 'interbay', 'downtown',
+                    'south lake union', 'denny triangle', 'denny regrade',
+                    'eastlake', 'montlake', 'madison park', 'madrona',
+                    'leschi', 'mount baker', 'columbia city', 'rainier beach',
+                    'south park', 'georgetown', 'soho', 'industrial district'
+                ]
+                
+                # Check if any of the address fields contain Seattle neighborhood names
+                for field, value in address.items():
+                    if isinstance(value, str):
+                        value_lower = value.lower()
+                        for area in seattle_areas:
+                            if area in value_lower:
+                                return area.title()
+            
+            return None
+            
+        except Exception as e:
+            self.logger.debug(f"Error getting neighborhood for {city}: {e}")
+            return None
+
     def _is_repeater_device(self, contact_data: Dict) -> bool:
         """Check if a contact is a repeater or room server using available contact data"""
         try:
@@ -144,6 +397,7 @@ class RepeaterManager:
         self.logger.info(f"Scanning {len(contacts)} contacts for repeaters...")
         
         cataloged_count = 0
+        updated_count = 0
         processed_count = 0
         
         try:
@@ -175,29 +429,93 @@ class RepeaterManager:
                         if 'room' in name.lower() or 'server' in name.lower():
                             device_type = 'RoomServer'
                     
-                    # Check if already exists
+                    # Extract location data from contact_data
+                    location_info = self._extract_location_data(contact_data)
+                    
+                    # Check if already exists and get existing location data
                     existing = self.db_manager.execute_query(
-                        'SELECT id, last_seen FROM repeater_contacts WHERE public_key = ?',
+                        'SELECT id, last_seen, latitude, longitude, city FROM repeater_contacts WHERE public_key = ?',
                         (public_key,)
                     )
                     
-                    if existing:
-                        # Update last_seen timestamp
-                        self.db_manager.execute_update(
-                            'UPDATE repeater_contacts SET last_seen = CURRENT_TIMESTAMP, is_active = 1 WHERE public_key = ?',
-                            (public_key,)
+                    # If we have coordinates but no city, try to get city from coordinates
+                    # Skip 0,0 coordinates as they indicate "hidden" location
+                    # Skip reverse geocoding if coordinates haven't changed and we already have a city
+                    should_geocode = (
+                        location_info['latitude'] is not None and 
+                        location_info['longitude'] is not None and 
+                        not (location_info['latitude'] == 0.0 and location_info['longitude'] == 0.0) and
+                        not location_info['city']
+                    )
+                    
+                    # If repeater exists, check if coordinates changed or if we need to geocode
+                    if existing and should_geocode:
+                        existing_lat = existing[0][2] if existing[0][2] is not None else 0.0
+                        existing_lon = existing[0][3] if existing[0][3] is not None else 0.0
+                        existing_city = existing[0][4]
+                        
+                        # Only geocode if coordinates changed or we don't have a city
+                        coordinates_changed = (
+                            abs(location_info['latitude'] - existing_lat) > 0.0001 or 
+                            abs(location_info['longitude'] - existing_lon) > 0.0001
                         )
+                        
+                        if not coordinates_changed and existing_city:
+                            # Use existing city data, no need to geocode
+                            location_info['city'] = existing_city
+                            should_geocode = False
+                    
+                    if should_geocode:
+                        city_from_coords = self._get_city_from_coordinates(
+                            location_info['latitude'], 
+                            location_info['longitude']
+                        )
+                        if city_from_coords:
+                            location_info['city'] = city_from_coords
+                    
+                    if existing:
+                        # Update last_seen timestamp and location data if available
+                        update_query = 'UPDATE repeater_contacts SET last_seen = CURRENT_TIMESTAMP, is_active = 1'
+                        update_params = []
+                        
+                        # Add location fields if we have new data
+                        if location_info['latitude'] is not None:
+                            update_query += ', latitude = ?'
+                            update_params.append(location_info['latitude'])
+                        if location_info['longitude'] is not None:
+                            update_query += ', longitude = ?'
+                            update_params.append(location_info['longitude'])
+                        if location_info['city']:
+                            update_query += ', city = ?'
+                            update_params.append(location_info['city'])
+                        if location_info['state']:
+                            update_query += ', state = ?'
+                            update_params.append(location_info['state'])
+                        if location_info['country']:
+                            update_query += ', country = ?'
+                            update_params.append(location_info['country'])
+                        
+                        update_query += ' WHERE public_key = ?'
+                        update_params.append(public_key)
+                        
+                        self.db_manager.execute_update(update_query, tuple(update_params))
+                        updated_count += 1
                     else:
-                        # Insert new repeater
+                        # Insert new repeater with location data
                         self.db_manager.execute_update('''
                             INSERT INTO repeater_contacts 
-                            (public_key, name, device_type, contact_data)
-                            VALUES (?, ?, ?, ?)
+                            (public_key, name, device_type, contact_data, latitude, longitude, city, state, country)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             public_key,
                             name,
                             device_type,
-                            json.dumps(contact_data)
+                            json.dumps(contact_data),
+                            location_info['latitude'],
+                            location_info['longitude'],
+                            location_info['city'],
+                            location_info['state'],
+                            location_info['country']
                         ))
                         
                         # Log the addition
@@ -207,7 +525,15 @@ class RepeaterManager:
                         ''', (public_key, name))
                         
                         cataloged_count += 1
-                        self.logger.info(f"Cataloged new repeater: {name} ({device_type})")
+                        location_str = ""
+                        if location_info['city'] or location_info['latitude']:
+                            if location_info['city']:
+                                location_str = f" in {location_info['city']}"
+                                if location_info['state']:
+                                    location_str += f", {location_info['state']}"
+                            elif location_info['latitude'] and location_info['longitude']:
+                                location_str = f" at {location_info['latitude']:.4f}, {location_info['longitude']:.4f}"
+                        self.logger.info(f"Cataloged new repeater: {name} ({device_type}){location_str}")
                 
         except Exception as e:
             self.logger.error(f"Error scanning contacts for repeaters: {e}")
@@ -215,8 +541,11 @@ class RepeaterManager:
         if cataloged_count > 0:
             self.logger.info(f"Cataloged {cataloged_count} new repeaters")
         
-        self.logger.info(f"Scan completed: {cataloged_count} repeaters cataloged from {len(contacts)} contacts")
-        self.logger.info(f"Scan summary: {processed_count} contacts processed, {cataloged_count} repeaters found")
+        if updated_count > 0:
+            self.logger.info(f"Updated {updated_count} existing repeaters with location data")
+        
+        self.logger.info(f"Scan completed: {cataloged_count} new repeaters cataloged, {updated_count} existing repeaters updated from {len(contacts)} contacts")
+        self.logger.info(f"Scan summary: {processed_count} contacts processed, {cataloged_count + updated_count} repeaters processed")
         return cataloged_count
     
     async def get_repeater_contacts(self, active_only: bool = True) -> List[Dict]:

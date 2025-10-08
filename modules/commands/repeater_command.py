@@ -76,6 +76,8 @@ class RepeaterCommand(BaseCommand):
                     response = await self._handle_auto(args)
                 elif subcommand == "tst":
                     response = await self._handle_test(args)
+                elif subcommand == "locations":
+                    response = await self._handle_locations()
                 elif subcommand == "help":
                     response = self.get_help()
                 else:
@@ -87,8 +89,24 @@ class RepeaterCommand(BaseCommand):
                 self.logger.error(traceback.format_exc())
                 response = f"Error executing repeater command: {e}"
         
-        # Send the response
-        await self.bot.command_manager.send_response(message, response)
+        # Handle multi-message responses (like locations command)
+        if isinstance(response, tuple) and response[0] == "multi_message":
+            # Send first message
+            await self.bot.command_manager.send_response(message, response[1])
+            
+            # Wait for bot TX rate limiter to allow next message
+            import asyncio
+            rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+            # Use a conservative sleep time to avoid rate limiting
+            sleep_time = max(rate_limit + 1.0, 2.0)  # At least 2 seconds, or rate_limit + 1 second
+            await asyncio.sleep(sleep_time)
+            
+            # Send second message
+            await self.bot.command_manager.send_response(message, response[2])
+        else:
+            # Send single message as usual
+            await self.bot.command_manager.send_response(message, response)
+        
         return True
     
     async def _handle_scan(self) -> str:
@@ -104,7 +122,17 @@ class RepeaterCommand(BaseCommand):
         try:
             cataloged_count = await self.bot.repeater_manager.scan_and_catalog_repeaters()
             self.logger.info(f"Scan completed, cataloged {cataloged_count} repeaters")
-            return f"✅ Scanned contacts and cataloged {cataloged_count} new repeaters"
+            
+            # Get more detailed information about what happened
+            if cataloged_count > 0:
+                return f"✅ Scanned contacts and cataloged {cataloged_count} new repeaters"
+            else:
+                # Check if there are any repeaters in the database
+                repeaters = await self.bot.repeater_manager.get_repeater_contacts(active_only=True)
+                if repeaters:
+                    return f"✅ Scanned contacts - no new repeaters found, but updated location data for existing {len(repeaters)} repeaters"
+                else:
+                    return "✅ Scanned contacts - no repeaters found in contact list"
         except Exception as e:
             self.logger.error(f"Error in repeater scan: {e}")
             return f"❌ Error scanning for repeaters: {e}"
@@ -583,6 +611,89 @@ class RepeaterCommand(BaseCommand):
         except Exception as e:
             return f"❌ Error testing meshcore-cli commands: {e}"
     
+    async def _handle_locations(self) -> str:
+        """Show location data status for repeaters"""
+        try:
+            if not hasattr(self.bot, 'repeater_manager'):
+                return "Repeater manager not initialized. Please check bot configuration."
+            
+            # Get all active repeaters
+            repeaters = await self.bot.repeater_manager.get_repeater_contacts(active_only=True)
+            
+            if not repeaters:
+                return "No active repeaters found in database"
+            
+            # Analyze location data
+            total_repeaters = len(repeaters)
+            with_coordinates = 0
+            with_city = 0
+            with_state = 0
+            with_country = 0
+            no_location = 0
+            
+            location_examples = []
+            
+            for repeater in repeaters:
+                has_coords = repeater.get('latitude') is not None and repeater.get('longitude') is not None
+                has_city = bool(repeater.get('city'))
+                has_state = bool(repeater.get('state'))
+                has_country = bool(repeater.get('country'))
+                
+                if has_coords:
+                    with_coordinates += 1
+                if has_city:
+                    with_city += 1
+                if has_state:
+                    with_state += 1
+                if has_country:
+                    with_country += 1
+                if not (has_coords or has_city or has_state or has_country):
+                    no_location += 1
+                
+                # Collect examples for display
+                if len(location_examples) < 3:  # Reduced to 3 examples to fit in message
+                    location_parts = []
+                    if has_city:
+                        location_parts.append(repeater['city'])
+                    if has_state:
+                        location_parts.append(repeater['state'])
+                    if has_country:
+                        location_parts.append(repeater['country'])
+                    
+                    if location_parts:
+                        location_examples.append(f"• {repeater['name']}: {', '.join(location_parts)}")
+                    elif has_coords:
+                        location_examples.append(f"• {repeater['name']}: {repeater['latitude']:.4f}, {repeater['longitude']:.4f}")
+                    else:
+                        location_examples.append(f"• {repeater['name']}: No location data")
+            
+            # Build first message (summary)
+            summary_lines = [
+                f"📍 Repeater Locations ({total_repeaters} total):",
+                f"GPS: {with_coordinates} ({with_coordinates/total_repeaters*100:.0f}%)",
+                f"City: {with_city} ({with_city/total_repeaters*100:.0f}%)",
+                f"State: {with_state} ({with_state/total_repeaters*100:.0f}%)",
+                f"Country: {with_country} ({with_country/total_repeaters*100:.0f}%)",
+                f"None: {no_location} ({no_location/total_repeaters*100:.0f}%)"
+            ]
+            
+            first_message = "\n".join(summary_lines)
+            
+            # Build second message (examples) if we have examples
+            if location_examples:
+                example_lines = ["Examples:"]
+                example_lines.extend(location_examples)
+                second_message = "\n".join(example_lines)
+                
+                # Return tuple for multi-message response
+                return ("multi_message", first_message, second_message)
+            else:
+                return first_message
+            
+        except Exception as e:
+            self.logger.error(f"Error getting repeater location status: {e}")
+            return f"❌ Error getting location status: {e}"
+    
     def get_help(self) -> str:
         """Get help text for the repeater command"""
         return """📡 **Repeater & Contact Management Commands**
@@ -592,6 +703,7 @@ class RepeaterCommand(BaseCommand):
 **Repeater Management:**
 • `scan` - Scan current contacts and catalog new repeaters
 • `list` - List repeater contacts (use `--all` to show purged ones)
+• `locations` - Show location data status for repeaters
         • `purge all` - Purge all repeaters
         • `purge all force` - Force purge all repeaters (uses multiple removal methods)
         • `purge <days>` - Purge repeaters older than specified days
