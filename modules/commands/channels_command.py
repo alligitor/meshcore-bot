@@ -7,6 +7,7 @@ Lists common hashtag channels for the region with multi-message support
 from .base_command import BaseCommand
 from ..models import MeshMessage
 import asyncio
+import re
 
 
 class ChannelsCommand(BaseCommand):
@@ -47,7 +48,6 @@ class ChannelsCommand(BaseCommand):
                 return True
             
             # Check for word boundary matches using regex
-            import re
             # Create a regex pattern that matches the keyword at word boundaries
             # Use custom word boundary that treats underscores as separators
             # (?<![a-zA-Z0-9]) = negative lookbehind for alphanumeric characters (not underscore)
@@ -85,12 +85,17 @@ class ChannelsCommand(BaseCommand):
                         specific_channel = sub_command
                         sub_command = None
                     else:
-                        # Check if this might be a channel search (not a category)
-                        # Try to find a channel that matches this name across all categories
-                        found_channel = self._find_channel_by_name(sub_command)
-                        if found_channel:
-                            specific_channel = '#' + found_channel
-                            sub_command = None
+                        # First check if this is a valid category
+                        if self._is_valid_category(sub_command):
+                            # It's a category, keep it as sub_command
+                            pass
+                        else:
+                            # Check if this might be a channel search (not a category)
+                            # Try to find a channel that matches this name across all categories
+                            found_channel = self._find_channel_by_name(sub_command)
+                            if found_channel:
+                                specific_channel = '#' + found_channel
+                                sub_command = None
             
             # Handle specific channel request
             if specific_channel:
@@ -116,12 +121,7 @@ class ChannelsCommand(BaseCommand):
             messages = self._split_into_messages(channel_list, sub_command)
             
             # Send each message with a small delay between them
-            for i, msg_content in enumerate(messages):
-                if i > 0:
-                    # Small delay between messages to prevent overwhelming the network
-                    await asyncio.sleep(0.5)
-                
-                await self.send_response(message, msg_content)
+            await self._send_multiple_messages(message, messages)
             
             return True
             
@@ -134,32 +134,32 @@ class ChannelsCommand(BaseCommand):
         """Load channels from the Channels_List config section with optional sub-command filtering"""
         channels = {}
         
-        if self.bot.config.has_section('Channels_List'):
-            for channel_name, description in self.bot.config.items('Channels_List'):
-                # Skip empty or commented lines
-                if channel_name.strip() and not channel_name.startswith('#'):
-                    # Strip quotes if present
-                    if description.startswith('"') and description.endswith('"'):
-                        description = description[1:-1]
-                    
-                    # Handle sub-command filtering
-                    if sub_command:
-                        # Check if this channel belongs to the sub-command
-                        if not channel_name.startswith(f'{sub_command}.'):
-                            continue
-                        # Remove the sub-command prefix for display
-                        display_name = channel_name[len(sub_command) + 1:]  # Remove 'subcommand.'
-                    else:
-                        # For general channels, only show channels that don't have sub-command prefixes
-                        if '.' in channel_name:
-                            continue
-                        display_name = channel_name
-                    
-                    # Add # prefix if not already present
-                    if not display_name.startswith('#'):
-                        display_name = '#' + display_name
-                    
-                    channels[display_name] = description
+        for channel_name, description in self._parse_config_channels():
+            # Handle sub-command filtering
+            if sub_command:
+                # Special case: "general" should show general channels (no category prefix)
+                if sub_command == 'general':
+                    # For general channels, only show channels that don't have sub-command prefixes
+                    if '.' in channel_name:
+                        continue
+                    display_name = channel_name
+                else:
+                    # Check if this channel belongs to the sub-command
+                    if not channel_name.startswith(f'{sub_command}.'):
+                        continue
+                    # Remove the sub-command prefix for display
+                    display_name = channel_name[len(sub_command) + 1:]  # Remove 'subcommand.'
+            else:
+                # For general channels, only show channels that don't have sub-command prefixes
+                if '.' in channel_name:
+                    continue
+                display_name = channel_name
+            
+            # Add # prefix if not already present
+            if not display_name.startswith('#'):
+                display_name = '#' + display_name
+            
+            channels[display_name] = description
         
         return channels
     
@@ -181,10 +181,7 @@ class ChannelsCommand(BaseCommand):
             messages = self._split_into_messages(category_list, "Available categories")
             
             # Send each message with a small delay between them
-            for i, msg_content in enumerate(messages):
-                if i > 0:
-                    await asyncio.sleep(0.5)
-                await self.send_response(message, msg_content)
+            await self._send_multiple_messages(message, messages)
                 
         except Exception as e:
             self.logger.error(f"Error showing categories: {e}")
@@ -194,21 +191,18 @@ class ChannelsCommand(BaseCommand):
         """Get all available channel categories and their channel counts"""
         categories = {}
         
-        if self.bot.config.has_section('Channels_List'):
-            for channel_name, description in self.bot.config.items('Channels_List'):
-                # Skip empty or commented lines
-                if channel_name.strip() and not channel_name.startswith('#'):
-                    # Check if this is a sub-command channel (has a dot)
-                    if '.' in channel_name:
-                        category = channel_name.split('.')[0]
-                        if category not in categories:
-                            categories[category] = 0
-                        categories[category] += 1
-                    else:
-                        # General channels (no category)
-                        if 'general' not in categories:
-                            categories['general'] = 0
-                        categories['general'] += 1
+        for channel_name, description in self._parse_config_channels():
+            # Check if this is a sub-command channel (has a dot)
+            if '.' in channel_name:
+                category = channel_name.split('.')[0]
+                if category not in categories:
+                    categories[category] = 0
+                categories[category] += 1
+            else:
+                # General channels (no category)
+                if 'general' not in categories:
+                    categories['general'] = 0
+                categories['general'] += 1
         
         return categories
     
@@ -216,20 +210,17 @@ class ChannelsCommand(BaseCommand):
         """Find a channel by partial name match across all categories"""
         search_name_lower = search_name.lower()
         
-        if self.bot.config.has_section('Channels_List'):
-            for config_name, description in self.bot.config.items('Channels_List'):
-                # Skip empty or commented lines
-                if config_name.strip() and not config_name.startswith('#'):
-                    # Handle sub-command channels
-                    if '.' in config_name:
-                        category, name = config_name.split('.', 1)
-                        # Check if the channel name matches (case insensitive)
-                        if name.lower() == search_name_lower:
-                            return name
-                    else:
-                        # Check general channels
-                        if config_name.lower() == search_name_lower:
-                            return config_name
+        for config_name, description in self._parse_config_channels():
+            # Handle sub-command channels
+            if '.' in config_name:
+                category, name = config_name.split('.', 1)
+                # Check if the channel name matches (case insensitive)
+                if name.lower() == search_name_lower:
+                    return name
+            else:
+                # Check general channels
+                if config_name.lower() == search_name_lower:
+                    return config_name
         
         return None
     
@@ -240,22 +231,19 @@ class ChannelsCommand(BaseCommand):
             found_channel = None
             found_category = None
             
-            if self.bot.config.has_section('Channels_List'):
-                for config_name, description in self.bot.config.items('Channels_List'):
-                    # Skip empty or commented lines
-                    if config_name.strip() and not config_name.startswith('#'):
-                        # Handle sub-command channels
-                        if '.' in config_name:
-                            category, name = config_name.split('.', 1)
-                            display_name = '#' + name
-                        else:
-                            display_name = '#' + config_name
-                        
-                        # Check if this matches the requested channel
-                        if display_name.lower() == channel_name.lower():
-                            found_channel = display_name
-                            found_category = category if '.' in config_name else 'general'
-                            break
+            for config_name, description in self._parse_config_channels():
+                # Handle sub-command channels
+                if '.' in config_name:
+                    category, name = config_name.split('.', 1)
+                    display_name = '#' + name
+                else:
+                    display_name = '#' + config_name
+                
+                # Check if this matches the requested channel
+                if display_name.lower() == channel_name.lower():
+                    found_channel = display_name
+                    found_category = category if '.' in config_name else 'general'
+                    break
             
             if found_channel:
                 # Get the description
@@ -284,23 +272,14 @@ class ChannelsCommand(BaseCommand):
         messages = []
         
         # Set appropriate header based on sub-command
-        if sub_command == "Available categories":
-            current_message = "Available Categories: "
-        elif sub_command:
-            current_message = f"{sub_command.title()}: "
-        else:
-            current_message = "Common channels: "
-        
+        current_message = self._get_header_for_subcommand(sub_command)
         current_length = len(current_message)
         
         for channel in channel_list:
             # Check if adding this channel would exceed the limit
             if current_length + len(channel) + 2 > 130:  # +2 for ", " separator
                 # Start a new message
-                if sub_command == "Available categories":
-                    expected_header = "Available Categories: "
-                else:
-                    expected_header = f"{sub_command.title()} channels: " if sub_command else "Common channels: "
+                expected_header = self._get_continuation_header_for_subcommand(sub_command)
                 
                 if current_message != expected_header:
                     messages.append(current_message.rstrip(", "))
@@ -314,21 +293,16 @@ class ChannelsCommand(BaseCommand):
                     continue
             
             # Add channel to current message
-            if sub_command == "Available categories":
-                header = "Available Categories: "
-            else:
-                header = f"{sub_command.title()} channels: " if sub_command else "Common channels: "
-            if current_message == header or current_message == "Channels (cont): ":
+            initial_header = self._get_header_for_subcommand(sub_command)
+            continuation_header = self._get_continuation_header_for_subcommand(sub_command)
+            if current_message == initial_header or current_message == continuation_header or current_message == "Channels (cont): ":
                 current_message += channel
             else:
                 current_message += f", {channel}"
             current_length = len(current_message)
         
         # Add the last message if it has content
-        if sub_command == "Available categories":
-            header = "Available Categories: "
-        else:
-            header = f"{sub_command.title()} channels: " if sub_command else "Common channels: "
+        header = self._get_continuation_header_for_subcommand(sub_command)
         if current_message != header and current_message != "Channels (cont): ":
             messages.append(current_message)
         
@@ -340,3 +314,56 @@ class ChannelsCommand(BaseCommand):
                 messages.append("No channels configured")
         
         return messages
+    
+    def _get_header_for_subcommand(self, sub_command: str = None) -> str:
+        """Get the appropriate header for a sub-command"""
+        if sub_command == "Available categories":
+            return "Available Categories: "
+        elif sub_command and sub_command != "general":
+            return f"{sub_command.title()}: "
+        else:
+            return "Common channels: "
+    
+    def _get_continuation_header_for_subcommand(self, sub_command: str = None) -> str:
+        """Get the appropriate header for continuation messages"""
+        if sub_command == "Available categories":
+            return "Available Categories: "
+        elif sub_command and sub_command != "general":
+            return f"{sub_command.title()} channels: "
+        else:
+            return "Common channels: "
+    
+    async def _send_multiple_messages(self, message: MeshMessage, messages: list):
+        """Send multiple messages with delays between them"""
+        for i, msg_content in enumerate(messages):
+            if i > 0:
+                # Small delay between messages to prevent overwhelming the network
+                await asyncio.sleep(0.5)
+            await self.send_response(message, msg_content)
+    
+    def _parse_config_channels(self):
+        """Parse all channels from config, returning a generator of (name, description) tuples"""
+        if not self.bot.config.has_section('Channels_List'):
+            return
+        
+        for channel_name, description in self.bot.config.items('Channels_List'):
+            # Skip empty or commented lines
+            if channel_name.strip() and not channel_name.startswith('#'):
+                # Strip quotes if present
+                if description.startswith('"') and description.endswith('"'):
+                    description = description[1:-1]
+                yield channel_name, description
+    
+    def _is_valid_category(self, category_name: str) -> bool:
+        """Check if a category name is valid (has channels with that prefix)"""
+        if not category_name:
+            return False
+        
+        # Check if there are any channels with this category prefix
+        for channel_name, description in self._parse_config_channels():
+            if '.' in channel_name:
+                category = channel_name.split('.')[0]
+                if category.lower() == category_name.lower():
+                    return True
+        
+        return False
