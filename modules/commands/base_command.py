@@ -107,16 +107,12 @@ class BaseCommand(ABC):
             if keyword_lower == content_lower:
                 return True
             
-            # Check for word boundary matches using regex
-            import re
-            # Create a regex pattern that matches the keyword at word boundaries
-            # Use custom word boundary that treats underscores as separators
-            # (?<![a-zA-Z0-9]) = negative lookbehind for alphanumeric characters (not underscore)
-            # (?![a-zA-Z0-9]) = negative lookahead for alphanumeric characters (not underscore)
-            # This allows underscores to act as word boundaries
-            pattern = r'(?<![a-zA-Z0-9])' + re.escape(keyword_lower) + r'(?![a-zA-Z0-9])'
-            if re.search(pattern, content_lower):
-                return True
+            # Check if the message starts with the keyword (followed by space or end of string)
+            # This ensures the keyword is the first word in the message
+            if content_lower.startswith(keyword_lower):
+                # Check if it's followed by a space or is the end of the message
+                if len(content_lower) == len(keyword_lower) or content_lower[len(keyword_lower)] == ' ':
+                    return True
         
         return False
     
