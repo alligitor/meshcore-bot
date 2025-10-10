@@ -96,7 +96,7 @@ startup_advert = flood            # Send advert on startup
 # Format: keyword = response_template
 # Variables: {sender}, {connection_info}, {snr}, {timestamp}, {path}
 test = "Message received from {sender} | {connection_info}"
-help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcond, satpass"
+help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcond, satpass, dice, roll, joke, dadjoke, sports, channels, path, prefix, repeater, stats"
 ```
 
 ### Channels
@@ -135,11 +135,14 @@ python meshcore_bot.py
 
 The bot responds to these commands:
 
+**Basic Commands:**
 - `test` - Test message response
 - `ping` - Ping/pong response
 - `help` - Show available commands
 - `hello` - Greeting response
 - `cmd` - List available commands
+
+**Information Commands:**
 - `wx <location>` - Weather information
 - `aqi <location>` - Air quality index
 - `sun` - Sunrise/sunset times
@@ -147,7 +150,27 @@ The bot responds to these commands:
 - `solar` - Solar conditions
 - `hfcond` - HF band conditions
 - `satpass <NORAD>` - Satellite pass information
-- `advert` - Send network advert
+
+**Gaming Commands:**
+- `dice` - Roll dice (d6 by default, or specify like `dice d20`, `dice 2d6`)
+- `roll` - Roll random number (1-100 by default, or specify like `roll 50`)
+
+**Entertainment Commands:**
+- `joke` - Get a random joke
+- `dadjoke` - Get a dad joke from icanhazdadjoke.com
+
+**Sports Commands:**
+- `sports` - Get scores for default teams
+- `sports <team>` - Get scores for specific team
+- `sports <league>` - Get scores for league (nfl, mlb, nba, etc.)
+
+**MeshCore Network Commands:**
+- `channels` - List hashtag channels
+- `path` - Decode message routing path
+- `prefix <XX>` - Look up repeaters by prefix
+- `repeater` - Manage repeater contacts and scan for new ones (DM only)
+- `stats` - Show bot usage statistics
+- `advert` - Send network advert (DM only)
 
 ## Message Response Templates
 
@@ -164,7 +187,7 @@ Example:
 [Keywords]
 test = "Message received from {sender} | {connection_info}"
 ping = "Pong!"
-help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcond, satpass"
+help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcond, satpass, dice, roll, joke, dadjoke, sports, channels, path, prefix, repeater, stats"
 ```
 
 ## Hardware Setup
