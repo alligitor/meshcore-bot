@@ -903,7 +903,12 @@ class SportsCommand(BaseCommand):
                         period_str = f"{period}H"  # Fallback to half
                         formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({clock} {period_str})"
                 elif sport == 'baseball':
-                    period_str = f"{period}I"  # Innings - no clock needed
+                    # Use shortDetail for ongoing baseball games to show top/bottom of inning
+                    short_detail = status.get('type', {}).get('shortDetail', '')
+                    if short_detail and ('Top' in short_detail or 'Bottom' in short_detail):
+                        period_str = short_detail  # e.g., "Top 14th", "Bottom 9th"
+                    else:
+                        period_str = f"{period}I"  # Fallback to inning number only
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
@@ -1142,7 +1147,12 @@ class SportsCommand(BaseCommand):
                         period_str = f"{period}H"  # Fallback to half
                         formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({clock} {period_str})"
                 elif sport == 'baseball':
-                    period_str = f"{period}I"  # Innings - no clock needed
+                    # Use shortDetail for ongoing baseball games to show top/bottom of inning
+                    short_detail = status.get('type', {}).get('shortDetail', '')
+                    if short_detail and ('Top' in short_detail or 'Bottom' in short_detail):
+                        period_str = short_detail  # e.g., "Top 14th", "Bottom 9th"
+                    else:
+                        period_str = f"{period}I"  # Fallback to inning number only
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
