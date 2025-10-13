@@ -320,7 +320,7 @@ class PathCommand(BaseCommand):
                         if i < len(lines):
                             current_message += "\n..."
                         await self.bot.command_manager.send_response(message, current_message.rstrip())
-                        await asyncio.sleep(2.0)  # Delay between messages (same as other commands)
+                        await asyncio.sleep(3.0)  # Delay between messages (same as other commands)
                         message_count += 1
                     
                     # Start new message with ellipsis on new line at beginning (if not first message)

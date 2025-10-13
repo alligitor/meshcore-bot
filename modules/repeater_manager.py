@@ -254,6 +254,89 @@ class RepeaterManager:
             self.logger.debug(f"Error getting city from coordinates {latitude}, {longitude}: {e}")
             return None
     
+    def _get_full_location_from_coordinates(self, latitude: float, longitude: float) -> Dict[str, Optional[str]]:
+        """Get complete location information (city, state, country) from coordinates using reverse geocoding"""
+        location_info = {
+            'city': None,
+            'state': None,
+            'country': None
+        }
+        
+        try:
+            # Validate coordinates first
+            if latitude == 0.0 and longitude == 0.0:
+                self.logger.debug(f"Skipping geocoding for hidden location: {latitude}, {longitude}")
+                return location_info
+            
+            # Check for valid coordinate ranges
+            if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+                self.logger.debug(f"Skipping geocoding for invalid coordinates: {latitude}, {longitude}")
+                return location_info
+            
+            # Check cache first to avoid duplicate API calls
+            cache_key = f"location_{latitude:.6f}_{longitude:.6f}"
+            cached_result = self.db_manager.get_cached_json(cache_key, "geolocation")
+            
+            if cached_result:
+                self.logger.debug(f"Using cached location data for {latitude}, {longitude}")
+                return cached_result
+            
+            from geopy.geocoders import Nominatim
+            
+            # Initialize geocoder with proper user agent and timeout
+            geolocator = Nominatim(
+                user_agent="meshcore-bot-geolocation-update",
+                timeout=10  # 10 second timeout
+            )
+            
+            # Perform reverse geocoding
+            location = geolocator.reverse(f"{latitude}, {longitude}")
+            if location:
+                address = location.raw.get('address', {})
+                
+                # Get city name from various fields
+                city = (address.get('city') or 
+                       address.get('town') or 
+                       address.get('village') or 
+                       address.get('hamlet') or 
+                       address.get('municipality') or 
+                       address.get('suburb'))
+                
+                if city:
+                    # For large cities, try to get neighborhood information
+                    neighborhood = self._get_neighborhood_for_large_city(address, city)
+                    if neighborhood:
+                        location_info['city'] = f"{neighborhood}, {city}"
+                    else:
+                        location_info['city'] = city
+                
+                # Get state/province information
+                state = (address.get('state') or 
+                        address.get('province') or 
+                        address.get('region') or 
+                        address.get('county'))
+                if state:
+                    location_info['state'] = state
+                
+                # Get country information
+                country = (address.get('country') or 
+                          address.get('country_code'))
+                if country:
+                    location_info['country'] = country
+            
+            # Cache the result for 24 hours to avoid duplicate API calls
+            self.db_manager.cache_json(cache_key, location_info, "geolocation", cache_hours=24)
+            
+            return location_info
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "No route to host" in error_msg or "Connection" in error_msg:
+                self.logger.warning(f"Network error geocoding {latitude}, {longitude}: {error_msg}")
+            else:
+                self.logger.debug(f"Error getting full location from coordinates {latitude}, {longitude}: {e}")
+            return location_info
+    
     def _get_neighborhood_for_large_city(self, address: dict, city: str) -> Optional[str]:
         """Get neighborhood information for large cities"""
         try:
@@ -1801,3 +1884,152 @@ class RepeaterManager:
     def cleanup_geocoding_cache(self):
         """Remove expired geocoding cache entries"""
         self.db_manager.cleanup_geocoding_cache()
+    
+    async def populate_missing_geolocation_data(self, dry_run: bool = False, batch_size: int = 10) -> Dict[str, int]:
+        """Populate missing geolocation data (state, country) for repeaters that have coordinates but missing location info"""
+        try:
+            # Check network connectivity first
+            if not dry_run:
+                try:
+                    import socket
+                    socket.create_connection(("nominatim.openstreetmap.org", 443), timeout=5)
+                except OSError:
+                    return {
+                        'total_found': 0,
+                        'updated': 0,
+                        'errors': 1,
+                        'skipped': 0,
+                        'error': 'No network connectivity to geocoding service'
+                    }
+            # Find repeaters with valid coordinates but missing state or country
+            repeaters_to_update = self.db_manager.execute_query('''
+                SELECT id, name, latitude, longitude, city, state, country 
+                FROM repeater_contacts 
+                WHERE latitude IS NOT NULL 
+                AND longitude IS NOT NULL 
+                AND NOT (latitude = 0.0 AND longitude = 0.0)
+                AND latitude BETWEEN -90 AND 90
+                AND longitude BETWEEN -180 AND 180
+                AND (state IS NULL OR country IS NULL)
+                ORDER BY name
+                LIMIT ?
+            ''', (batch_size,))
+            
+            if not repeaters_to_update:
+                return {
+                    'total_found': 0,
+                    'updated': 0,
+                    'errors': 0,
+                    'skipped': 0
+                }
+            
+            self.logger.info(f"Found {len(repeaters_to_update)} repeaters with missing geolocation data")
+            
+            updated_count = 0
+            error_count = 0
+            skipped_count = 0
+            
+            for repeater in repeaters_to_update:
+                repeater_id = repeater['id']
+                name = repeater['name']
+                latitude = repeater['latitude']
+                longitude = repeater['longitude']
+                current_city = repeater['city']
+                current_state = repeater['state']
+                current_country = repeater['country']
+                
+                try:
+                    # Get full location information from coordinates
+                    location_info = self._get_full_location_from_coordinates(latitude, longitude)
+                    
+                    # Check if we got any useful data
+                    if not any(location_info.values()):
+                        self.logger.debug(f"No location data found for {name} at {latitude}, {longitude}")
+                        skipped_count += 1
+                        # Still add delay to be respectful to the API
+                        await asyncio.sleep(2.0)
+                        continue
+                    
+                    # Determine what needs to be updated
+                    updates = []
+                    params = []
+                    
+                    # Update city if we don't have one or if the new one is more detailed
+                    if not current_city and location_info['city']:
+                        updates.append('city = ?')
+                        params.append(location_info['city'])
+                    elif current_city and location_info['city'] and len(location_info['city']) > len(current_city):
+                        # Update if new city info is more detailed (e.g., includes neighborhood)
+                        updates.append('city = ?')
+                        params.append(location_info['city'])
+                    
+                    # Update state if missing
+                    if not current_state and location_info['state']:
+                        updates.append('state = ?')
+                        params.append(location_info['state'])
+                    
+                    # Update country if missing
+                    if not current_country and location_info['country']:
+                        updates.append('country = ?')
+                        params.append(location_info['country'])
+                    
+                    if updates:
+                        if not dry_run:
+                            # Update the database
+                            update_query = f"UPDATE repeater_contacts SET {', '.join(updates)} WHERE id = ?"
+                            params.append(repeater_id)
+                            
+                            self.db_manager.execute_update(update_query, tuple(params))
+                            
+                            self.logger.info(f"Updated geolocation for {name}: {', '.join(updates)}")
+                        else:
+                            self.logger.info(f"[DRY RUN] Would update {name}: {', '.join(updates)}")
+                        
+                        updated_count += 1
+                    else:
+                        self.logger.debug(f"No updates needed for {name}")
+                        skipped_count += 1
+                    
+                    # Add longer delay to avoid overwhelming the geocoding service
+                    # Nominatim has a rate limit of 1 request per second, we'll be more conservative
+                    await asyncio.sleep(2.0)
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    if "429" in error_msg or "Bandwidth limit exceeded" in error_msg:
+                        self.logger.warning(f"Rate limited by geocoding service for {name}. Waiting longer...")
+                        # Wait longer if we're rate limited
+                        await asyncio.sleep(10.0)
+                        error_count += 1
+                    elif "No route to host" in error_msg or "Connection" in error_msg:
+                        self.logger.warning(f"Network connectivity issue for {name}. Skipping...")
+                        # Skip this repeater due to network issues
+                        skipped_count += 1
+                    else:
+                        self.logger.error(f"Error updating geolocation for {name}: {e}")
+                        error_count += 1
+                    continue
+            
+            result = {
+                'total_found': len(repeaters_to_update),
+                'updated': updated_count,
+                'errors': error_count,
+                'skipped': skipped_count
+            }
+            
+            if not dry_run:
+                self.logger.info(f"Geolocation update completed: {updated_count} updated, {error_count} errors, {skipped_count} skipped")
+            else:
+                self.logger.info(f"Geolocation update dry run completed: {updated_count} would be updated, {error_count} errors, {skipped_count} skipped")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error populating missing geolocation data: {e}")
+            return {
+                'total_found': 0,
+                'updated': 0,
+                'errors': 1,
+                'skipped': 0,
+                'error': str(e)
+            }

@@ -78,6 +78,15 @@ class RepeaterCommand(BaseCommand):
                     response = await self._handle_test(args)
                 elif subcommand == "locations":
                     response = await self._handle_locations()
+                elif subcommand == "update-geo":
+                    dry_run = "dry-run" in args
+                    batch_size = 10  # Default batch size
+                    # Look for batch size argument
+                    for i, arg in enumerate(args):
+                        if arg.isdigit():
+                            batch_size = int(arg)
+                            break
+                    response = await self._handle_update_geolocation(dry_run, batch_size)
                 elif subcommand == "help":
                     response = self.get_help()
                 else:
@@ -694,6 +703,45 @@ class RepeaterCommand(BaseCommand):
             self.logger.error(f"Error getting repeater location status: {e}")
             return f"❌ Error getting location status: {e}"
     
+    async def _handle_update_geolocation(self, dry_run: bool = False, batch_size: int = 10) -> str:
+        """Update missing geolocation data for repeaters"""
+        try:
+            if not hasattr(self.bot, 'repeater_manager'):
+                return "Repeater manager not initialized. Please check bot configuration."
+            
+            self.logger.info(f"Starting geolocation update process (dry_run={dry_run})")
+            
+            # Call the repeater manager method
+            result = await self.bot.repeater_manager.populate_missing_geolocation_data(dry_run=dry_run, batch_size=batch_size)
+            
+            if 'error' in result:
+                return f"❌ Error updating geolocation data: {result['error']}"
+            
+            # Build response message
+            action = "Would update" if dry_run else "Updated"
+            response_lines = [
+                f"🌍 Geolocation Update {'(Dry Run)' if dry_run else ''}",
+                f"Batch size: {batch_size}",
+                f"Found: {result['total_found']} repeaters with missing data",
+                f"{action}: {result['updated']} repeaters",
+                f"Errors: {result['errors']}",
+                f"Skipped: {result['skipped']}"
+            ]
+            
+            if result['total_found'] == 0:
+                response_lines.append("✅ All repeaters already have complete geolocation data!")
+            elif result['updated'] > 0:
+                if dry_run:
+                    response_lines.append("💡 Run without 'dry-run' to apply these updates")
+                else:
+                    response_lines.append("✅ Geolocation data updated successfully!")
+            
+            return "\n".join(response_lines)
+            
+        except Exception as e:
+            self.logger.error(f"Error updating geolocation data: {e}")
+            return f"❌ Error updating geolocation data: {e}"
+    
     def get_help(self) -> str:
         """Get help text for the repeater command"""
         return """📡 **Repeater & Contact Management Commands**
@@ -704,6 +752,10 @@ class RepeaterCommand(BaseCommand):
 • `scan` - Scan current contacts and catalog new repeaters
 • `list` - List repeater contacts (use `--all` to show purged ones)
 • `locations` - Show location data status for repeaters
+• `update-geo` - Update missing geolocation data (state/country) from coordinates
+• `update-geo dry-run` - Preview what would be updated without making changes
+• `update-geo 5` - Update up to 5 repeaters (default: 10)
+• `update-geo dry-run 3` - Preview updates for up to 3 repeaters
         • `purge all` - Purge all repeaters
         • `purge all force` - Force purge all repeaters (uses multiple removal methods)
         • `purge <days>` - Purge repeaters older than specified days
