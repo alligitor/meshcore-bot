@@ -334,3 +334,9 @@ track_command_details = true
 # true: Replace user IDs with anonymous identifiers
 # false: Keep actual user IDs in stats
 anonymize_users = false
+
+[Hacker]
+# Enable or disable the hacker command
+# true: Hacker command is available (responds to Linux commands with supervillain mainframe errors)
+# false: Hacker command is disabled
+hacker_enabled = false
