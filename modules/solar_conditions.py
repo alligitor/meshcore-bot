@@ -34,7 +34,7 @@ def get_config_value(section, key, fallback):
         value = _config.get(section, key, fallback=fallback)
         
         # Convert numeric values to appropriate types
-        if key in ['url_timeout', 'default_latitude', 'default_longitude']:
+        if key in ['url_timeout', 'bot_latitude', 'bot_longitude']:
             try:
                 if key == 'url_timeout':
                     return int(value)
@@ -211,8 +211,8 @@ def get_sun(lat=None, lon=None):
             obs.lat = str(lat)
             obs.lon = str(lon)
         else:
-            lat = get_config_value('Solar_Config', 'default_latitude', DEFAULT_LATITUDE)
-            lon = get_config_value('Solar_Config', 'default_longitude', DEFAULT_LONGITUDE)
+            lat = get_config_value('Bot', 'bot_latitude', DEFAULT_LATITUDE)
+            lon = get_config_value('Bot', 'bot_longitude', DEFAULT_LONGITUDE)
             obs.lat = str(lat)
             obs.lon = str(lon)
 
@@ -277,8 +277,8 @@ def get_moon(lat=None, lon=None):
             obs.lat = str(lat)
             obs.lon = str(lon)
         else:
-            lat = get_config_value('Solar_Config', 'default_latitude', DEFAULT_LATITUDE)
-            lon = get_config_value('Solar_Config', 'default_longitude', DEFAULT_LONGITUDE)
+            lat = get_config_value('Bot', 'bot_latitude', DEFAULT_LATITUDE)
+            lon = get_config_value('Bot', 'bot_longitude', DEFAULT_LONGITUDE)
             obs.lat = str(lat)
             obs.lon = str(lon)
         
@@ -349,8 +349,8 @@ def get_next_satellite_pass(satellite, lat=None, lon=None):
         visual_pass_api = "https://api.n2yo.com/rest/v1/satellite/visualpasses/"
         
         if lat is None and lon is None:
-            lat = get_config_value('Solar_Config', 'default_latitude', DEFAULT_LATITUDE)
-            lon = get_config_value('Solar_Config', 'default_longitude', DEFAULT_LONGITUDE)
+            lat = get_config_value('Bot', 'bot_latitude', DEFAULT_LATITUDE)
+            lon = get_config_value('Bot', 'bot_longitude', DEFAULT_LONGITUDE)
         
         # API URL
         n2yo_key = get_config_value('External_Data', 'n2yo_api_key', DEFAULT_N2YO_API_KEY)

@@ -169,6 +169,15 @@ dm_flood_after = 2
 # Leave empty to use system timezone
 timezone = 
 
+# Bot location for geographic proximity calculations and astronomical data
+# Default latitude for bot location (decimal degrees)
+# Example: 40.7128 for New York City, 48.50 for Victoria BC
+bot_latitude = 40.7128
+
+# Default longitude for bot location (decimal degrees)
+# Example: -74.0060 for New York City, -123.00 for Victoria BC
+bot_longitude = -74.0060
+
 [Jokes]
 # Enable or disable the joke command
 # true: Joke command is available
@@ -313,14 +322,6 @@ repeater_prefix_cache_hours = 1
 default_state = WA
 
 [Solar_Config]
-# Default latitude for astronomical calculations (decimal degrees)
-# Example: 40.7128 for New York City
-default_latitude = 40.7128
-
-# Default longitude for astronomical calculations (decimal degrees)
-# Example: -74.0060 for New York City
-default_longitude = -74.0060
-
 # URL timeout for external API calls (seconds)
 url_timeout = 10
 

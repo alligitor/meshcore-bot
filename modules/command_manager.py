@@ -304,6 +304,11 @@ class CommandManager:
     
     def get_help_for_command(self, command_name: str, message: MeshMessage = None) -> str:
         """Get help text for a specific command (LoRa-friendly compact format)"""
+        # Special handling for common help requests
+        if command_name.lower() in ['commands', 'list', 'all']:
+            # User is asking for a list of commands, show general help
+            return self.get_general_help()
+        
         # Map command aliases to their actual command names
         command_aliases = {
             't': 't_phrase',
@@ -339,14 +344,14 @@ class CommandManager:
                     help_text = cmd_instance.get_help_text()
                 return f"Help {command_name}: {help_text}"
         
-        # If still not found, return unknown command message
+        # If still not found, return unknown command message with helpful suggestion
         available_commands = []
         for cmd_name, cmd_instance in self.commands.items():
             available_commands.append(cmd_name)
             if hasattr(cmd_instance, 'keywords'):
                 available_commands.extend(cmd_instance.keywords)
         
-        return f"Unknown: {command_name}. Available: {', '.join(sorted(set(available_commands)))}"
+        return f"Unknown: {command_name}. Available: {', '.join(sorted(set(available_commands)))}. Try 'help' for command list."
     
     def get_general_help(self) -> str:
         """Get general help text from config (LoRa-friendly compact format)"""

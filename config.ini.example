@@ -70,6 +70,15 @@ dm_flood_after = 2
 # Leave empty to use system timezone
 timezone = 
 
+# Bot location for geographic proximity calculations and astronomical data
+# Default latitude for bot location (decimal degrees)
+# Example: 40.7128 for New York City, 48.50 for Victoria BC
+bot_latitude = 40.7128
+
+# Default longitude for bot location (decimal degrees)
+# Example: -74.0060 for New York City, -123.00 for Victoria BC
+bot_longitude = -74.0060
+
 [Jokes]
 # Enable or disable the joke command
 # true: Joke command is available
@@ -222,14 +231,6 @@ repeater_prefix_cache_hours = 1
 default_state = WA
 
 [Solar_Config]
-# Default latitude for astronomical calculations (decimal degrees)
-# Example: 40.7128 for New York City
-default_latitude = 40.7128
-
-# Default longitude for astronomical calculations (decimal degrees)
-# Example: -74.0060 for New York City
-default_longitude = -74.0060
-
 # URL timeout for external API calls (seconds)
 url_timeout = 10
 
@@ -334,6 +335,23 @@ track_command_details = true
 # true: Replace user IDs with anonymous identifiers
 # false: Keep actual user IDs in stats
 anonymize_users = false
+
+[Path_Command]
+# Geographic proximity calculation method
+# simple: Use proximity to bot location (default)
+# path: Use proximity to previous/next nodes in the path for more realistic routing
+proximity_method = simple
+
+# Enable path proximity fallback
+# When path proximity can't be calculated (missing location data), fall back to simple proximity
+# true: Fall back to bot location proximity when path data unavailable
+# false: Show collision warning when path proximity unavailable
+path_proximity_fallback = true
+
+# Maximum range for geographic proximity guessing (kilometers)
+# Repeaters beyond this distance will have reduced confidence or be rejected
+# Set to 0 to disable range limiting
+max_proximity_range = 200
 
 [Hacker]
 # Enable or disable the hacker command

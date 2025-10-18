@@ -127,3 +127,4 @@ bot_cli.py
 # Local documentation and development files
 docs/local/
 tests/
+test_scripts/
