@@ -27,9 +27,8 @@ class PrefixCommand(BaseCommand):
     
     def __init__(self, bot):
         super().__init__(bot)
-        # Get API URL from config, with fallback to default
-        self.api_url = self.bot.config.get('External_Data', 'repeater_prefix_api_url', 
-                                          fallback="https://map.w0z.is/api/stats/repeater-prefixes?region=seattle")
+        # Get API URL from config, no fallback to regional API
+        self.api_url = self.bot.config.get('External_Data', 'repeater_prefix_api_url', fallback="")
         self.cache_data = {}
         self.cache_timestamp = 0
         # Get cache duration from config, with fallback to 1 hour
@@ -41,6 +40,10 @@ class PrefixCommand(BaseCommand):
         self.use_reverse_geocoding = self.bot.config.getboolean('Prefix_Command', 'use_reverse_geocoding', fallback=True)
     
     def get_help_text(self) -> str:
+        if not self.api_url or self.api_url.strip() == "":
+            location_note = " (with city names)" if self.show_repeater_locations else ""
+            return f"Look up repeaters by two-character prefix using local database{location_note}. Usage: 'prefix 1A', 'prefix free' (list available prefixes). Note: API disabled - using local data only."
+        
         location_note = " (with city names)" if self.show_repeater_locations else ""
         return f"Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
     
@@ -74,6 +77,9 @@ class PrefixCommand(BaseCommand):
         
         # Handle refresh command
         if command == "REFRESH":
+            if not self.api_url or self.api_url.strip() == "":
+                response = "❌ Refresh not available - no API URL configured. Using local database only."
+                return await self.send_response(message, response)
             await self.refresh_cache()
             response = "🔄 Repeater prefix cache refreshed!"
             return await self.send_response(message, response)
@@ -105,14 +111,15 @@ class PrefixCommand(BaseCommand):
     
     async def get_prefix_data(self, prefix: str) -> Optional[Dict[str, Any]]:
         """Get prefix data from API first, enhanced with local database location data"""
-        # Check if cache is valid
-        current_time = time.time()
-        if current_time - self.cache_timestamp > self.cache_duration:
-            await self.refresh_cache()
+        # Only refresh cache if API is configured
+        if self.api_url and self.api_url.strip():
+            current_time = time.time()
+            if current_time - self.cache_timestamp > self.cache_duration:
+                await self.refresh_cache()
         
         # Get API data first (prioritize comprehensive repeater data)
         api_data = None
-        if prefix in self.cache_data:
+        if self.api_url and self.api_url.strip() and prefix in self.cache_data:
             api_data = self.cache_data.get(prefix)
         
         # Get local database data for location enhancement
@@ -168,6 +175,11 @@ class PrefixCommand(BaseCommand):
     async def refresh_cache(self):
         """Refresh the cache from the API"""
         try:
+            # Check if API URL is configured
+            if not self.api_url or self.api_url.strip() == "":
+                self.logger.info("Repeater prefix API URL not configured - skipping API refresh")
+                return
+            
             self.logger.info("Refreshing repeater prefix cache from API")
             
             # Create session if it doesn't exist

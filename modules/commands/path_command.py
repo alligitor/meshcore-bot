@@ -428,10 +428,13 @@ class PathCommand(BaseCommand):
             return self._select_by_simple_proximity(repeaters_with_location)
     
     def _select_by_simple_proximity(self, repeaters_with_location: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], float]:
-        """Select repeater based on proximity to bot location"""
-        # If only one repeater has location data, check if it's within range
-        if len(repeaters_with_location) == 1:
-            repeater = repeaters_with_location[0]
+        """Select repeater based on proximity to bot location with strong recency bias"""
+        # Calculate recency-weighted scores for all repeaters
+        scored_repeaters = self._calculate_recency_weighted_scores(repeaters_with_location)
+        
+        # If only one repeater, check if it's within range
+        if len(scored_repeaters) == 1:
+            repeater, recency_score = scored_repeaters[0]
             distance = self._calculate_distance(
                 self.bot_latitude, self.bot_longitude,
                 repeater['latitude'], repeater['longitude']
@@ -439,57 +442,199 @@ class PathCommand(BaseCommand):
             # Apply maximum range threshold
             if self.max_proximity_range > 0 and distance > self.max_proximity_range:
                 return None, 0.0  # Reject if beyond maximum range
-            return repeater, 0.6
+            
+            # Confidence based on recency score
+            base_confidence = 0.4 + (recency_score * 0.5)  # 0.4 to 0.9 based on recency
+            return repeater, base_confidence
         
-        # Calculate distances for all repeaters with location data
-        distances = []
-        for repeater in repeaters_with_location:
+        # Calculate combined proximity + recency scores
+        combined_scores = []
+        for repeater, recency_score in scored_repeaters:
             distance = self._calculate_distance(
                 self.bot_latitude, self.bot_longitude,
                 repeater['latitude'], repeater['longitude']
             )
-            distances.append((distance, repeater))
-        
-        # Sort by distance (closest first)
-        distances.sort(key=lambda x: x[0])
-        
-        closest_distance, closest_repeater = distances[0]
-        
-        # Apply maximum range threshold
-        if self.max_proximity_range > 0 and closest_distance > self.max_proximity_range:
-            return None, 0.0  # Reject if closest repeater is beyond maximum range
-        
-        # Calculate confidence based on distance difference
-        if len(distances) == 1:
-            # Only one repeater with location data
-            return closest_repeater, 0.6
-        else:
-            # Multiple repeaters with location data
-            second_closest_distance = distances[1][0]
-            distance_ratio = closest_distance / second_closest_distance if second_closest_distance > 0 else 0
             
-            # Higher confidence if there's a significant distance difference
-            if distance_ratio < 0.5:  # Closest is less than half the distance of second closest
+            # Apply maximum range threshold
+            if self.max_proximity_range > 0 and distance > self.max_proximity_range:
+                continue  # Skip if beyond maximum range
+            
+            # Combined score: proximity (lower is better) + recency (higher is better)
+            # Normalize distance to 0-1 scale (assuming max 1000km range)
+            normalized_distance = min(distance / 1000.0, 1.0)
+            proximity_score = 1.0 - normalized_distance  # Invert so closer = higher score
+            
+            # Weight proximity more heavily for message reception (80% proximity, 20% recency)
+            combined_score = (proximity_score * 0.8) + (recency_score * 0.2)
+            combined_scores.append((combined_score, distance, repeater))
+        
+        if not combined_scores:
+            return None, 0.0  # All repeaters beyond range
+        
+        # Sort by combined score (highest first)
+        combined_scores.sort(key=lambda x: x[0], reverse=True)
+        
+        best_score, best_distance, best_repeater = combined_scores[0]
+        
+        # Calculate confidence based on score difference
+        if len(combined_scores) == 1:
+            confidence = 0.4 + (best_score * 0.5)  # 0.4 to 0.9 based on score
+        else:
+            second_best_score = combined_scores[1][0]
+            score_ratio = best_score / second_best_score if second_best_score > 0 else 1.0
+            
+            # Higher confidence if there's a significant score difference
+            if score_ratio > 1.5:  # Best is 50% better than second
                 confidence = 0.9
-            elif distance_ratio < 0.7:  # Closest is less than 70% of second closest
+            elif score_ratio > 1.2:  # Best is 20% better than second
                 confidence = 0.8
-            elif distance_ratio < 0.9:  # Closest is less than 90% of second closest
+            elif score_ratio > 1.1:  # Best is 10% better than second
                 confidence = 0.7
             else:
-                # Distances are too similar, but we can still make a selection
-                # Use tie-breaker strategies for identical coordinates
-                if distance_ratio == 1.0:  # Identical distances
-                    # Try tie-breaker strategies
-                    selected_repeater = self._apply_tie_breakers(distances)
-                    confidence = 0.5  # Moderate confidence for tie-breaker selection
-                else:
-                    # Very similar distances, low confidence
-                    confidence = 0.4
-                
-                return closest_repeater, confidence
+                # Scores are too similar, use tie-breaker
+                distances_for_tiebreaker = [(d, r) for _, d, r in combined_scores]
+                selected_repeater = self._apply_tie_breakers(distances_for_tiebreaker)
+                confidence = 0.5  # Moderate confidence for tie-breaker selection
+                return selected_repeater, confidence
+        
+        return best_repeater, confidence
     
+    def _calculate_recency_weighted_scores(self, repeaters: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], float]]:
+        """Calculate recency-weighted scores for all repeaters (0.0 to 1.0, higher = more recent)"""
+        from datetime import datetime, timedelta
+        
+        scored_repeaters = []
+        now = datetime.now()
+        
+        for repeater in repeaters:
+            # Get the most recent timestamp from multiple fields
+            most_recent_time = None
+            
+            # Check last_heard from complete_contact_tracking
+            last_heard = repeater.get('last_heard')
+            if last_heard:
+                try:
+                    if isinstance(last_heard, str):
+                        dt = datetime.fromisoformat(last_heard.replace('Z', '+00:00'))
+                    else:
+                        dt = last_heard
+                    if most_recent_time is None or dt > most_recent_time:
+                        most_recent_time = dt
+                except:
+                    pass
+            
+            # Check last_advert_timestamp
+            last_advert = repeater.get('last_advert_timestamp')
+            if last_advert:
+                try:
+                    if isinstance(last_advert, str):
+                        dt = datetime.fromisoformat(last_advert.replace('Z', '+00:00'))
+                    else:
+                        dt = last_advert
+                    if most_recent_time is None or dt > most_recent_time:
+                        most_recent_time = dt
+                except:
+                    pass
+            
+            # Check last_seen from repeater_contacts table
+            last_seen = repeater.get('last_seen')
+            if last_seen:
+                try:
+                    if isinstance(last_seen, str):
+                        dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                    else:
+                        dt = last_seen
+                    if most_recent_time is None or dt > most_recent_time:
+                        most_recent_time = dt
+                except:
+                    pass
+            
+            if most_recent_time is None:
+                # No timestamp found, give very low score
+                recency_score = 0.1
+            else:
+                # Calculate recency score using exponential decay
+                hours_ago = (now - most_recent_time).total_seconds() / 3600.0
+                
+                # Strong recency bias: recent devices get high scores, older devices get exponentially lower scores
+                # Score = e^(-hours/12) - this gives:
+                # - 1 hour ago: ~0.92
+                # - 6 hours ago: ~0.61
+                # - 12 hours ago: ~0.37
+                # - 24 hours ago: ~0.14
+                # - 48 hours ago: ~0.02
+                # - 72 hours ago: ~0.002
+                import math
+                recency_score = math.exp(-hours_ago / 12.0)
+                
+                # Ensure score is between 0.0 and 1.0
+                recency_score = max(0.0, min(1.0, recency_score))
+            
+            scored_repeaters.append((repeater, recency_score))
+        
+        # Sort by recency score (highest first)
+        scored_repeaters.sort(key=lambda x: x[1], reverse=True)
+        
+        return scored_repeaters
+    
+    def _filter_recent_repeaters(self, repeaters: List[Dict[str, Any]], cutoff_hours: int = 24) -> List[Dict[str, Any]]:
+        """Filter repeaters to only include those that have advertised recently"""
+        from datetime import datetime, timedelta
+        
+        recent_repeaters = []
+        cutoff_time = datetime.now() - timedelta(hours=cutoff_hours)
+        
+        for repeater in repeaters:
+            # Check recency using multiple timestamp fields
+            is_recent = False
+            
+            # Check last_heard from complete_contact_tracking
+            last_heard = repeater.get('last_heard')
+            if last_heard:
+                try:
+                    if isinstance(last_heard, str):
+                        last_heard_dt = datetime.fromisoformat(last_heard.replace('Z', '+00:00'))
+                    else:
+                        last_heard_dt = last_heard
+                    is_recent = last_heard_dt > cutoff_time
+                except:
+                    pass
+            
+            # Check last_advert_timestamp if last_heard check failed
+            if not is_recent:
+                last_advert = repeater.get('last_advert_timestamp')
+                if last_advert:
+                    try:
+                        if isinstance(last_advert, str):
+                            last_advert_dt = datetime.fromisoformat(last_advert.replace('Z', '+00:00'))
+                        else:
+                            last_advert_dt = last_advert
+                        is_recent = last_advert_dt > cutoff_time
+                    except:
+                        pass
+            
+            # Check last_seen from repeater_contacts table
+            if not is_recent:
+                last_seen = repeater.get('last_seen')
+                if last_seen:
+                    try:
+                        if isinstance(last_seen, str):
+                            last_seen_dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                        else:
+                            last_seen_dt = last_seen
+                        is_recent = last_seen_dt > cutoff_time
+                    except:
+                        pass
+            
+            if is_recent:
+                recent_repeaters.append(repeater)
+        
+        return recent_repeaters
+
     def _apply_tie_breakers(self, distances: List[Tuple[float, Dict[str, Any]]]) -> Dict[str, Any]:
         """Apply tie-breaker strategies when repeaters have identical coordinates"""
+        from datetime import datetime
+        
         # Get all repeaters with the same (minimum) distance
         min_distance = distances[0][0]
         tied_repeaters = [repeater for distance, repeater in distances if distance == min_distance]
@@ -501,15 +646,66 @@ class PathCommand(BaseCommand):
         elif len(active_repeaters) > 1:
             tied_repeaters = active_repeaters
         
-        # Tie-breaker 2: Prefer repeaters with more recent last_seen
-        # (This is a simple heuristic - in practice, you might want more sophisticated logic)
+        # Tie-breaker 2: Prefer repeaters with more recent activity (enhanced recency check)
+        def get_recent_timestamp(repeater):
+            """Get the most recent timestamp from multiple fields"""
+            timestamps = []
+            
+            # Check last_heard from complete_contact_tracking
+            last_heard = repeater.get('last_heard')
+            if last_heard:
+                try:
+                    if isinstance(last_heard, str):
+                        dt = datetime.fromisoformat(last_heard.replace('Z', '+00:00'))
+                    else:
+                        dt = last_heard
+                    timestamps.append(dt)
+                except:
+                    pass
+            
+            # Check last_advert_timestamp
+            last_advert = repeater.get('last_advert_timestamp')
+            if last_advert:
+                try:
+                    if isinstance(last_advert, str):
+                        dt = datetime.fromisoformat(last_advert.replace('Z', '+00:00'))
+                    else:
+                        dt = last_advert
+                    timestamps.append(dt)
+                except:
+                    pass
+            
+            # Check last_seen from repeater_contacts table
+            last_seen = repeater.get('last_seen')
+            if last_seen:
+                try:
+                    if isinstance(last_seen, str):
+                        dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                    else:
+                        dt = last_seen
+                    timestamps.append(dt)
+                except:
+                    pass
+            
+            # Return the most recent timestamp, or epoch if none found
+            if timestamps:
+                return max(timestamps)
+            else:
+                return datetime.min  # Use epoch as fallback
+        
         try:
-            # Sort by last_seen (more recent first)
-            tied_repeaters.sort(key=lambda r: r.get('last_seen', ''), reverse=True)
+            # Sort by most recent activity (more recent first)
+            tied_repeaters.sort(key=get_recent_timestamp, reverse=True)
         except:
             pass  # If sorting fails, continue with next tie-breaker
         
-        # Tie-breaker 3: Alphabetical order (deterministic)
+        # Tie-breaker 3: Prefer repeaters with higher advertisement count (more active)
+        try:
+            tied_repeaters.sort(key=lambda r: r.get('advert_count', 0), reverse=True)
+        except:
+            pass
+        
+        # Tie-breaker 4: Alphabetical order (deterministic)
         tied_repeaters.sort(key=lambda r: r.get('name', ''))
         
         return tied_repeaters[0]
@@ -572,11 +768,14 @@ class PathCommand(BaseCommand):
             return None
     
     def _select_by_dual_proximity(self, repeaters: List[Dict[str, Any]], prev_location: Tuple[float, float], next_location: Tuple[float, float]) -> Tuple[Optional[Dict[str, Any]], float]:
-        """Select repeater based on proximity to both previous and next nodes"""
-        best_repeater = None
-        best_score = float('inf')
+        """Select repeater based on proximity to both previous and next nodes with strong recency bias"""
+        # Calculate recency-weighted scores for all repeaters
+        scored_repeaters = self._calculate_recency_weighted_scores(repeaters)
         
-        for repeater in repeaters:
+        best_repeater = None
+        best_combined_score = 0.0
+        
+        for repeater, recency_score in scored_repeaters:
             # Calculate distance to previous node
             prev_distance = self._calculate_distance(
                 prev_location[0], prev_location[1],
@@ -589,63 +788,74 @@ class PathCommand(BaseCommand):
                 repeater['latitude'], repeater['longitude']
             )
             
-            # Combined score (lower is better)
-            # Weight both distances equally
-            combined_score = (prev_distance + next_distance) / 2
+            # Combined proximity score (lower distance = higher score)
+            avg_distance = (prev_distance + next_distance) / 2
+            normalized_distance = min(avg_distance / 1000.0, 1.0)
+            proximity_score = 1.0 - normalized_distance
             
-            if combined_score < best_score:
-                best_score = combined_score
+            # Combined score: 80% proximity, 20% recency (proximity more important for message reception)
+            combined_score = (proximity_score * 0.8) + (recency_score * 0.2)
+            
+            if combined_score > best_combined_score:
+                best_combined_score = combined_score
                 best_repeater = repeater
         
         if best_repeater:
             # Apply maximum range threshold
-            if self.max_proximity_range > 0 and best_score > self.max_proximity_range:
-                return None, 0.0  # Reject if beyond maximum range
+            if self.max_proximity_range > 0:
+                # Check if any distance is beyond range
+                prev_dist = self._calculate_distance(
+                    prev_location[0], prev_location[1],
+                    best_repeater['latitude'], best_repeater['longitude']
+                )
+                next_dist = self._calculate_distance(
+                    next_location[0], next_location[1],
+                    best_repeater['latitude'], best_repeater['longitude']
+                )
+                if prev_dist > self.max_proximity_range or next_dist > self.max_proximity_range:
+                    return None, 0.0  # Reject if beyond maximum range
             
-            # Calculate confidence based on how much better this choice is
-            confidence = min(0.9, max(0.6, 1.0 - (best_score / 100.0)))  # Scale confidence based on distance
+            # Confidence based on combined score
+            confidence = 0.4 + (best_combined_score * 0.5)  # 0.4 to 0.9 based on score
             return best_repeater, confidence
         
         return None, 0.0
     
     def _select_by_single_proximity(self, repeaters: List[Dict[str, Any]], reference_location: Tuple[float, float], direction: str) -> Tuple[Optional[Dict[str, Any]], float]:
-        """Select repeater based on proximity to single reference node"""
-        distances = []
-        for repeater in repeaters:
+        """Select repeater based on proximity to single reference node with strong recency bias"""
+        # Calculate recency-weighted scores for all repeaters
+        scored_repeaters = self._calculate_recency_weighted_scores(repeaters)
+        
+        best_repeater = None
+        best_combined_score = 0.0
+        
+        for repeater, recency_score in scored_repeaters:
             distance = self._calculate_distance(
                 reference_location[0], reference_location[1],
                 repeater['latitude'], repeater['longitude']
             )
-            distances.append((distance, repeater))
-        
-        # Sort by distance (closest first)
-        distances.sort(key=lambda x: x[0])
-        
-        if not distances:
-            return None, 0.0
-        
-        closest_distance, closest_repeater = distances[0]
-        
-        # Apply maximum range threshold
-        if self.max_proximity_range > 0 and closest_distance > self.max_proximity_range:
-            return None, 0.0  # Reject if beyond maximum range
-        
-        # Calculate confidence based on distance difference
-        if len(distances) == 1:
-            return closest_repeater, 0.7  # Higher confidence for single reference
-        else:
-            second_closest_distance = distances[1][0]
-            distance_ratio = closest_distance / second_closest_distance if second_closest_distance > 0 else 0
             
-            # Higher confidence for path proximity
-            if distance_ratio < 0.5:
-                confidence = 0.9
-            elif distance_ratio < 0.7:
-                confidence = 0.8
-            else:
-                confidence = 0.7
+            # Apply maximum range threshold
+            if self.max_proximity_range > 0 and distance > self.max_proximity_range:
+                continue  # Skip if beyond maximum range
             
-            return closest_repeater, confidence
+            # Proximity score (closer = higher score)
+            normalized_distance = min(distance / 1000.0, 1.0)
+            proximity_score = 1.0 - normalized_distance
+            
+            # Combined score: 80% proximity, 20% recency (proximity more important for message reception)
+            combined_score = (proximity_score * 0.8) + (recency_score * 0.2)
+            
+            if combined_score > best_combined_score:
+                best_combined_score = combined_score
+                best_repeater = repeater
+        
+        if best_repeater:
+            # Confidence based on combined score
+            confidence = 0.4 + (best_combined_score * 0.5)  # 0.4 to 0.9 based on score
+            return best_repeater, confidence
+        
+        return None, 0.0
     
     def _format_path_response(self, node_ids: List[str], repeater_info: Dict[str, Dict[str, Any]]) -> str:
         """Format the path decode response (max 130 chars per line)
