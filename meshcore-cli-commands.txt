@@ -1,0 +1,30 @@
+meshcore-cli -s /dev/ttyUSB0
+
+
+#sync cli
+meshcore-cli -s /dev/ttyUSB0 clock sync
+
+
+
+meshcore-cli -s /dev/ttyUSB0 set lon
+meshcore-cli -s /dev/ttyUSB0 set lat
+
+
+
+#tx power
+meshcore-cli -s /dev/ttyUSB0 set tx 
+
+
+meshcore-cli -s /dev/ttyUSB0 set radio 910.525,62.5,7,5
+
+#list channels
+meshcore-cli -s /dev/ttyUSB0 get_channel
+
+#add channel #test
+#gives an error but seems to work
+meshcore-cli -s /dev/ttyUSB0 set_channel 1 \#test 9cd8fcf22a47333b591d96a2b848b73f
+
+
+
+
+
