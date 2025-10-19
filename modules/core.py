@@ -514,14 +514,19 @@ use_zulu_time = false
         # Subscribe to RAW_DATA events for full packet data
         self.meshcore.subscribe(EventType.RAW_DATA, on_raw_data)
         
-        # Subscribe to NEW_CONTACT events for automatic contact management
-        self.meshcore.subscribe(EventType.NEW_CONTACT, on_new_contact)
-        
         # Note: Debug mode commands are not available in current meshcore-cli version
         # The meshcore library handles debug output automatically when needed
         
         # Start auto message fetching
         await self.meshcore.start_auto_message_fetching()
+        
+        # Delay NEW_CONTACT subscription to ensure device is fully ready
+        self.logger.info("Delaying NEW_CONTACT subscription to ensure device readiness...")
+        await asyncio.sleep(5)  # Wait 5 seconds for device to be fully ready
+        
+        # Subscribe to NEW_CONTACT events for automatic contact management
+        self.meshcore.subscribe(EventType.NEW_CONTACT, on_new_contact)
+        self.logger.info("NEW_CONTACT subscription active - ready to receive new contact events")
         
         self.logger.info("Message handlers setup complete")
     

@@ -177,16 +177,47 @@ class PathCommand(BaseCommand):
                             }
                         continue
                 
-                # Fallback to database if API cache doesn't have this prefix
-                query = '''
-                    SELECT name, public_key, device_type, last_seen, is_active, latitude, longitude, city, state, country
-                    FROM repeater_contacts 
-                    WHERE public_key LIKE ?
-                    ORDER BY is_active DESC, last_seen DESC
-                '''
+                # Fallback to complete tracking database if API cache doesn't have this prefix
+                # First try complete tracking database (all heard contacts, filtered by role)
+                if hasattr(self.bot, 'repeater_manager'):
+                    try:
+                        # Get repeater devices from complete database (repeaters and roomservers)
+                        complete_db = await self.bot.repeater_manager.get_repeater_devices(include_historical=True)
+                        
+                        results = []
+                        for row in complete_db:
+                            if row['public_key'].startswith(node_id):
+                                results.append({
+                                    'name': row['name'],
+                                    'public_key': row['public_key'],
+                                    'device_type': row['device_type'],
+                                    'last_seen': row['last_heard'],
+                                    'is_active': row['is_currently_tracked'],
+                                    'latitude': row['latitude'],
+                                    'longitude': row['longitude'],
+                                    'city': row['city'],
+                                    'state': row['state'],
+                                    'country': row['country'],
+                                    'advert_count': row['advert_count'],
+                                    'signal_strength': row['signal_strength'],
+                                    'hop_count': row['hop_count'],
+                                    'role': row['role']
+                                })
+                    except Exception as e:
+                        self.logger.debug(f"Error getting complete database: {e}")
+                        results = []
                 
-                prefix_pattern = f"{node_id}%"
-                results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+                # Fallback to legacy database if complete tracking fails
+                if not results:
+                    query = '''
+                        SELECT name, public_key, device_type, last_seen, is_active, latitude, longitude, city, state, country
+                        FROM repeater_contacts 
+                        WHERE public_key LIKE ?
+                        ORDER BY is_active DESC, last_seen DESC
+                    '''
+                    
+                    prefix_pattern = f"{node_id}%"
+                    results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
                 
                 if results:
                     # Check for ID collisions (multiple repeaters with same prefix)

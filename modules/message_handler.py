@@ -5,7 +5,10 @@ Processes incoming messages and routes them to appropriate command handlers
 """
 
 import asyncio
-from typing import Optional
+import time
+import json
+import re
+from typing import List, Optional, Dict, Any
 from meshcore import EventType
 
 from .models import MeshMessage
@@ -295,6 +298,8 @@ class MessageHandler:
         try:
             payload = event.payload
             self.logger.info(f"📦 RAW_DATA EVENT RECEIVED: {payload}")
+            self.logger.info(f"📦 Event type: {type(event)}")
+            self.logger.info(f"📦 Metadata: {metadata}")
             
             # This should contain the full packet data we need
             if hasattr(payload, 'data') or 'data' in payload:
@@ -314,6 +319,9 @@ class MessageHandler:
                         packet_info = self.decode_meshcore_packet(raw_hex)
                         if packet_info:
                             self.logger.info(f"✅ SUCCESSFULLY DECODED RAW PACKET: {packet_info}")
+                            
+                            # Check if this is an advertisement packet and track it
+                            await self._process_advertisement_packet(packet_info, metadata)
                         else:
                             self.logger.warning("❌ Failed to decode raw packet data")
                     else:
@@ -327,6 +335,44 @@ class MessageHandler:
             self.logger.error(f"Error handling raw data event: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
+    
+    async def _process_advertisement_packet(self, packet_info: Dict, metadata=None):
+        """Process advertisement packets for complete repeater tracking"""
+        try:
+            # Check if this is an advertisement packet
+            if packet_info.get('payload_type') == 'ADVERT' or packet_info.get('type') == 'advert':
+                self.logger.debug(f"Processing advertisement packet: {packet_info}")
+                
+                # Extract repeater information
+                advert_data = {
+                    'public_key': packet_info.get('sender_id', ''),
+                    'name': packet_info.get('name', packet_info.get('adv_name', 'Unknown')),
+                    'type': packet_info.get('device_type', 2),  # Default to repeater
+                    'adv_name': packet_info.get('adv_name', packet_info.get('name', 'Unknown'))
+                }
+                
+                # Extract signal information from metadata
+                signal_info = {}
+                if metadata:
+                    signal_info.update(metadata)
+                
+                # Add hop count if available
+                if 'hops' in packet_info:
+                    signal_info['hops'] = packet_info['hops']
+                
+                # Track this advertisement in the complete database
+                if hasattr(self.bot, 'repeater_manager'):
+                    # Track all advertisements regardless of type
+                    success = await self.bot.repeater_manager.track_contact_advertisement(
+                        advert_data, signal_info
+                    )
+                    if success:
+                        self.logger.debug(f"Tracked contact advertisement: {advert_data.get('name', 'Unknown')}")
+                    else:
+                        self.logger.warning(f"Failed to track contact advertisement: {advert_data.get('name', 'Unknown')}")
+                
+        except Exception as e:
+            self.logger.error(f"Error processing advertisement packet: {e}")
     
     async def handle_rf_log_data(self, event, metadata=None):
         """Handle RF log data events to cache SNR information and store raw packet data"""
@@ -1340,7 +1386,9 @@ class MessageHandler:
     async def handle_new_contact(self, event, metadata=None):
         """Handle NEW_CONTACT events for automatic contact management"""
         try:
-            self.logger.info(f"New contact discovered: {event}")
+            self.logger.info(f"🔍 NEW_CONTACT EVENT RECEIVED: {event}")
+            self.logger.info(f"📦 Event type: {type(event)}")
+            self.logger.info(f"📦 Event payload: {event.payload if hasattr(event, 'payload') else 'No payload'}")
             
             # Extract contact information from the event
             contact_data = event.payload if hasattr(event, 'payload') else event
@@ -1355,16 +1403,89 @@ class MessageHandler:
             
             self.logger.info(f"Processing new contact: {contact_name} (key: {public_key[:16]}...)")
             
-            # Check if this is a repeater (we don't want to auto-manage repeaters)
+            # Extract additional signal information from the event
+            signal_info = {}
+            if metadata:
+                signal_info.update(metadata)
+            
+            # Try to get signal data from recent RF data correlation
+            # Only collect RSSI/SNR for zero-hop (direct) advertisements
+            try:
+                # Look for recent RF data that might correlate with this contact
+                recent_rf_data = self.bot.message_handler.recent_rf_data
+                if recent_rf_data:
+                    # Find RF data that might match this contact's public key
+                    for rf_entry in recent_rf_data[-10:]:  # Check last 10 RF entries
+                        if 'routing_info' in rf_entry:
+                            routing_info = rf_entry['routing_info']
+                            
+                            # Only collect signal data for direct (zero-hop) advertisements
+                            path_length = routing_info.get('path_length', 0)
+                            if path_length == 0:
+                                # Direct advertisement - collect signal data
+                                if 'snr' in rf_entry:
+                                    signal_info['snr'] = rf_entry['snr']
+                                if 'rssi' in rf_entry:
+                                    signal_info['rssi'] = rf_entry['rssi']
+                                signal_info['hops'] = 0
+                                self.logger.debug(f"📡 Direct advertisement - collecting signal data: SNR={rf_entry.get('snr')}, RSSI={rf_entry.get('rssi')}")
+                            else:
+                                # Multi-hop advertisement - only collect hop count, not signal data
+                                signal_info['hops'] = path_length
+                                self.logger.debug(f"📡 Multi-hop advertisement ({path_length} hops) - skipping signal data collection")
+                            break
+            except Exception as e:
+                self.logger.debug(f"Could not correlate RF data: {e}")
+            
+            # Log captured signal information
+            if signal_info:
+                self.logger.info(f"📡 Signal data: {signal_info}")
+            else:
+                self.logger.info(f"📡 No signal data available")
+            
+            # Check if this is a repeater or companion
             if hasattr(self.bot, 'repeater_manager'):
                 is_repeater = self.bot.repeater_manager._is_repeater_device(contact_data)
+                
                 if is_repeater:
-                    self.logger.info(f"New contact '{contact_name}' is a repeater - will be managed by repeater system")
-                    # Let the repeater manager handle it
-                    await self.bot.repeater_manager.scan_and_catalog_repeaters()
+                    # REPEATER: Track directly in SQLite database (no device contact list)
+                    self.logger.info(f"📡 New repeater discovered: {contact_name} - tracking in database only")
+                    
+                    # Track repeater in complete database with signal info
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info)
+                    
+                    # Check if auto-purge is needed (run after tracking to ensure data is captured)
+                    await self.bot.repeater_manager.check_and_auto_purge()
+                    
+                    self.logger.info(f"✅ Repeater {contact_name} tracked in database - not added to device contacts")
+                    return
+                else:
+                    # COMPANION: Track in database AND add to device contact list
+                    self.logger.info(f"👤 New companion discovered: {contact_name} - will be added to device contacts")
+                    
+                    # Track companion in complete database with signal info
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info)
+                    
+                    # Add companion to device contact list
+                    try:
+                        result = await self.bot.meshcore.commands.add_contact(contact_data)
+                        if hasattr(result, 'type') and result.type.name == 'OK':
+                            self.logger.info(f"✅ Companion {contact_name} added to device contacts")
+                        else:
+                            self.logger.warning(f"❌ Failed to add companion {contact_name} to device: {result}")
+                    except Exception as e:
+                        self.logger.error(f"❌ Error adding companion {contact_name} to device: {e}")
+                    
+                    # Check if auto-purge is needed
+                    await self.bot.repeater_manager.check_and_auto_purge()
                     return
             
-            # For non-repeater contacts, handle based on auto_manage_contacts setting
+            # Fallback: Track in database for unknown contact types
+            if hasattr(self.bot, 'repeater_manager'):
+                await self.bot.repeater_manager.track_contact_advertisement(contact_data)
+                await self.bot.repeater_manager.check_and_auto_purge()
+            
+            # For unknown contact types, handle based on auto_manage_contacts setting
             if hasattr(self.bot, 'repeater_manager'):
                 auto_manage_setting = self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower()
                 

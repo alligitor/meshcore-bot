@@ -29,6 +29,11 @@ class RepeaterManager:
         
         # Check for and handle database schema migration
         self._migrate_database_schema()
+        
+        # Initialize auto-purge monitoring
+        self.contact_limit = 300  # MeshCore device limit (will be updated from device info)
+        self.auto_purge_threshold = 280  # Start purging when 280+ contacts
+        self.auto_purge_enabled = True
     
     def _init_repeater_tables(self):
         """Initialize repeater-specific database tables"""
@@ -51,6 +56,30 @@ class RepeaterManager:
                 purge_count INTEGER DEFAULT 0
             ''')
             
+            # Create complete_contact_tracking table for all heard contacts
+            self.db_manager.create_table('complete_contact_tracking', '''
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                device_type TEXT,
+                first_heard TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_heard TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                advert_count INTEGER DEFAULT 1,
+                latitude REAL,
+                longitude REAL,
+                city TEXT,
+                state TEXT,
+                country TEXT,
+                raw_advert_data TEXT,
+                signal_strength REAL,
+                hop_count INTEGER,
+                is_currently_tracked BOOLEAN DEFAULT 0,
+                last_advert_timestamp TIMESTAMP,
+                location_accuracy REAL,
+                contact_source TEXT DEFAULT 'advertisement'
+            ''')
+            
             # Create purging_log table for audit trail
             self.db_manager.create_table('purging_log', '''
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,6 +97,14 @@ class RepeaterManager:
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_device_type ON repeater_contacts(device_type)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_seen ON repeater_contacts(last_seen)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_is_active ON repeater_contacts(is_active)')
+                
+                # Indexes for complete contact tracking table
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_public_key ON complete_contact_tracking(public_key)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_role ON complete_contact_tracking(role)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_last_heard ON complete_contact_tracking(last_heard)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_currently_tracked ON complete_contact_tracking(is_currently_tracked)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_location ON complete_contact_tracking(latitude, longitude)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_role_tracked ON complete_contact_tracking(role, is_currently_tracked)')
                 conn.commit()
             
             self.logger.info("Repeater contacts database initialized successfully")
@@ -104,6 +141,426 @@ class RepeaterManager:
                 
         except Exception as e:
             self.logger.error(f"Error during database schema migration: {e}")
+    
+    async def track_contact_advertisement(self, advert_data: Dict, signal_info: Dict = None) -> bool:
+        """Track any contact advertisement in the complete tracking database"""
+        try:
+            # Extract basic information
+            public_key = advert_data.get('public_key', '')
+            name = advert_data.get('name', advert_data.get('adv_name', 'Unknown'))
+            device_type = advert_data.get('type', 'Unknown')
+            
+            if not public_key:
+                self.logger.warning("No public key in advertisement data")
+                return False
+            
+            # Determine role and device type
+            role = self._determine_contact_role(advert_data)
+            device_type_str = self._determine_device_type(device_type, name)
+            
+            # Extract location data
+            self.logger.debug(f"🔍 Extracting location data for {name}...")
+            location_info = self._extract_location_data(advert_data)
+            self.logger.debug(f"📍 Location data extracted: {location_info}")
+            
+            # Extract signal information
+            signal_strength = None
+            hop_count = None
+            if signal_info:
+                signal_strength = signal_info.get('rssi', signal_info.get('signal_strength'))
+                hop_count = signal_info.get('hops', signal_info.get('hop_count'))
+            
+            # Check if this contact is already in our complete tracking
+            existing = self.db_manager.execute_query(
+                'SELECT id, advert_count, last_heard FROM complete_contact_tracking WHERE public_key = ?',
+                (public_key,)
+            )
+            
+            current_time = datetime.now()
+            
+            if existing:
+                # Update existing entry
+                advert_count = existing[0]['advert_count'] + 1
+                self.db_manager.execute_update('''
+                    UPDATE complete_contact_tracking 
+                    SET last_heard = ?, advert_count = ?, role = ?, device_type = ?,
+                        latitude = ?, longitude = ?, city = ?, state = ?, country = ?, 
+                        raw_advert_data = ?, signal_strength = ?, hop_count = ?, 
+                        last_advert_timestamp = ?
+                    WHERE public_key = ?
+                ''', (
+                    current_time, advert_count, role, device_type_str,
+                    location_info['latitude'], location_info['longitude'], 
+                    location_info['city'], location_info['state'], location_info['country'],
+                    json.dumps(advert_data), signal_strength, hop_count,
+                    current_time, public_key
+                ))
+                
+                self.logger.debug(f"Updated contact tracking: {name} ({role}) - count: {advert_count}")
+            else:
+                # Insert new entry
+                self.db_manager.execute_update('''
+                    INSERT INTO complete_contact_tracking 
+                    (public_key, name, role, device_type, first_heard, last_heard, advert_count,
+                     latitude, longitude, city, state, country, raw_advert_data,
+                     signal_strength, hop_count, last_advert_timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    public_key, name, role, device_type_str, current_time, current_time, 1,
+                    location_info['latitude'], location_info['longitude'], 
+                    location_info['city'], location_info['state'], location_info['country'],
+                    json.dumps(advert_data), signal_strength, hop_count, current_time
+                ))
+                
+                self.logger.info(f"Added new contact to complete tracking: {name} ({role})")
+            
+            # Update the currently_tracked flag based on device contact list
+            await self._update_currently_tracked_status(public_key)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error tracking contact advertisement: {e}")
+            return False
+    
+    def _determine_contact_role(self, contact_data: Dict) -> str:
+        """Determine the role of a contact based on MeshCore specifications"""
+        name = contact_data.get('name', contact_data.get('adv_name', '')).lower()
+        device_type = contact_data.get('type', 0)
+        
+        # Check device type first (most reliable indicator)
+        if device_type == 2:
+            return 'repeater'
+        elif device_type == 3:
+            return 'roomserver'
+        
+        # Check name-based indicators for role detection
+        if any(keyword in name for keyword in ['repeater', 'rpt', 'rp']):
+            return 'repeater'
+        elif any(keyword in name for keyword in ['room', 'server', 'rs', 'roomserver']):
+            return 'roomserver'
+        elif any(keyword in name for keyword in ['sensor', 'sens']):
+            return 'sensor'
+        elif any(keyword in name for keyword in ['bot', 'automated', 'automation']):
+            return 'bot'
+        elif any(keyword in name for keyword in ['gateway', 'gw', 'bridge']):
+            return 'gateway'
+        else:
+            # Default to companion for unknown contacts (human users)
+            return 'companion'
+    
+    def _determine_device_type(self, device_type: int, name: str) -> str:
+        """Determine device type string from numeric type and name following MeshCore specs"""
+        if device_type == 3:
+            return 'RoomServer'
+        elif device_type == 2:
+            return 'Repeater'
+        elif device_type == 1:
+            return 'Companion'
+        else:
+            # Fallback to name-based detection
+            name_lower = name.lower()
+            if 'room' in name_lower or 'server' in name_lower or 'roomserver' in name_lower:
+                return 'RoomServer'
+            elif 'repeater' in name_lower or 'rpt' in name_lower:
+                return 'Repeater'
+            elif 'sensor' in name_lower or 'sens' in name_lower:
+                return 'Sensor'
+            elif 'gateway' in name_lower or 'gw' in name_lower or 'bridge' in name_lower:
+                return 'Gateway'
+            elif 'bot' in name_lower or 'automated' in name_lower:
+                return 'Bot'
+            else:
+                return 'Companion'  # Default to companion for human users
+    
+    async def _update_currently_tracked_status(self, public_key: str):
+        """Update the is_currently_tracked flag based on device contact list"""
+        try:
+            # Check if this repeater is currently in the device's contact list
+            is_tracked = False
+            if hasattr(self.bot.meshcore, 'contacts'):
+                for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                    if contact_data.get('public_key', contact_key) == public_key:
+                        is_tracked = True
+                        break
+            
+            # Update the flag
+            self.db_manager.execute_update(
+                'UPDATE complete_contact_tracking SET is_currently_tracked = ? WHERE public_key = ?',
+                (is_tracked, public_key)
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error updating currently tracked status: {e}")
+    
+    async def get_complete_contact_database(self, role_filter: str = None, include_historical: bool = True) -> List[Dict]:
+        """Get complete contact database for path estimation and analysis"""
+        try:
+            if include_historical:
+                if role_filter:
+                    # Get all contacts of specific role ever heard
+                    query = '''
+                        SELECT public_key, name, role, device_type, first_heard, last_heard, 
+                               advert_count, latitude, longitude, city, state, country,
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                        FROM complete_contact_tracking
+                        WHERE role = ?
+                        ORDER BY last_heard DESC
+                    '''
+                    results = self.db_manager.execute_query(query, (role_filter,))
+                else:
+                    # Get all contacts ever heard
+                    query = '''
+                        SELECT public_key, name, role, device_type, first_heard, last_heard, 
+                               advert_count, latitude, longitude, city, state, country,
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                        FROM complete_contact_tracking
+                        ORDER BY last_heard DESC
+                    '''
+                    results = self.db_manager.execute_query(query)
+            else:
+                if role_filter:
+                    # Get only currently tracked contacts of specific role
+                    query = '''
+                        SELECT public_key, name, role, device_type, first_heard, last_heard, 
+                               advert_count, latitude, longitude, city, state, country,
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                        FROM complete_contact_tracking
+                        WHERE role = ? AND is_currently_tracked = 1
+                        ORDER BY last_heard DESC
+                    '''
+                    results = self.db_manager.execute_query(query, (role_filter,))
+                else:
+                    # Get only currently tracked contacts
+                    query = '''
+                        SELECT public_key, name, role, device_type, first_heard, last_heard, 
+                               advert_count, latitude, longitude, city, state, country,
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                        FROM complete_contact_tracking
+                        WHERE is_currently_tracked = 1
+                        ORDER BY last_heard DESC
+                    '''
+                    results = self.db_manager.execute_query(query)
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error getting complete repeater database: {e}")
+            return []
+    
+    async def get_contact_statistics(self) -> Dict:
+        """Get statistics about the complete contact tracking database"""
+        try:
+            stats = {}
+            
+            # Total contacts ever heard
+            total_result = self.db_manager.execute_query(
+                'SELECT COUNT(*) as count FROM complete_contact_tracking'
+            )
+            stats['total_heard'] = total_result[0]['count'] if total_result else 0
+            
+            # Currently tracked contacts
+            current_result = self.db_manager.execute_query(
+                'SELECT COUNT(*) as count FROM complete_contact_tracking WHERE is_currently_tracked = 1'
+            )
+            stats['currently_tracked'] = current_result[0]['count'] if current_result else 0
+            
+            # Recent activity (last 24 hours)
+            recent_result = self.db_manager.execute_query(
+                'SELECT COUNT(*) as count FROM complete_contact_tracking WHERE last_heard > datetime("now", "-1 day")'
+            )
+            stats['recent_activity'] = recent_result[0]['count'] if recent_result else 0
+            
+            # Role breakdown
+            role_result = self.db_manager.execute_query(
+                'SELECT role, COUNT(*) as count FROM complete_contact_tracking GROUP BY role'
+            )
+            stats['by_role'] = {row['role']: row['count'] for row in role_result}
+            
+            # Device type breakdown
+            type_result = self.db_manager.execute_query(
+                'SELECT device_type, COUNT(*) as count FROM complete_contact_tracking GROUP BY device_type'
+            )
+            stats['by_type'] = {row['device_type']: row['count'] for row in type_result}
+            
+            return stats
+            
+        except Exception as e:
+            self.logger.error(f"Error getting contact statistics: {e}")
+            return {}
+    
+    async def get_contacts_by_role(self, role: str, include_historical: bool = True) -> List[Dict]:
+        """Get contacts filtered by specific MeshCore role (repeater, roomserver, companion, sensor, gateway, bot)"""
+        return await self.get_complete_contact_database(role_filter=role, include_historical=include_historical)
+    
+    async def get_repeater_devices(self, include_historical: bool = True) -> List[Dict]:
+        """Get all repeater devices (repeaters and roomservers) following MeshCore terminology"""
+        repeater_db = await self.get_complete_contact_database(role_filter='repeater', include_historical=include_historical)
+        roomserver_db = await self.get_complete_contact_database(role_filter='roomserver', include_historical=include_historical)
+        return repeater_db + roomserver_db
+    
+    async def get_companion_contacts(self, include_historical: bool = True) -> List[Dict]:
+        """Get all companion contacts (human users) following MeshCore terminology"""
+        return await self.get_complete_contact_database(role_filter='companion', include_historical=include_historical)
+    
+    async def get_sensor_devices(self, include_historical: bool = True) -> List[Dict]:
+        """Get all sensor devices following MeshCore terminology"""
+        return await self.get_complete_contact_database(role_filter='sensor', include_historical=include_historical)
+    
+    async def get_gateway_devices(self, include_historical: bool = True) -> List[Dict]:
+        """Get all gateway devices following MeshCore terminology"""
+        return await self.get_complete_contact_database(role_filter='gateway', include_historical=include_historical)
+    
+    async def get_bot_devices(self, include_historical: bool = True) -> List[Dict]:
+        """Get all bot/automated devices following MeshCore terminology"""
+        return await self.get_complete_contact_database(role_filter='bot', include_historical=include_historical)
+    
+    async def check_and_auto_purge(self) -> bool:
+        """Check contact limit and auto-purge repeaters if needed"""
+        try:
+            if not self.auto_purge_enabled:
+                return False
+                
+            # Get current contact count
+            current_count = len(self.bot.meshcore.contacts)
+            
+            if current_count >= self.auto_purge_threshold:
+                self.logger.info(f"🔄 Auto-purge triggered: {current_count}/{self.contact_limit} contacts (threshold: {self.auto_purge_threshold})")
+                
+                # Calculate how many to purge
+                target_count = self.auto_purge_threshold - 20  # Leave some buffer
+                purge_count = current_count - target_count
+                
+                if purge_count > 0:
+                    success = await self._auto_purge_repeaters(purge_count)
+                    if success:
+                        self.logger.info(f"✅ Auto-purged {purge_count} repeaters, now at {len(self.bot.meshcore.contacts)}/{self.contact_limit} contacts")
+                        return True
+                    else:
+                        self.logger.warning(f"❌ Auto-purge failed to remove {purge_count} repeaters")
+                        return False
+                        
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error in auto-purge check: {e}")
+            return False
+    
+    async def _auto_purge_repeaters(self, count: int) -> bool:
+        """Automatically purge repeaters using intelligent selection"""
+        try:
+            # Get all repeaters sorted by priority (least important first)
+            repeaters_to_purge = await self._get_repeaters_for_purging(count)
+            
+            if not repeaters_to_purge:
+                self.logger.warning("No repeaters available for auto-purge")
+                # Log some debugging info
+                total_contacts = len(self.bot.meshcore.contacts)
+                repeater_count = sum(1 for contact_data in self.bot.meshcore.contacts.values() if self._is_repeater_device(contact_data))
+                self.logger.debug(f"Debug: {total_contacts} total contacts, {repeater_count} repeaters found")
+                return False
+            
+            purged_count = 0
+            for repeater in repeaters_to_purge:
+                try:
+                    # Use the improved purge method
+                    public_key = repeater['public_key']
+                    success = await self.purge_repeater_from_contacts(public_key, "Auto-purge - contact limit management")
+                    
+                    if success:
+                        purged_count += 1
+                        self.logger.info(f"🗑️ Auto-purged repeater: {repeater['name']} (last seen: {repeater['last_seen']})")
+                    else:
+                        self.logger.warning(f"Failed to auto-purge repeater: {repeater['name']}")
+                        
+                except Exception as e:
+                    self.logger.error(f"Error auto-purging repeater {repeater['name']}: {e}")
+                    continue
+            
+            self.logger.info(f"✅ Auto-purge completed: {purged_count}/{count} repeaters removed")
+            return purged_count > 0
+            
+        except Exception as e:
+            self.logger.error(f"Error in auto-purge execution: {e}")
+            return False
+    
+    async def _get_repeaters_for_purging(self, count: int) -> List[Dict]:
+        """Get list of repeaters to purge based on intelligent criteria from device contacts"""
+        try:
+            # Get repeaters directly from device contacts, not database
+            device_repeaters = []
+            
+            for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                # Check if this is a repeater device
+                if self._is_repeater_device(contact_data):
+                    public_key = contact_data.get('public_key', contact_key)
+                    name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
+                    device_type = 'Repeater'
+                    if contact_data.get('type') == 3:
+                        device_type = 'RoomServer'
+                    
+                    # Get last seen timestamp
+                    last_seen = contact_data.get('last_seen', contact_data.get('last_advert', contact_data.get('timestamp')))
+                    if last_seen:
+                        try:
+                            if isinstance(last_seen, str):
+                                last_seen_dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
+                            elif isinstance(last_seen, (int, float)):
+                                last_seen_dt = datetime.fromtimestamp(last_seen)
+                            else:
+                                last_seen_dt = last_seen
+                        except:
+                            last_seen_dt = datetime.now() - timedelta(days=30)  # Default to old
+                    else:
+                        last_seen_dt = datetime.now() - timedelta(days=30)  # Default to old
+                    
+                    device_repeaters.append({
+                        'public_key': public_key,
+                        'name': name,
+                        'device_type': device_type,
+                        'last_seen': last_seen_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                        'latitude': contact_data.get('adv_lat'),
+                        'longitude': contact_data.get('adv_lon'),
+                        'city': contact_data.get('city'),
+                        'state': contact_data.get('state'),
+                        'country': contact_data.get('country')
+                    })
+            
+            # Sort by priority (oldest first)
+            device_repeaters.sort(key=lambda x: (
+                # Priority 1: Very old (7+ days)
+                1 if (datetime.now() - datetime.strptime(x['last_seen'], '%Y-%m-%d %H:%M:%S')).days >= 7 else
+                # Priority 2: Medium old (3-7 days)
+                2 if (datetime.now() - datetime.strptime(x['last_seen'], '%Y-%m-%d %H:%M:%S')).days >= 3 else
+                # Priority 3: Recent (0-3 days)
+                3,
+                # Within same priority, oldest first
+                x['last_seen']
+            ))
+            
+            # Apply additional filtering criteria
+            filtered_repeaters = []
+            for repeater in device_repeaters:
+                # Skip repeaters with recent activity (last 24 hours)
+                last_seen_dt = datetime.strptime(repeater['last_seen'], '%Y-%m-%d %H:%M:%S')
+                if last_seen_dt > datetime.now() - timedelta(hours=24):
+                    continue
+                    
+                # Skip repeaters with location data (might be important)
+                if repeater['latitude'] and repeater['longitude']:
+                    continue
+                    
+                filtered_repeaters.append(repeater)
+                
+                if len(filtered_repeaters) >= count:
+                    break
+            
+            self.logger.debug(f"Found {len(device_repeaters)} device repeaters, {len(filtered_repeaters)} available for purging")
+            return filtered_repeaters[:count]
+            
+        except Exception as e:
+            self.logger.error(f"Error getting repeaters for purging: {e}")
+            return []
     
     def _extract_location_data(self, contact_data: Dict) -> Dict[str, Optional[str]]:
         """Extract location data from contact_data JSON"""
@@ -213,11 +670,57 @@ class RepeaterManager:
                     # Invalid coordinates
                     location_info['latitude'] = None
                     location_info['longitude'] = None
+                else:
+                    # Valid coordinates - try reverse geocoding if we don't have city/state/country
+                    if not location_info['city'] or not location_info['state'] or not location_info['country']:
+                        try:
+                            # Use reverse geocoding to get city/state/country
+                            city = self._get_city_from_coordinates(lat, lon)
+                            if city:
+                                location_info['city'] = city
+                            
+                            # Get state and country from coordinates
+                            state, country = self._get_state_country_from_coordinates(lat, lon)
+                            if state:
+                                location_info['state'] = state
+                            if country:
+                                location_info['country'] = country
+                                
+                        except Exception as e:
+                            self.logger.debug(f"Reverse geocoding failed: {e}")
             
         except Exception as e:
             self.logger.debug(f"Error extracting location data: {e}")
         
         return location_info
+
+    def _get_state_country_from_coordinates(self, latitude: float, longitude: float) -> tuple[Optional[str], Optional[str]]:
+        """Get state and country from coordinates using reverse geocoding"""
+        try:
+            from geopy.geocoders import Nominatim
+            
+            # Initialize geocoder
+            geolocator = Nominatim(user_agent="meshcore-bot")
+            
+            # Perform reverse geocoding
+            location = geolocator.reverse(f"{latitude}, {longitude}")
+            if location:
+                address = location.raw.get('address', {})
+                
+                # Get state/province
+                state = (address.get('state') or 
+                        address.get('province') or 
+                        address.get('region'))
+                
+                # Get country
+                country = address.get('country')
+                
+                return state, country
+                
+        except Exception as e:
+            self.logger.debug(f"Reverse geocoding for state/country failed: {e}")
+        
+        return None, None
 
     def _get_city_from_coordinates(self, latitude: float, longitude: float) -> Optional[str]:
         """Get city name from coordinates using reverse geocoding, with neighborhood for large cities"""
@@ -689,22 +1192,38 @@ class RepeaterManager:
         return results
 
     async def purge_repeater_from_contacts(self, public_key: str, reason: str = "Manual purge") -> bool:
-        """Remove a specific repeater from the device's contact list"""
+        """Remove a specific repeater from the device's contact list using proper MeshCore API"""
         self.logger.info(f"Starting purge process for public_key: {public_key}")
         self.logger.debug(f"Purge reason: {reason}")
         
         try:
-            # Find the contact in meshcore
+            # Find the contact in meshcore using proper MeshCore methods
             contact_to_remove = None
             contact_name = None
+            contact_key = None
             
             self.logger.debug(f"Searching through {len(self.bot.meshcore.contacts)} contacts...")
-            for contact_key, contact_data in self.bot.meshcore.contacts.items():
-                if contact_data.get('public_key', contact_key) == public_key:
-                    contact_to_remove = contact_data
-                    contact_name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
-                    self.logger.debug(f"Found contact: {contact_name} (key: {contact_key})")
-                    break
+            
+            # Try to find contact using MeshCore helper methods first
+            try:
+                # Method 1: Try to find by public key prefix
+                contact_to_remove = self.bot.meshcore.get_contact_by_key_prefix(public_key[:8])
+                if contact_to_remove:
+                    contact_name = contact_to_remove.get('adv_name', contact_to_remove.get('name', 'Unknown'))
+                    contact_key = public_key
+                    self.logger.debug(f"Found contact using key prefix: {contact_name}")
+            except Exception as e:
+                self.logger.debug(f"Key prefix lookup failed: {e}")
+            
+            # Method 2: Fallback to manual search
+            if not contact_to_remove:
+                for key, contact_data in self.bot.meshcore.contacts.items():
+                    if contact_data.get('public_key', key) == public_key:
+                        contact_to_remove = contact_data
+                        contact_name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
+                        contact_key = key
+                        self.logger.debug(f"Found contact manually: {contact_name} (key: {contact_key})")
+                        break
             
             if not contact_to_remove:
                 self.logger.warning(f"Repeater with public key {public_key} not found in current contacts")
@@ -741,104 +1260,27 @@ class RepeaterManager:
             # Track whether device removal was successful
             device_removal_successful = False
             
-            # Actually remove the contact from the device using meshcore-cli API
-            # Add timeout and error handling for LoRa communication
+            # Remove the contact using the proper MeshCore API
             try:
-                import asyncio
-                
-                self.logger.info(f"Starting removal of contact '{contact_name}' from device...")
+                self.logger.info(f"Removing contact '{contact_name}' from device using MeshCore API...")
                 self.logger.debug(f"Contact details: public_key={public_key}, name='{contact_name}'")
                 
-                # Check if we have a valid public key
-                if not public_key or public_key.strip() == '':
-                    self.logger.error(f"Cannot remove contact '{contact_name}': no public key available")
-                    return False
+                # Use the MeshCore API to remove the contact
+                result = await asyncio.wait_for(
+                    self.bot.meshcore.commands.remove_contact(public_key),
+                    timeout=30.0
+                )
                 
-                # Use asyncio.wait_for to add timeout for LoRa communication
-                try:
-                    self.logger.info(f"Sending remove_contact command for '{contact_name}' (key: {public_key[:16]}...) (timeout: 30s)...")
-                    start_time = asyncio.get_event_loop().time()
-                    
-                    # Use the meshcore-cli API for device commands
-                    from meshcore_cli.meshcore_cli import next_cmd
-                    import sys
-                    import io
-                    
-                    # Capture stdout/stderr to catch "Unknown contact" messages
-                    old_stdout = sys.stdout
-                    old_stderr = sys.stderr
-                    captured_output = io.StringIO()
-                    captured_errors = io.StringIO()
-                    
-                    try:
-                        sys.stdout = captured_output
-                        sys.stderr = captured_errors
-                        
-                        # Use contact name instead of public key for removal
-                        contact_name = contact_data.get('adv_name', contact_data.get('name', 'Unknown'))
-                        result = await asyncio.wait_for(
-                            next_cmd(self.bot.meshcore, ["remove_contact", contact_name]),
-                            timeout=30.0  # 30 second timeout for LoRa communication
-                        )
-                    finally:
-                        sys.stdout = old_stdout
-                        sys.stderr = old_stderr
-                    
-                    # Get captured output
-                    stdout_content = captured_output.getvalue()
-                    stderr_content = captured_errors.getvalue()
-                    all_output = stdout_content + stderr_content
-                    
-                    end_time = asyncio.get_event_loop().time()
-                    duration = end_time - start_time
-                    self.logger.info(f"Remove command completed in {duration:.2f} seconds")
-                    
-                    # Check if removal was successful
-                    # Note: meshcore-cli prints "Unknown contact" to stdout/stderr if contact doesn't exist
-                    self.logger.debug(f"Command result: {result}")
-                    self.logger.debug(f"Captured output: {all_output}")
-                    
-                    # Check if the captured output indicates the contact was unknown (doesn't exist)
-                    if "unknown contact" in all_output.lower():
-                        self.logger.warning(f"Contact '{contact_name}' was not found on device - this suggests the contact list is out of sync")
-                        # Don't mark as successful - we need to actually remove contacts that exist
-                        device_removal_successful = False
-                    elif result is not None:
-                        self.logger.info(f"Successfully removed contact '{contact_name}' from device")
-                        
-                        # Verify the contact was actually removed by checking if it still exists
-                        await asyncio.sleep(1)  # Give device time to process
-                        contact_still_exists = False
-                        for check_key, check_data in self.bot.meshcore.contacts.items():
-                            if check_data.get('public_key', check_key) == public_key:
-                                contact_still_exists = True
-                                break
-                        
-                        if contact_still_exists:
-                            self.logger.warning(f"Contact '{contact_name}' still exists after removal command - removal may have failed")
-                            device_removal_successful = False
-                        else:
-                            self.logger.info(f"Verified: Contact '{contact_name}' successfully removed from device")
-                            device_removal_successful = True
-                    else:
-                        self.logger.warning(f"Contact removal command returned no result for '{contact_name}'")
-                        device_removal_successful = False
-                        
-                except asyncio.TimeoutError:
-                    end_time = asyncio.get_event_loop().time()
-                    duration = end_time - start_time
-                    self.logger.warning(f"Timeout removing contact '{contact_name}' after {duration:.2f} seconds (LoRa communication)")
-                    device_removal_successful = False
-                except Exception as cmd_error:
-                    end_time = asyncio.get_event_loop().time()
-                    duration = end_time - start_time
-                    self.logger.error(f"Command error removing contact '{contact_name}' after {duration:.2f} seconds: {cmd_error}")
-                    self.logger.debug(f"Error type: {type(cmd_error).__name__}")
+                # Check if removal was successful
+                if hasattr(result, 'type') and result.type.name == 'OK':
+                    device_removal_successful = True
+                    self.logger.info(f"✅ Successfully removed contact '{contact_name}' from device")
+                else:
+                    self.logger.warning(f"❌ MeshCore API removal failed: {result}")
                     device_removal_successful = False
                 
             except Exception as e:
                 self.logger.error(f"Failed to remove contact '{contact_name}' from device: {e}")
-                self.logger.debug(f"Error type: {type(e).__name__}")
                 device_removal_successful = False
             
             # Only mark as inactive in database if device removal was successful
@@ -1403,12 +1845,11 @@ class RepeaterManager:
             # Get current contact count
             current_contacts = len(self.bot.meshcore.contacts) if hasattr(self.bot.meshcore, 'contacts') else 0
             
-            # Get device info to determine contact limit
-            device_info = self.bot.meshcore.device_info if hasattr(self.bot.meshcore, 'device_info') else {}
+            # Update contact limit from device info
+            await self._update_contact_limit_from_device()
             
-            # Typical MeshCore contact limits (these may vary by device)
-            # Most devices have a limit around 200-500 contacts
-            estimated_limit = device_info.get('contact_limit', 200)  # Default assumption
+            # Use the updated contact limit
+            estimated_limit = self.contact_limit
             
             # Calculate usage percentage
             usage_percentage = (current_contacts / estimated_limit) * 100 if estimated_limit > 0 else 0
@@ -1564,16 +2005,15 @@ class RepeaterManager:
                         self.logger.warning(f"Skipping stale contact '{contact_name}': no public key available")
                         continue
                     
-                    # Remove from device
-                    from meshcore_cli.meshcore_cli import next_cmd
+                    # Remove from device using MeshCore API
                     result = await asyncio.wait_for(
-                        next_cmd(self.bot.meshcore, ["remove_contact", public_key]),
+                        self.bot.meshcore.commands.remove_contact(public_key),
                         timeout=15.0
                     )
                     
-                    if result is not None:
+                    if hasattr(result, 'type') and result.type.name == 'OK':
                         removed_count += 1
-                        self.logger.info(f"Successfully removed stale contact: {contact_name}")
+                        self.logger.info(f"✅ Successfully removed stale contact: {contact_name}")
                         
                         # Log the removal
                         self.db_manager.execute_update(
@@ -1581,7 +2021,7 @@ class RepeaterManager:
                             ('stale_contact_removal', f'Removed stale contact: {contact_name} (last seen {contact["days_stale"]} days ago)')
                         )
                     else:
-                        self.logger.warning(f"Failed to remove stale contact: {contact_name}")
+                        self.logger.warning(f"❌ Failed to remove stale contact: {contact_name} - {result}")
                     
                     # Small delay between removals
                     await asyncio.sleep(1)
@@ -2031,5 +2471,207 @@ class RepeaterManager:
                 'updated': 0,
                 'errors': 1,
                 'skipped': 0,
+                'error': str(e)
+            }
+    
+    async def periodic_contact_monitoring(self):
+        """Periodic monitoring of contact limit and auto-purge if needed"""
+        try:
+            if not self.auto_purge_enabled:
+                return
+                
+            current_count = len(self.bot.meshcore.contacts)
+            
+            # Log current status
+            if current_count >= self.auto_purge_threshold:
+                self.logger.warning(f"⚠️ Contact limit monitoring: {current_count}/{self.contact_limit} contacts (threshold: {self.auto_purge_threshold})")
+                
+                # Trigger auto-purge
+                await self.check_and_auto_purge()
+            elif current_count >= self.auto_purge_threshold - 20:
+                self.logger.info(f"📊 Contact limit monitoring: {current_count}/{self.contact_limit} contacts (approaching threshold)")
+            else:
+                self.logger.debug(f"📊 Contact limit monitoring: {current_count}/{self.contact_limit} contacts (healthy)")
+            
+            # Background geocoding for contacts missing location data
+            await self._background_geocoding()
+                
+        except Exception as e:
+            self.logger.error(f"Error in periodic contact monitoring: {e}")
+    
+    async def _background_geocoding(self):
+        """Background geocoding for contacts missing location data"""
+        try:
+            # Find contacts with coordinates but missing city data
+            contacts_needing_geocoding = self.db_manager.execute_query('''
+                SELECT id, name, latitude, longitude, city, state, country 
+                FROM complete_contact_tracking 
+                WHERE latitude IS NOT NULL 
+                AND longitude IS NOT NULL 
+                AND (city IS NULL OR city = '')
+                AND last_geocoding_attempt IS NULL
+                ORDER BY last_heard DESC 
+                LIMIT 1
+            ''')
+            
+            if not contacts_needing_geocoding:
+                return
+            
+            contact = contacts_needing_geocoding[0]
+            contact_id = contact['id']
+            name = contact['name']
+            lat = contact['latitude']
+            lon = contact['longitude']
+            
+            self.logger.debug(f"🌍 Background geocoding: {name} ({lat}, {lon})")
+            
+            # Attempt geocoding
+            try:
+                # Get city from coordinates
+                city = self._get_city_from_coordinates(lat, lon)
+                
+                # Get state and country from coordinates
+                state, country = self._get_state_country_from_coordinates(lat, lon)
+                
+                # Update the contact with geocoded data
+                updates = []
+                params = []
+                
+                if city:
+                    updates.append("city = ?")
+                    params.append(city)
+                
+                if state:
+                    updates.append("state = ?")
+                    params.append(state)
+                
+                if country:
+                    updates.append("country = ?")
+                    params.append(country)
+                
+                # Always update the geocoding attempt timestamp
+                updates.append("last_geocoding_attempt = ?")
+                params.append(datetime.now())
+                
+                if updates:
+                    params.append(contact_id)
+                    query = f"UPDATE complete_contact_tracking SET {', '.join(updates)} WHERE id = ?"
+                    self.db_manager.execute_update(query, params)
+                    
+                    self.logger.info(f"✅ Background geocoding successful: {name} → {city or 'Unknown'}, {state or 'Unknown'}, {country or 'Unknown'}")
+                else:
+                    # Mark as attempted even if no data was found
+                    self.db_manager.execute_update(
+                        'UPDATE complete_contact_tracking SET last_geocoding_attempt = ? WHERE id = ?',
+                        (datetime.now(), contact_id)
+                    )
+                    self.logger.debug(f"🌍 Background geocoding: {name} - no additional location data found")
+                
+            except Exception as e:
+                # Mark as attempted even if geocoding failed
+                self.db_manager.execute_update(
+                    'UPDATE complete_contact_tracking SET last_geocoding_attempt = ? WHERE id = ?',
+                    (datetime.now(), contact_id)
+                )
+                self.logger.debug(f"🌍 Background geocoding failed for {name}: {e}")
+                
+        except Exception as e:
+            self.logger.debug(f"Background geocoding error: {e}")
+    
+    async def _update_contact_limit_from_device(self):
+        """Update contact limit from device using proper MeshCore API"""
+        try:
+            # Use the correct MeshCore API to get device info
+            device_info = await self.bot.meshcore.commands.send_device_query()
+            
+            # Check if the query was successful
+            if hasattr(device_info, 'type') and device_info.type.name == 'DEVICE_INFO':
+                max_contacts = device_info.payload.get("max_contacts")
+                
+                if max_contacts and max_contacts > 100:
+                    self.contact_limit = max_contacts
+                    # Update threshold to be 20 contacts below the limit
+                    self.auto_purge_threshold = max(200, max_contacts - 20)
+                    self.logger.debug(f"Updated contact limit from device query: {self.contact_limit} (threshold: {self.auto_purge_threshold})")
+                    return True
+                else:
+                    self.logger.debug(f"Device returned invalid max_contacts: {max_contacts}")
+            else:
+                self.logger.debug(f"Device query failed: {device_info}")
+                
+        except Exception as e:
+            self.logger.debug(f"Could not update contact limit from device: {e}")
+        
+        # Keep default values if device query failed
+        self.logger.debug(f"Using default contact limit: {self.contact_limit}")
+        return False
+    
+    async def get_auto_purge_status(self) -> Dict:
+        """Get current auto-purge configuration and status"""
+        try:
+            # Update contact limit from device info
+            await self._update_contact_limit_from_device()
+            
+            current_count = len(self.bot.meshcore.contacts)
+            return {
+                'enabled': self.auto_purge_enabled,
+                'contact_limit': self.contact_limit,
+                'threshold': self.auto_purge_threshold,
+                'current_count': current_count,
+                'usage_percentage': (current_count / self.contact_limit) * 100,
+                'is_near_limit': current_count >= self.auto_purge_threshold,
+                'is_at_limit': current_count >= self.contact_limit
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting auto-purge status: {e}")
+            return {
+                'enabled': False,
+                'error': str(e)
+            }
+    
+    async def test_purge_system(self) -> Dict:
+        """Test the improved purge system with a single contact"""
+        try:
+            # Find a test contact to purge
+            test_contact = None
+            test_public_key = None
+            
+            # Look for a repeater contact to test with
+            for key, contact_data in self.bot.meshcore.contacts.items():
+                if self._is_repeater_device(contact_data):
+                    test_contact = contact_data
+                    test_public_key = contact_data.get('public_key', key)
+                    break
+            
+            if not test_contact:
+                return {
+                    'success': False,
+                    'error': 'No repeater contacts found to test with',
+                    'contact_count': len(self.bot.meshcore.contacts)
+                }
+            
+            contact_name = test_contact.get('adv_name', test_contact.get('name', 'Unknown'))
+            initial_count = len(self.bot.meshcore.contacts)
+            
+            self.logger.info(f"Testing purge system with contact: {contact_name}")
+            
+            # Test the purge
+            success = await self.purge_repeater_from_contacts(test_public_key, "Test purge - system validation")
+            
+            final_count = len(self.bot.meshcore.contacts)
+            
+            return {
+                'success': success,
+                'test_contact': contact_name,
+                'initial_count': initial_count,
+                'final_count': final_count,
+                'contacts_removed': initial_count - final_count,
+                'purge_method': 'Improved MeshCore API'
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error testing purge system: {e}")
+            return {
+                'success': False,
                 'error': str(e)
             }
