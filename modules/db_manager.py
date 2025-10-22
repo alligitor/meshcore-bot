@@ -50,6 +50,15 @@ class DBManager:
                     )
                 ''')
                 
+                # Create bot_metadata table for bot configuration and state
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS bot_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
                 # Create indexes for better performance
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_geocoding_query ON geocoding_cache(query)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_geocoding_expires ON geocoding_cache(expires_at)')
@@ -276,3 +285,46 @@ class DBManager:
         except Exception as e:
             self.logger.error(f"Error executing update: {e}")
             return 0
+    
+    # Bot metadata methods
+    def set_metadata(self, key: str, value: str):
+        """Set a metadata value for the bot"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO bot_metadata (key, value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (key, value))
+                conn.commit()
+        except Exception as e:
+            self.logger.error(f"Error setting metadata {key}: {e}")
+    
+    def get_metadata(self, key: str) -> Optional[str]:
+        """Get a metadata value for the bot"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT value FROM bot_metadata WHERE key = ?', (key,))
+                result = cursor.fetchone()
+                if result:
+                    return result[0]
+                return None
+        except Exception as e:
+            self.logger.error(f"Error getting metadata {key}: {e}")
+            return None
+    
+    def get_bot_start_time(self) -> Optional[float]:
+        """Get bot start time from metadata"""
+        start_time_str = self.get_metadata('start_time')
+        if start_time_str:
+            try:
+                return float(start_time_str)
+            except ValueError:
+                self.logger.warning(f"Invalid start_time in metadata: {start_time_str}")
+                return None
+        return None
+    
+    def set_bot_start_time(self, start_time: float):
+        """Set bot start time in metadata"""
+        self.set_metadata('start_time', str(start_time))

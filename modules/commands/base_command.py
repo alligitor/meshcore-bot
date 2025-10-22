@@ -47,6 +47,11 @@ class BaseCommand(ABC):
             if (current_time - self._last_execution_time) < self.cooldown_seconds:
                 return False
         
+        # Check admin ACL if this command requires admin access
+        if self.requires_admin_access():
+            if not self._check_admin_access(message):
+                return False
+        
         return True
     
     def get_metadata(self) -> Dict[str, Any]:
@@ -65,10 +70,8 @@ class BaseCommand(ABC):
     async def send_response(self, message: MeshMessage, content: str) -> bool:
         """Unified method for sending responses to users"""
         try:
-            if message.is_dm:
-                return await self.bot.command_manager.send_dm(message.sender_id, content)
-            else:
-                return await self.bot.command_manager.send_channel_message(message.channel, content)
+            # Use the command manager's send_response method to ensure response capture
+            return await self.bot.command_manager.send_response(message, content)
         except Exception as e:
             self.logger.error(f"Failed to send response: {e}")
             return False
@@ -123,7 +126,11 @@ class BaseCommand(ABC):
     
     def should_execute(self, message: MeshMessage) -> bool:
         """Check if this command should execute for the given message"""
-        return (self.matches_keyword(message) or self.matches_custom_syntax(message)) and self.can_execute(message)
+        return (self.matches_keyword(message) or self.matches_custom_syntax(message))
+    
+    def can_execute_now(self, message: MeshMessage) -> bool:
+        """Check if this command can execute right now (permissions, cooldown, etc.)"""
+        return self.can_execute(message)
     
     def build_enhanced_connection_info(self, message: MeshMessage) -> str:
         """Build enhanced connection info with SNR, RSSI, and parsed route information"""
@@ -180,6 +187,71 @@ class BaseCommand(ABC):
         """Get the response format for this command from config"""
         # Override in subclasses to provide custom response formats
         return None
+    
+    def requires_admin_access(self) -> bool:
+        """Check if this command requires admin access"""
+        if not hasattr(self.bot, 'config'):
+            return False
+        
+        try:
+            # Get list of admin commands from config
+            admin_commands = self.bot.config.get('Admin_ACL', 'admin_commands', fallback='')
+            if not admin_commands:
+                return False
+            
+            # Check if this command name is in the admin commands list
+            admin_command_list = [cmd.strip() for cmd in admin_commands.split(',') if cmd.strip()]
+            return self.name in admin_command_list
+        except Exception as e:
+            self.logger.warning(f"Error checking admin access requirement: {e}")
+            return False
+    
+    def _check_admin_access(self, message: MeshMessage) -> bool:
+        """Check if the message sender has admin access"""
+        if not hasattr(self.bot, 'config'):
+            return False
+        
+        try:
+            # Get admin pubkeys from config
+            admin_pubkeys = self.bot.config.get('Admin_ACL', 'admin_pubkeys', fallback='')
+            if not admin_pubkeys:
+                self.logger.warning("No admin pubkeys configured")
+                return False
+            
+            # Parse admin pubkeys
+            admin_pubkey_list = [key.strip() for key in admin_pubkeys.split(',') if key.strip()]
+            if not admin_pubkey_list:
+                self.logger.warning("No valid admin pubkeys found in config")
+                return False
+            
+            # Get sender's public key from message
+            sender_pubkey = getattr(message, 'sender_pubkey', None)
+            if not sender_pubkey:
+                # Try to get from sender_id if it's a pubkey
+                sender_pubkey = getattr(message, 'sender_id', None)
+            
+            if not sender_pubkey:
+                self.logger.warning(f"No sender public key found for message from {message.sender_id}")
+                return False
+            
+            # Check if sender's pubkey matches any admin key (exact match required for security)
+            is_admin = False
+            for admin_key in admin_pubkey_list:
+                # Only allow exact matches for security
+                if sender_pubkey == admin_key:
+                    is_admin = True
+                    break
+            
+            if not is_admin:
+                self.logger.info(f"Access denied for {message.sender_id} (pubkey: {sender_pubkey[:16]}...) - not in admin ACL")
+            else:
+                self.logger.info(f"Admin access granted for {message.sender_id} (pubkey: {sender_pubkey[:16]}...)")
+            
+            return is_admin
+            
+        except Exception as e:
+            self.logger.error(f"Error checking admin access: {e}")
+            return False
     
     def _strip_quotes_from_config(self, value: str) -> str:
         """Strip quotes from config values if present"""

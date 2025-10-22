@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from meshcore import EventType
 
 
 
@@ -73,11 +74,14 @@ class RepeaterManager:
                 country TEXT,
                 raw_advert_data TEXT,
                 signal_strength REAL,
+                snr REAL,
                 hop_count INTEGER,
                 is_currently_tracked BOOLEAN DEFAULT 0,
                 last_advert_timestamp TIMESTAMP,
                 location_accuracy REAL,
-                contact_source TEXT DEFAULT 'advertisement'
+                contact_source TEXT DEFAULT 'advertisement',
+                out_path TEXT,
+                out_path_len INTEGER
             ''')
             
             # Create purging_log table for audit trail
@@ -98,7 +102,7 @@ class RepeaterManager:
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_seen ON repeater_contacts(last_seen)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_is_active ON repeater_contacts(is_active)')
                 
-                # Indexes for complete contact tracking table
+                # Indexes for contact tracking table
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_public_key ON complete_contact_tracking(public_key)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_role ON complete_contact_tracking(role)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_complete_last_heard ON complete_contact_tracking(last_heard)')
@@ -116,7 +120,7 @@ class RepeaterManager:
     def _migrate_database_schema(self):
         """Handle database schema migration for existing installations"""
         try:
-            # Check if the new location columns exist
+            # Check if the new location columns exist in repeater_contacts
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA table_info(repeater_contacts)")
@@ -133,8 +137,25 @@ class RepeaterManager:
                 
                 for column_name, column_type in new_columns:
                     if column_name not in columns:
-                        self.logger.info(f"Adding missing column: {column_name}")
+                        self.logger.info(f"Adding missing column to repeater_contacts: {column_name}")
                         cursor.execute(f"ALTER TABLE repeater_contacts ADD COLUMN {column_name} {column_type}")
+                        conn.commit()
+                
+                # Check if the new path columns exist in complete_contact_tracking
+                cursor.execute("PRAGMA table_info(complete_contact_tracking)")
+                tracking_columns = [row[1] for row in cursor.fetchall()]
+                
+                # Add missing path columns if they don't exist
+                path_columns = [
+                    ('out_path', 'TEXT'),
+                    ('out_path_len', 'INTEGER'),
+                    ('snr', 'REAL')
+                ]
+                
+                for column_name, column_type in path_columns:
+                    if column_name not in tracking_columns:
+                        self.logger.info(f"Adding missing column to complete_contact_tracking: {column_name}")
+                        cursor.execute(f"ALTER TABLE complete_contact_tracking ADD COLUMN {column_name} {column_type}")
                         conn.commit()
                 
                 self.logger.info("Database schema migration completed")
@@ -156,27 +177,50 @@ class RepeaterManager:
             
             # Determine role and device type
             role = self._determine_contact_role(advert_data)
-            device_type_str = self._determine_device_type(device_type, name)
-            
-            # Extract location data
-            self.logger.debug(f"🔍 Extracting location data for {name}...")
-            location_info = self._extract_location_data(advert_data)
-            self.logger.debug(f"📍 Location data extracted: {location_info}")
+            device_type_str = self._determine_device_type(device_type, name, advert_data)
             
             # Extract signal information
             signal_strength = None
+            snr = None
             hop_count = None
             if signal_info:
-                signal_strength = signal_info.get('rssi', signal_info.get('signal_strength'))
                 hop_count = signal_info.get('hops', signal_info.get('hop_count'))
+                
+                # Only save RSSI/SNR for zero-hop (direct) connections
+                # For multi-hop packets, signal strength represents the last hop, not the source
+                if hop_count == 0:
+                    signal_strength = signal_info.get('rssi', signal_info.get('signal_strength'))
+                    snr = signal_info.get('snr')
+                    self.logger.debug(f"📡 Saving signal data for direct connection: RSSI={signal_strength}, SNR={snr}")
+                else:
+                    self.logger.debug(f"📡 Skipping signal data for {hop_count}-hop connection (not direct)")
+            
+            # Extract path information from advert_data
+            out_path = advert_data.get('out_path', '')
+            out_path_len = advert_data.get('out_path_len', -1)
             
             # Check if this contact is already in our complete tracking
             existing = self.db_manager.execute_query(
-                'SELECT id, advert_count, last_heard FROM complete_contact_tracking WHERE public_key = ?',
+                'SELECT id, advert_count, last_heard, latitude, longitude, city, state, country FROM complete_contact_tracking WHERE public_key = ?',
                 (public_key,)
             )
             
             current_time = datetime.now()
+            
+            # Extract location data first (without geocoding)
+            self.logger.debug(f"🔍 Extracting location data for {name}...")
+            location_info = self._extract_location_data(advert_data, should_geocode=False)
+            self.logger.debug(f"📍 Location data extracted: {location_info}")
+            
+            # Check if we need to perform geocoding based on location changes
+            existing_data = existing[0] if existing else None
+            should_geocode, location_info = self._should_geocode_location(location_info, existing_data, name)
+            
+            # Re-extract location data with geocoding if needed
+            if should_geocode:
+                self.logger.debug(f"📍 Re-extracting location data with geocoding for {name}")
+                location_info = self._extract_location_data(advert_data, should_geocode=True)
+                self.logger.debug(f"📍 Location data with geocoding: {location_info}")
             
             if existing:
                 # Update existing entry
@@ -185,15 +229,15 @@ class RepeaterManager:
                     UPDATE complete_contact_tracking 
                     SET last_heard = ?, advert_count = ?, role = ?, device_type = ?,
                         latitude = ?, longitude = ?, city = ?, state = ?, country = ?, 
-                        raw_advert_data = ?, signal_strength = ?, hop_count = ?, 
-                        last_advert_timestamp = ?
+                        raw_advert_data = ?, signal_strength = ?, snr = ?, hop_count = ?, 
+                        last_advert_timestamp = ?, out_path = ?, out_path_len = ?
                     WHERE public_key = ?
                 ''', (
                     current_time, advert_count, role, device_type_str,
                     location_info['latitude'], location_info['longitude'], 
                     location_info['city'], location_info['state'], location_info['country'],
-                    json.dumps(advert_data), signal_strength, hop_count,
-                    current_time, public_key
+                    json.dumps(advert_data), signal_strength, snr, hop_count,
+                    current_time, out_path, out_path_len, public_key
                 ))
                 
                 self.logger.debug(f"Updated contact tracking: {name} ({role}) - count: {advert_count}")
@@ -203,13 +247,14 @@ class RepeaterManager:
                     INSERT INTO complete_contact_tracking 
                     (public_key, name, role, device_type, first_heard, last_heard, advert_count,
                      latitude, longitude, city, state, country, raw_advert_data,
-                     signal_strength, hop_count, last_advert_timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     signal_strength, snr, hop_count, last_advert_timestamp, out_path, out_path_len)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     public_key, name, role, device_type_str, current_time, current_time, 1,
                     location_info['latitude'], location_info['longitude'], 
                     location_info['city'], location_info['state'], location_info['country'],
-                    json.dumps(advert_data), signal_strength, hop_count, current_time
+                    json.dumps(advert_data), signal_strength, snr, hop_count, current_time,
+                    out_path, out_path_len
                 ))
                 
                 self.logger.info(f"Added new contact to complete tracking: {name} ({role})")
@@ -225,16 +270,35 @@ class RepeaterManager:
     
     def _determine_contact_role(self, contact_data: Dict) -> str:
         """Determine the role of a contact based on MeshCore specifications"""
+        from .enums import DeviceRole
+        
+        # First priority: Use the mode field from parsed advertisement data
+        mode = contact_data.get('mode', '')
+        if mode:
+            # Convert DeviceRole enum values to lowercase role strings
+            if mode == DeviceRole.Repeater.value:
+                return 'repeater'
+            elif mode == DeviceRole.RoomServer.value:
+                return 'roomserver'
+            elif mode == DeviceRole.Companion.value:
+                return 'companion'
+            elif mode == 'Sensor':
+                return 'sensor'
+            else:
+                # Handle any other mode values
+                return mode.lower()
+        
+        # Fallback to legacy detection methods
         name = contact_data.get('name', contact_data.get('adv_name', '')).lower()
         device_type = contact_data.get('type', 0)
         
-        # Check device type first (most reliable indicator)
+        # Check device type (legacy indicator)
         if device_type == 2:
             return 'repeater'
         elif device_type == 3:
             return 'roomserver'
         
-        # Check name-based indicators for role detection
+        # Check name-based indicators for role detection (legacy fallback)
         if any(keyword in name for keyword in ['repeater', 'rpt', 'rp']):
             return 'repeater'
         elif any(keyword in name for keyword in ['room', 'server', 'rs', 'roomserver']):
@@ -249,8 +313,26 @@ class RepeaterManager:
             # Default to companion for unknown contacts (human users)
             return 'companion'
     
-    def _determine_device_type(self, device_type: int, name: str) -> str:
+    def _determine_device_type(self, device_type: int, name: str, advert_data: Dict = None) -> str:
         """Determine device type string from numeric type and name following MeshCore specs"""
+        from .enums import DeviceRole
+        
+        # First priority: Use the mode field from parsed advertisement data
+        if advert_data and advert_data.get('mode'):
+            mode = advert_data.get('mode')
+            if mode == DeviceRole.Repeater.value:
+                return 'Repeater'
+            elif mode == DeviceRole.RoomServer.value:
+                return 'RoomServer'
+            elif mode == DeviceRole.Companion.value:
+                return 'Companion'
+            elif mode == 'Sensor':
+                return 'Sensor'
+            else:
+                # Handle any other mode values
+                return mode
+        
+        # Fallback to legacy detection methods
         if device_type == 3:
             return 'RoomServer'
         elif device_type == 2:
@@ -349,7 +431,7 @@ class RepeaterManager:
             return []
     
     async def get_contact_statistics(self) -> Dict:
-        """Get statistics about the complete contact tracking database"""
+        """Get statistics about the contact tracking database"""
         try:
             stats = {}
             
@@ -526,7 +608,7 @@ class RepeaterManager:
                         'country': contact_data.get('country')
                     })
             
-            # Sort by priority (oldest first)
+            # Sort by priority (oldest first, with location data as secondary factor)
             device_repeaters.sort(key=lambda x: (
                 # Priority 1: Very old (7+ days)
                 1 if (datetime.now() - datetime.strptime(x['last_seen'], '%Y-%m-%d %H:%M:%S')).days >= 7 else
@@ -534,35 +616,48 @@ class RepeaterManager:
                 2 if (datetime.now() - datetime.strptime(x['last_seen'], '%Y-%m-%d %H:%M:%S')).days >= 3 else
                 # Priority 3: Recent (0-3 days)
                 3,
-                # Within same priority, oldest first
+                # Within same priority, prefer repeaters without location data, then oldest first
+                0 if not (x.get('latitude') and x.get('longitude')) else 1,
                 x['last_seen']
             ))
             
             # Apply additional filtering criteria
             filtered_repeaters = []
             for repeater in device_repeaters:
-                # Skip repeaters with recent activity (last 24 hours)
+                # Skip repeaters with very recent activity (last 2 hours) - more lenient
                 last_seen_dt = datetime.strptime(repeater['last_seen'], '%Y-%m-%d %H:%M:%S')
-                if last_seen_dt > datetime.now() - timedelta(hours=24):
+                if last_seen_dt > datetime.now() - timedelta(hours=2):
                     continue
                     
-                # Skip repeaters with location data (might be important)
-                if repeater['latitude'] and repeater['longitude']:
-                    continue
-                    
+                # Don't skip repeaters with location data - location data is common and not a reason to preserve
+                # The sorting logic above already prioritizes repeaters without location data
                 filtered_repeaters.append(repeater)
                 
                 if len(filtered_repeaters) >= count:
                     break
             
             self.logger.debug(f"Found {len(device_repeaters)} device repeaters, {len(filtered_repeaters)} available for purging")
+            
+            # Additional debugging info
+            if len(filtered_repeaters) == 0 and len(device_repeaters) > 0:
+                self.logger.debug("No repeaters available for purging - checking filtering criteria:")
+                recent_count = 0
+                location_count = 0
+                for repeater in device_repeaters:
+                    last_seen_dt = datetime.strptime(repeater['last_seen'], '%Y-%m-%d %H:%M:%S')
+                    if last_seen_dt > datetime.now() - timedelta(hours=2):
+                        recent_count += 1
+                    if repeater['latitude'] and repeater['longitude']:
+                        location_count += 1
+                self.logger.debug(f"Filtering stats: {recent_count} too recent, {location_count} with location data")
+            
             return filtered_repeaters[:count]
             
         except Exception as e:
             self.logger.error(f"Error getting repeaters for purging: {e}")
             return []
     
-    def _extract_location_data(self, contact_data: Dict) -> Dict[str, Optional[str]]:
+    def _extract_location_data(self, contact_data: Dict, should_geocode: bool = True) -> Dict[str, Optional[str]]:
         """Extract location data from contact_data JSON"""
         location_info = {
             'latitude': None,
@@ -573,6 +668,16 @@ class RepeaterManager:
         }
         
         try:
+            # First check for direct lat/lon fields (from parsed advert data)
+            if 'lat' in contact_data and 'lon' in contact_data:
+                try:
+                    location_info['latitude'] = float(contact_data['lat'])
+                    location_info['longitude'] = float(contact_data['lon'])
+                    self.logger.debug(f"📍 Direct lat/lon found: {location_info['latitude']}, {location_info['longitude']}")
+                    # Don't return here - continue to geocoding logic below
+                except (ValueError, TypeError) as e:
+                    self.logger.warning(f"Failed to parse direct lat/lon: {e}")
+            
             # Check for various possible location field names in contact data
             location_fields = [
                 'location', 'gps', 'coordinates', 'lat_lon', 'lat_lng',
@@ -671,8 +776,8 @@ class RepeaterManager:
                     location_info['latitude'] = None
                     location_info['longitude'] = None
                 else:
-                    # Valid coordinates - try reverse geocoding if we don't have city/state/country
-                    if not location_info['city'] or not location_info['state'] or not location_info['country']:
+                    # Valid coordinates - try reverse geocoding if we don't have city/state/country and geocoding is enabled
+                    if should_geocode and (not location_info['city'] or not location_info['state'] or not location_info['country']):
                         try:
                             # Use reverse geocoding to get city/state/country
                             city = self._get_city_from_coordinates(lat, lon)
@@ -688,11 +793,78 @@ class RepeaterManager:
                                 
                         except Exception as e:
                             self.logger.debug(f"Reverse geocoding failed: {e}")
+                    elif not should_geocode:
+                        self.logger.debug(f"📍 Skipping geocoding for coordinates {lat}, {lon} (location unchanged)")
             
         except Exception as e:
             self.logger.debug(f"Error extracting location data: {e}")
         
         return location_info
+
+    def _should_geocode_location(self, location_info: Dict, existing_data: Dict = None, name: str = "Unknown") -> tuple[bool, Dict]:
+        """
+        Determine if geocoding should be performed based on location changes.
+        
+        Args:
+            location_info: New location data extracted from advert
+            existing_data: Existing location data from database (optional)
+            name: Contact name for logging
+            
+        Returns:
+            tuple: (should_geocode: bool, updated_location_info: Dict)
+        """
+        should_geocode = False
+        updated_location_info = location_info.copy()
+        
+        # If no existing data, only geocode if we have valid coordinates but no city
+        if not existing_data:
+            should_geocode = (
+                location_info['latitude'] is not None and 
+                location_info['longitude'] is not None and 
+                not (location_info['latitude'] == 0.0 and location_info['longitude'] == 0.0) and
+                not location_info['city']
+            )
+            if should_geocode:
+                self.logger.debug(f"📍 New contact {name}, will geocode coordinates")
+            return should_geocode, updated_location_info
+        
+        # Extract existing location data
+        existing_lat = existing_data.get('latitude', 0.0) if existing_data.get('latitude') is not None else 0.0
+        existing_lon = existing_data.get('longitude', 0.0) if existing_data.get('longitude') is not None else 0.0
+        existing_city = existing_data.get('city')
+        existing_state = existing_data.get('state')
+        existing_country = existing_data.get('country')
+        
+        # Only geocode if coordinates changed or we don't have city data
+        if (location_info['latitude'] is not None and 
+            location_info['longitude'] is not None and 
+            not (location_info['latitude'] == 0.0 and location_info['longitude'] == 0.0)):
+            
+            coordinates_changed = (
+                abs(location_info['latitude'] - existing_lat) > 0.0001 or 
+                abs(location_info['longitude'] - existing_lon) > 0.0001
+            )
+            
+            # Only geocode if coordinates changed or we don't have a city
+            should_geocode = coordinates_changed or not existing_city
+            
+            if not should_geocode and existing_city:
+                # Use existing city data, no need to geocode
+                updated_location_info['city'] = existing_city
+                updated_location_info['state'] = existing_state
+                updated_location_info['country'] = existing_country
+                self.logger.debug(f"📍 Using existing location data for {name}: {existing_city}")
+            elif should_geocode:
+                self.logger.debug(f"📍 Location changed for {name}, will geocode new coordinates")
+        else:
+            # No valid coordinates in new data, keep existing location
+            updated_location_info['latitude'] = existing_lat if existing_lat != 0.0 else None
+            updated_location_info['longitude'] = existing_lon if existing_lon != 0.0 else None
+            updated_location_info['city'] = existing_city
+            updated_location_info['state'] = existing_state
+            updated_location_info['country'] = existing_country
+        
+        return should_geocode, updated_location_info
 
     def _get_state_country_from_coordinates(self, latitude: float, longitude: float) -> tuple[Optional[str], Optional[str]]:
         """Get state and country from coordinates using reverse geocoding"""
@@ -1016,7 +1188,7 @@ class RepeaterManager:
                             device_type = 'RoomServer'
                     
                     # Extract location data from contact_data
-                    location_info = self._extract_location_data(contact_data)
+                    location_info = self._extract_location_data(contact_data, should_geocode=False)
                     
                     # Check if already exists and get existing location data
                     existing = self.db_manager.execute_query(
@@ -1024,32 +1196,16 @@ class RepeaterManager:
                         (public_key,)
                     )
                     
-                    # If we have coordinates but no city, try to get city from coordinates
-                    # Skip 0,0 coordinates as they indicate "hidden" location
-                    # Skip reverse geocoding if coordinates haven't changed and we already have a city
-                    should_geocode = (
-                        location_info['latitude'] is not None and 
-                        location_info['longitude'] is not None and 
-                        not (location_info['latitude'] == 0.0 and location_info['longitude'] == 0.0) and
-                        not location_info['city']
-                    )
+                    # Check if we need to perform geocoding based on location changes
+                    existing_data = None
+                    if existing:
+                        existing_data = {
+                            'latitude': existing[0][2],
+                            'longitude': existing[0][3], 
+                            'city': existing[0][4]
+                        }
                     
-                    # If repeater exists, check if coordinates changed or if we need to geocode
-                    if existing and should_geocode:
-                        existing_lat = existing[0][2] if existing[0][2] is not None else 0.0
-                        existing_lon = existing[0][3] if existing[0][3] is not None else 0.0
-                        existing_city = existing[0][4]
-                        
-                        # Only geocode if coordinates changed or we don't have a city
-                        coordinates_changed = (
-                            abs(location_info['latitude'] - existing_lat) > 0.0001 or 
-                            abs(location_info['longitude'] - existing_lon) > 0.0001
-                        )
-                        
-                        if not coordinates_changed and existing_city:
-                            # Use existing city data, no need to geocode
-                            location_info['city'] = existing_city
-                            should_geocode = False
+                    should_geocode, location_info = self._should_geocode_location(location_info, existing_data, name)
                     
                     if should_geocode:
                         city_from_coords = self._get_city_from_coordinates(
@@ -1263,25 +1419,62 @@ class RepeaterManager:
             # Remove the contact using the proper MeshCore API
             try:
                 self.logger.info(f"Removing contact '{contact_name}' from device using MeshCore API...")
-                self.logger.debug(f"Contact details: public_key={public_key}, name='{contact_name}'")
+                self.logger.debug(f"Contact details: public_key={public_key}, contact_key={contact_key}, name='{contact_name}'")
                 
-                # Use the MeshCore API to remove the contact
-                result = await asyncio.wait_for(
-                    self.bot.meshcore.commands.remove_contact(public_key),
-                    timeout=30.0
-                )
+                # Try different key formats for removal
+                removal_keys_to_try = []
                 
-                # Check if removal was successful
-                if hasattr(result, 'type') and result.type.name == 'OK':
-                    device_removal_successful = True
-                    self.logger.info(f"✅ Successfully removed contact '{contact_name}' from device")
-                else:
-                    self.logger.warning(f"❌ MeshCore API removal failed: {result}")
-                    device_removal_successful = False
+                # Add the public key if it's different from contact key
+                if public_key != contact_key:
+                    removal_keys_to_try.append(public_key)
+                
+                # Add the contact key
+                if contact_key:
+                    removal_keys_to_try.append(contact_key)
+                
+                # Add the public key as bytes if it's a hex string
+                try:
+                    if len(public_key) == 64:  # 32 bytes in hex
+                        public_key_bytes = bytes.fromhex(public_key)
+                        removal_keys_to_try.append(public_key_bytes)
+                except:
+                    pass
+                
+                self.logger.debug(f"Will try removal with keys: {removal_keys_to_try}")
+                
+                # Try each key format
+                for key_to_try in removal_keys_to_try:
+                    try:
+                        self.logger.debug(f"Trying removal with key: {key_to_try} (type: {type(key_to_try)})")
+                        result = await asyncio.wait_for(
+                            self.bot.meshcore.commands.remove_contact(key_to_try),
+                            timeout=30.0
+                        )
+                        
+                        # Check if removal was successful
+                        if result.type == EventType.OK:
+                            device_removal_successful = True
+                            self.logger.info(f"✅ Successfully removed contact '{contact_name}' from device using key: {key_to_try}")
+                            break
+                        else:
+                            # Log detailed error information
+                            error_code = result.payload.get('error_code', 'unknown') if hasattr(result, 'payload') else 'unknown'
+                            self.logger.debug(f"❌ Removal failed with key {key_to_try}: {result}")
+                            self.logger.debug(f"❌ Error type: {result.type}, Error code: {error_code}")
+                    except Exception as e:
+                        self.logger.debug(f"Exception with key {key_to_try}: {e}")
+                        continue
+                
+                # If all key formats failed, try fallback methods
+                if not device_removal_successful:
+                    self.logger.warning(f"All key formats failed for '{contact_name}' - trying fallback methods...")
+                    device_removal_successful = await self._try_fallback_removal_methods(public_key, contact_name, reason)
                 
             except Exception as e:
                 self.logger.error(f"Failed to remove contact '{contact_name}' from device: {e}")
-                device_removal_successful = False
+                # Try fallback methods on exception
+                self.logger.info(f"Attempting fallback methods for contact '{contact_name}' due to exception...")
+                device_removal_successful = await self._try_fallback_removal_methods(public_key, contact_name, reason)
             
             # Only mark as inactive in database if device removal was successful
             if device_removal_successful:
@@ -1311,6 +1504,136 @@ class RepeaterManager:
         except Exception as e:
             self.logger.error(f"Error purging repeater {public_key}: {e}")
             self.logger.debug(f"Error type: {type(e).__name__}")
+            return False
+    
+    async def _try_fallback_removal_methods(self, public_key: str, contact_name: str, reason: str) -> bool:
+        """Try alternative methods to remove a contact when the primary MeshCore API fails"""
+        try:
+            self.logger.info(f"Trying fallback removal methods for '{contact_name}'...")
+            
+            # Method 1: Try direct removal from contacts dictionary
+            try:
+                self.logger.info(f"Fallback Method 1: Direct removal from contacts dictionary...")
+                contact_removed = False
+                for contact_key, contact_data in list(self.bot.meshcore.contacts.items()):
+                    if contact_data.get('public_key', contact_key) == public_key:
+                        del self.bot.meshcore.contacts[contact_key]
+                        contact_removed = True
+                        self.logger.info(f"✅ Successfully removed contact '{contact_name}' from contacts dictionary")
+                        break
+                
+                if contact_removed:
+                    # Verify removal worked
+                    await asyncio.sleep(1)
+                    contact_still_exists = any(
+                        contact_data.get('public_key', key) == public_key 
+                        for key, contact_data in self.bot.meshcore.contacts.items()
+                    )
+                    if not contact_still_exists:
+                        return True
+                    else:
+                        self.logger.warning(f"Contact '{contact_name}' still exists after dictionary removal")
+            except Exception as e:
+                self.logger.debug(f"Fallback Method 1 failed: {e}")
+            
+            # Method 2: Try alternative meshcore-cli commands
+            try:
+                self.logger.info(f"Fallback Method 2: Alternative meshcore-cli commands...")
+                from meshcore_cli.meshcore_cli import next_cmd
+                
+                # Try different removal commands
+                alternative_commands = [
+                    ["delete_contact", public_key],
+                    ["remove", public_key],
+                    ["del", public_key],
+                    ["clear_contact", public_key]
+                ]
+                
+                for cmd in alternative_commands:
+                    try:
+                        self.logger.info(f"Trying fallback command: {' '.join(cmd)}")
+                        
+                        result = await asyncio.wait_for(
+                            next_cmd(self.bot.meshcore, cmd),
+                            timeout=15.0
+                        )
+                        
+                        if result is not None:
+                            self.logger.debug(f"Fallback command {' '.join(cmd)} result: {result}")
+                            
+                            # Verify removal
+                            await asyncio.sleep(1)
+                            contact_still_exists = any(
+                                contact_data.get('public_key', key) == public_key 
+                                for key, contact_data in self.bot.meshcore.contacts.items()
+                            )
+                            
+                            if not contact_still_exists:
+                                self.logger.info(f"✅ Fallback command {' '.join(cmd)} succeeded")
+                                return True
+                            else:
+                                self.logger.debug(f"Contact '{contact_name}' still exists after {' '.join(cmd)}")
+                    except Exception as e:
+                        self.logger.debug(f"Fallback command {' '.join(cmd)} failed: {e}")
+                        continue
+                        
+            except Exception as e:
+                self.logger.debug(f"Fallback Method 2 failed: {e}")
+            
+            # Method 3: Try using contact key instead of public key
+            try:
+                self.logger.info(f"Fallback Method 3: Using contact key...")
+                contact_key = None
+                for key, contact_data in self.bot.meshcore.contacts.items():
+                    if contact_data.get('public_key', key) == public_key:
+                        contact_key = key
+                        break
+                
+                if contact_key:
+                    # Try both meshcore API and CLI commands with contact key
+                    try:
+                        # Try meshcore API with contact key
+                        result = await asyncio.wait_for(
+                            self.bot.meshcore.commands.remove_contact(contact_key),
+                            timeout=15.0
+                        )
+                        
+                        if result.type == EventType.OK:
+                            self.logger.info(f"✅ Fallback Method 3 succeeded using contact key via API")
+                            return True
+                    except Exception as e:
+                        self.logger.debug(f"API removal with contact key failed: {e}")
+                    
+                    # Try CLI command with contact key
+                    try:
+                        from meshcore_cli.meshcore_cli import next_cmd
+                        
+                        result = await asyncio.wait_for(
+                            next_cmd(self.bot.meshcore, ["remove_contact", contact_key]),
+                            timeout=15.0
+                        )
+                        
+                        if result is not None:
+                            # Verify removal
+                            await asyncio.sleep(1)
+                            contact_still_exists = any(
+                                contact_data.get('public_key', key) == public_key 
+                                for key, contact_data in self.bot.meshcore.contacts.items()
+                            )
+                            
+                            if not contact_still_exists:
+                                self.logger.info(f"✅ Fallback Method 3 succeeded using contact key via CLI")
+                                return True
+                    except Exception as e:
+                        self.logger.debug(f"CLI removal with contact key failed: {e}")
+            except Exception as e:
+                self.logger.debug(f"Fallback Method 3 failed: {e}")
+            
+            self.logger.warning(f"All fallback methods failed for '{contact_name}'")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error in fallback removal methods: {e}")
             return False
     
     async def purge_repeater_by_contact_key(self, contact_key: str, reason: str = "Manual purge") -> bool:
@@ -2011,7 +2334,7 @@ class RepeaterManager:
                         timeout=15.0
                     )
                     
-                    if hasattr(result, 'type') and result.type.name == 'OK':
+                    if result.type == EventType.OK:
                         removed_count += 1
                         self.logger.info(f"✅ Successfully removed stale contact: {contact_name}")
                         
@@ -2021,7 +2344,8 @@ class RepeaterManager:
                             ('stale_contact_removal', f'Removed stale contact: {contact_name} (last seen {contact["days_stale"]} days ago)')
                         )
                     else:
-                        self.logger.warning(f"❌ Failed to remove stale contact: {contact_name} - {result}")
+                        error_code = result.payload.get('error_code', 'unknown') if hasattr(result, 'payload') else 'unknown'
+                        self.logger.warning(f"❌ Failed to remove stale contact: {contact_name} - Error: {result.type}, Code: {error_code}")
                     
                     # Small delay between removals
                     await asyncio.sleep(1)
@@ -2341,17 +2665,19 @@ class RepeaterManager:
                         'skipped': 0,
                         'error': 'No network connectivity to geocoding service'
                     }
-            # Find repeaters with valid coordinates but missing state or country
+            # Find contacts with valid coordinates but missing state or country
+            # Use complete_contact_tracking table to match the geocoding status command
             repeaters_to_update = self.db_manager.execute_query('''
                 SELECT id, name, latitude, longitude, city, state, country 
-                FROM repeater_contacts 
+                FROM complete_contact_tracking 
                 WHERE latitude IS NOT NULL 
                 AND longitude IS NOT NULL 
                 AND NOT (latitude = 0.0 AND longitude = 0.0)
                 AND latitude BETWEEN -90 AND 90
                 AND longitude BETWEEN -180 AND 180
-                AND (state IS NULL OR country IS NULL)
-                ORDER BY name
+                AND (city IS NULL OR city = '' OR state IS NULL OR country IS NULL)
+                AND last_geocoding_attempt IS NULL
+                ORDER BY last_heard DESC
                 LIMIT ?
             ''', (batch_size,))
             
@@ -2381,6 +2707,9 @@ class RepeaterManager:
                 try:
                     # Get full location information from coordinates
                     location_info = self._get_full_location_from_coordinates(latitude, longitude)
+                    
+                    # Debug logging to see what we got
+                    self.logger.debug(f"Geocoding result for {name}: city='{location_info['city']}', state='{location_info['state']}', country='{location_info['country']}'")
                     
                     # Check if we got any useful data
                     if not any(location_info.values()):
@@ -2415,13 +2744,20 @@ class RepeaterManager:
                     
                     if updates:
                         if not dry_run:
-                            # Update the database
-                            update_query = f"UPDATE repeater_contacts SET {', '.join(updates)} WHERE id = ?"
+                            # Update the database - use complete_contact_tracking table
+                            update_query = f"UPDATE complete_contact_tracking SET {', '.join(updates)} WHERE id = ?"
                             params.append(repeater_id)
                             
                             self.db_manager.execute_update(update_query, tuple(params))
                             
-                            self.logger.info(f"Updated geolocation for {name}: {', '.join(updates)}")
+                            # Log the actual values being updated
+                            update_details = []
+                            for i, update in enumerate(updates):
+                                field = update.split(' = ')[0]
+                                value = params[i] if i < len(params) else 'Unknown'
+                                update_details.append(f"{field} = {value}")
+                            
+                            self.logger.info(f"Updated geolocation for {name}: {', '.join(update_details)}")
                         else:
                             self.logger.info(f"[DRY RUN] Would update {name}: {', '.join(updates)}")
                         

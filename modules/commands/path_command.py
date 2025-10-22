@@ -36,6 +36,7 @@ class PathCommand(BaseCommand):
         self.proximity_method = bot.config.get('Path_Command', 'proximity_method', fallback='simple')
         self.path_proximity_fallback = bot.config.getboolean('Path_Command', 'path_proximity_fallback', fallback=True)
         self.max_proximity_range = bot.config.getfloat('Path_Command', 'max_proximity_range', fallback=200.0)
+        self.max_repeater_age_days = bot.config.getint('Path_Command', 'max_repeater_age_days', fallback=14)
         
         try:
             # Try to get location from Bot section
@@ -51,6 +52,7 @@ class PathCommand(BaseCommand):
                         self.geographic_guessing_enabled = True
                         self.logger.info(f"Geographic proximity guessing enabled with bot location: {lat:.4f}, {lon:.4f}")
                         self.logger.info(f"Proximity method: {self.proximity_method}")
+                        self.logger.info(f"Max repeater age: {self.max_repeater_age_days} days")
                     else:
                         self.logger.warning(f"Invalid bot coordinates in config: {lat}, {lon}")
                 else:
@@ -207,17 +209,56 @@ class PathCommand(BaseCommand):
                         self.logger.debug(f"Error getting complete database: {e}")
                         results = []
                 
-                # Fallback to legacy database if complete tracking fails
+                # If complete tracking database failed, try direct query to complete_contact_tracking
                 if not results:
-                    query = '''
-                        SELECT name, public_key, device_type, last_seen, is_active, latitude, longitude, city, state, country
-                        FROM repeater_contacts 
-                        WHERE public_key LIKE ?
-                        ORDER BY is_active DESC, last_seen DESC
-                    '''
-                    
-                    prefix_pattern = f"{node_id}%"
-                    results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+                    try:
+                        # Build query with age filtering if configured
+                        if self.max_repeater_age_days > 0:
+                            query = '''
+                                SELECT name, public_key, device_type, last_heard as last_seen, 
+                                       latitude, longitude, city, state, country,
+                                       advert_count, signal_strength, hop_count, role
+                                FROM complete_contact_tracking 
+                                WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
+                                AND last_heard >= datetime('now', '-{} days')
+                                ORDER BY last_heard DESC
+                            '''.format(self.max_repeater_age_days)
+                        else:
+                            query = '''
+                                SELECT name, public_key, device_type, last_heard as last_seen, 
+                                       latitude, longitude, city, state, country,
+                                       advert_count, signal_strength, hop_count, role
+                                FROM complete_contact_tracking 
+                                WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
+                                ORDER BY last_heard DESC
+                            '''
+                        
+                        prefix_pattern = f"{node_id}%"
+                        results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+                        
+                        # Convert results to expected format
+                        if results:
+                            results = [
+                                {
+                                    'name': row['name'],
+                                    'public_key': row['public_key'],
+                                    'device_type': row['device_type'],
+                                    'last_seen': row['last_seen'],
+                                    'is_active': True,  # Assume active for path purposes
+                                    'latitude': row['latitude'],
+                                    'longitude': row['longitude'],
+                                    'city': row['city'],
+                                    'state': row['state'],
+                                    'country': row['country'],
+                                    'advert_count': row.get('advert_count', 0),
+                                    'signal_strength': row.get('signal_strength'),
+                                    'hop_count': row.get('hop_count'),
+                                    'role': row.get('role')
+                                } for row in results
+                            ]
+                    except Exception as e:
+                        self.logger.debug(f"Error querying complete_contact_tracking directly: {e}")
+                        results = []
                 
                 if results:
                     # Check for ID collisions (multiple repeaters with same prefix)
@@ -464,8 +505,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance  # Invert so closer = higher score
             
-            # Weight proximity more heavily for message reception (80% proximity, 20% recency)
-            combined_score = (proximity_score * 0.8) + (recency_score * 0.2)
+            # Weight proximity more heavily for message reception (70% proximity, 30% recency)
+            combined_score = (proximity_score * 0.7) + (recency_score * 0.3)
             combined_scores.append((combined_score, distance, repeater))
         
         if not combined_scores:
@@ -536,7 +577,7 @@ class PathCommand(BaseCommand):
                 except:
                     pass
             
-            # Check last_seen from repeater_contacts table
+            # Check last_seen from complete_contact_tracking table
             last_seen = repeater.get('last_seen')
             if last_seen:
                 try:
@@ -613,7 +654,7 @@ class PathCommand(BaseCommand):
                     except:
                         pass
             
-            # Check last_seen from repeater_contacts table
+            # Check last_seen from complete_contact_tracking table
             if not is_recent:
                 last_seen = repeater.get('last_seen')
                 if last_seen:
@@ -675,7 +716,7 @@ class PathCommand(BaseCommand):
                 except:
                     pass
             
-            # Check last_seen from repeater_contacts table
+            # Check last_seen from complete_contact_tracking table
             last_seen = repeater.get('last_seen')
             if last_seen:
                 try:
@@ -747,15 +788,27 @@ class PathCommand(BaseCommand):
             return None, 0.0
     
     def _get_node_location(self, node_id: str) -> Optional[Tuple[float, float]]:
-        """Get location for a node ID from the database"""
+        """Get location for a node ID from the complete_contact_tracking database"""
         try:
-            # Query database for node location
-            query = '''
-                SELECT latitude, longitude FROM repeater_contacts 
-                WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
-                AND latitude != 0 AND longitude != 0
-                LIMIT 1
-            '''
+            # Build query with age filtering if configured
+            if self.max_repeater_age_days > 0:
+                query = '''
+                    SELECT latitude, longitude FROM complete_contact_tracking 
+                    WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
+                    AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
+                    AND last_heard >= datetime('now', '-{} days')
+                    ORDER BY last_heard DESC
+                    LIMIT 1
+                '''.format(self.max_repeater_age_days)
+            else:
+                query = '''
+                    SELECT latitude, longitude FROM complete_contact_tracking 
+                    WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
+                    AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
+                    ORDER BY last_heard DESC
+                    LIMIT 1
+                '''
+            
             prefix_pattern = f"{node_id}%"
             results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
             
@@ -793,8 +846,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(avg_distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Combined score: 80% proximity, 20% recency (proximity more important for message reception)
-            combined_score = (proximity_score * 0.8) + (recency_score * 0.2)
+            # Combined score: 70% proximity, 30% recency (proximity more important for message reception)
+            combined_score = (proximity_score * 0.7) + (recency_score * 0.3)
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
@@ -843,8 +896,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Combined score: 80% proximity, 20% recency (proximity more important for message reception)
-            combined_score = (proximity_score * 0.8) + (recency_score * 0.2)
+            # Combined score: 70% proximity, 30% recency (proximity more important for message reception)
+            combined_score = (proximity_score * 0.7) + (recency_score * 0.3)
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
@@ -918,9 +971,9 @@ class PathCommand(BaseCommand):
         """Send path response, splitting into multiple messages if necessary"""
         if len(response) <= 130:
             # Single message is fine
-            await self.bot.command_manager.send_response(message, response)
+            await self.send_response(message, response)
         else:
-            # Split into multiple messages
+            # Split into multiple messages for over-the-air transmission
             lines = response.split('\n')
             current_message = ""
             message_count = 0
@@ -933,7 +986,7 @@ class PathCommand(BaseCommand):
                         # Add ellipsis on new line to end of continued message (if not the last message)
                         if i < len(lines):
                             current_message += "\n..."
-                        await self.bot.command_manager.send_response(message, current_message.rstrip())
+                        await self.send_response(message, current_message.rstrip())
                         await asyncio.sleep(3.0)  # Delay between messages (same as other commands)
                         message_count += 1
                     
@@ -951,7 +1004,30 @@ class PathCommand(BaseCommand):
             
             # Send the last message if there's content
             if current_message:
-                await self.bot.command_manager.send_response(message, current_message)
+                await self.send_response(message, current_message)
+            
+            # Send the complete response to the bot for internal processing
+            # This ensures the bot receives the full response without ellipsis
+            await self._send_complete_response_to_bot(message, response)
+    
+    async def _send_complete_response_to_bot(self, message: MeshMessage, complete_response: str):
+        """Send the complete response to the bot for internal processing"""
+        try:
+            # Send complete response to web viewer for display using the correct method
+            if hasattr(self.bot, 'web_viewer_integration') and self.bot.web_viewer_integration:
+                # Use the capture_command method to store the complete response
+                self.bot.web_viewer_integration.capture_command(
+                    message=message,
+                    command_name="path",
+                    response=complete_response,
+                    success=True
+                )
+            
+            # Log the complete response for debugging
+            self.logger.info(f"Complete path response sent to bot: {complete_response}")
+            
+        except Exception as e:
+            self.logger.warning(f"Error sending complete response to bot: {e}")
     
     async def _extract_path_from_recent_messages(self) -> str:
         """Extract path from the current message's path information (same as test command)"""

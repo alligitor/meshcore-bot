@@ -1,0 +1,792 @@
+{% extends "base.html" %}
+
+{% block title %}Contacts - MeshCore Bot Data Viewer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-users"></i> Contacts
+        </h1>
+    </div>
+</div>
+
+<!-- Tracking Statistics -->
+<div class="row mb-4">
+    <!-- Active Contacts -->
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="fas fa-users"></i> Active Contacts
+            </div>
+            <div class="card-body d-flex align-items-center">
+                <div class="row text-center w-100">
+                    <div class="col-4">
+                        <h4 id="contacts-24h" class="text-primary">0</h4>
+                        <small class="text-muted">24h</small>
+                    </div>
+                    <div class="col-4">
+                        <h4 id="contacts-7d" class="text-info">0</h4>
+                        <small class="text-muted">7d</small>
+                    </div>
+                    <div class="col-4">
+                        <h4 id="contacts-all" class="text-success">0</h4>
+                        <small class="text-muted">All</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Advertisements -->
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="fas fa-broadcast-tower"></i> Advertisements
+            </div>
+            <div class="card-body d-flex align-items-center">
+                <div class="row text-center w-100">
+                    <div class="col-4">
+                        <h4 id="adverts-24h" class="text-primary">0</h4>
+                        <small class="text-muted">24h</small>
+                    </div>
+                    <div class="col-4">
+                        <h4 id="adverts-7d" class="text-info">0</h4>
+                        <small class="text-muted">7d</small>
+                    </div>
+                    <div class="col-4">
+                        <h4 id="adverts-all" class="text-success">0</h4>
+                        <small class="text-muted">All</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- New Devices -->
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="fas fa-plus-circle"></i> New Devices
+            </div>
+            <div class="card-body d-flex align-items-center">
+                <div class="row text-center w-100">
+                    <div class="col-4">
+                        <h4 id="new-companions" class="text-primary">0</h4>
+                        <small class="text-muted">Companions</small>
+                    </div>
+                    <div class="col-4">
+                        <h4 id="new-repeaters" class="text-info">0</h4>
+                        <small class="text-muted">Repeaters</small>
+                    </div>
+                    <div class="col-4">
+                        <h4 id="new-room-servers" class="text-success">0</h4>
+                        <small class="text-muted">Room Servers</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+        
+    <!-- Activity Trends -->
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="fas fa-chart-line"></i> Activity Trends
+            </div>
+            <div class="card-body d-flex align-items-center">
+                <div class="row text-center w-100">
+                    <div class="col-6">
+                        <div id="trend-today">
+                            <div class="loading">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div id="trend-week">
+                            <div class="loading">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+        </div>
+        
+<!-- Tracking Table -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-list"></i> Contact Activity
+                <div class="float-end d-flex gap-2">
+                    <div class="input-group" style="width: 300px;">
+                        <span class="input-group-text">
+                            <i class="fas fa-search"></i>
+                        </span>
+                        <input type="text" class="form-control" id="search-tracking" placeholder="Search contacts..." autocomplete="off">
+                    </div>
+                    <button class="btn btn-sm btn-primary" id="refresh-tracking">
+                        <i class="fas fa-sync"></i> Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                        <thead class="table-dark">
+                        <tr>
+                            <th class="sortable" data-sort="username">
+                                Name <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="role">
+                                Role <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="device_type">
+                                Device Type <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="location">
+                                Location <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="snr">
+                                SNR <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="hop_count">
+                                Hops <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="first_heard">
+                                First Heard <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable sort-active" data-sort="last_seen">
+                                Last Heard <i class="fas fa-sort-down"></i>
+                            </th>
+                            <th class="sortable" data-sort="advert_count">
+                                Adverts <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="is_currently_tracked">
+                                Tracked <i class="fas fa-sort"></i>
+                            </th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                        <tbody id="tracking-table-body">
+                            <tr>
+                                <td colspan="11" class="text-center">
+                                    <div class="loading">Loading tracking data...</div>
+                                </td>
+                            </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+        <script>
+class ModernTrackingManager {
+    constructor() {
+        this.trackingData = [];
+        this.filteredData = [];
+        this.searchTerm = '';
+        this.sortColumn = 'last_seen';
+        this.sortDirection = 'desc';
+        this.initializeTracking();
+    }
+    
+    async initializeTracking() {
+        await this.loadTrackingData();
+        this.setupEventHandlers();
+        this.applySort();
+        this.updateSortIcons();
+        this.renderTrackingData();
+        this.updateStatistics();
+    }
+    
+    async loadTrackingData() {
+        try {
+            const response = await fetch('/api/contacts');
+            const data = await response.json();
+            
+            if (data.error) {
+                this.showError('Failed to load tracking data: ' + data.error);
+                return;
+            }
+            
+            this.trackingData = data.tracking_data || [];
+            this.filteredData = [...this.trackingData];
+            
+        } catch (error) {
+            console.error('Error loading tracking data:', error);
+            this.showError('Failed to load tracking data: ' + error.message);
+        }
+    }
+    
+    setupEventHandlers() {
+        document.getElementById('refresh-tracking').addEventListener('click', () => {
+            this.loadTrackingData().then(() => {
+                this.applySearch();
+                this.applySort();
+                this.renderTrackingData();
+                this.updateStatistics();
+            });
+        });
+        
+        document.getElementById('search-tracking').addEventListener('input', (e) => {
+            this.searchTerm = e.target.value.toLowerCase().trim();
+            this.applySearch();
+            this.applySort();
+            this.renderTrackingData();
+            this.updateStatistics();
+        });
+        
+        // Add click handlers for sortable columns
+        document.querySelectorAll('.sortable').forEach(header => {
+            header.addEventListener('click', () => {
+                const column = header.dataset.sort;
+                this.setSort(column);
+                this.applySort();
+                this.renderTrackingData();
+                this.updateSortIcons();
+            });
+        });
+    }
+    
+    setSort(column) {
+        if (this.sortColumn === column) {
+            // Toggle direction if same column
+            this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            // New column, default to ascending
+            this.sortColumn = column;
+            this.sortDirection = 'asc';
+        }
+    }
+    
+    applySort() {
+        this.filteredData.sort((a, b) => {
+            let aValue = this.getSortValue(a, this.sortColumn);
+            let bValue = this.getSortValue(b, this.sortColumn);
+            
+            // Handle null/undefined values
+            if (aValue === null || aValue === undefined) aValue = '';
+            if (bValue === null || bValue === undefined) bValue = '';
+            
+            // Handle different data types
+            if (this.sortColumn === 'last_seen' || this.sortColumn === 'first_heard') {
+                // Date sorting
+                aValue = new Date(aValue);
+                bValue = new Date(bValue);
+            } else if (this.sortColumn === 'snr' || this.sortColumn === 'hop_count' || this.sortColumn === 'advert_count') {
+                // Numeric sorting
+                aValue = parseFloat(aValue) || 0;
+                bValue = parseFloat(bValue) || 0;
+            } else {
+                // String sorting
+                aValue = String(aValue).toLowerCase();
+                bValue = String(bValue).toLowerCase();
+            }
+            
+            let comparison = 0;
+            if (aValue < bValue) comparison = -1;
+            else if (aValue > bValue) comparison = 1;
+            
+            return this.sortDirection === 'desc' ? -comparison : comparison;
+        });
+    }
+    
+    getSortValue(contact, column) {
+        switch (column) {
+            case 'username':
+                return contact.username || '';
+            case 'role':
+                return contact.role || '';
+            case 'device_type':
+                return contact.device_type || '';
+            case 'location':
+                return this.getLocationString(contact);
+            case 'snr':
+                return contact.snr;
+            case 'hop_count':
+                return contact.hop_count;
+            case 'first_heard':
+                return contact.first_heard;
+            case 'last_seen':
+                return contact.last_seen;
+            case 'advert_count':
+                return contact.advert_count;
+            case 'is_currently_tracked':
+                return contact.is_currently_tracked ? 1 : 0;
+            default:
+                return '';
+        }
+    }
+    
+    getLocationString(contact) {
+        if (contact.city && contact.state) {
+            return `${contact.city}, ${contact.state}`;
+        } else if (contact.city) {
+            return contact.city;
+        } else if (contact.latitude && contact.longitude) {
+            return `${contact.latitude}, ${contact.longitude}`;
+        } else {
+            return '';
+        }
+    }
+    
+    updateSortIcons() {
+        // Remove all sort icons
+        document.querySelectorAll('.sortable i').forEach(icon => {
+            icon.className = 'fas fa-sort';
+        });
+        
+        // Remove active class from all headers
+        document.querySelectorAll('.sortable').forEach(header => {
+            header.classList.remove('sort-active');
+        });
+        
+        // Add active class and correct icon to current sort column
+        const activeHeader = document.querySelector(`[data-sort="${this.sortColumn}"]`);
+        if (activeHeader) {
+            activeHeader.classList.add('sort-active');
+            const icon = activeHeader.querySelector('i');
+            if (icon) {
+                icon.className = this.sortDirection === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down';
+            }
+        }
+    }
+    
+    applySearch() {
+        if (!this.searchTerm) {
+            this.filteredData = [...this.trackingData];
+            return;
+        }
+        
+        this.filteredData = this.trackingData.filter(contact => {
+            // Search in all text fields (case-insensitive)
+            const searchableFields = [
+                contact.username || '',
+                contact.role || '',
+                contact.device_type || '',
+                contact.city || '',
+                contact.state || '',
+                contact.country || ''
+            ];
+            
+            // For public key, only match from the beginning
+            const publicKey = contact.user_id || '';
+            const publicKeyMatch = publicKey.toLowerCase().startsWith(this.searchTerm);
+            
+            // For other fields, match anywhere in the string
+            const otherFieldsMatch = searchableFields.some(field => 
+                field.toLowerCase().includes(this.searchTerm)
+            );
+            
+            return publicKeyMatch || otherFieldsMatch;
+        });
+    }
+    
+    renderTrackingData() {
+        const tbody = document.getElementById('tracking-table-body');
+        
+        if (this.filteredData.length === 0) {
+            const message = this.searchTerm ? 
+                `No contacts match "${this.searchTerm}"` : 
+                'No tracking data available';
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="11" class="text-center text-muted">
+                        ${message}
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+        
+        tbody.innerHTML = this.filteredData.map(contact => `
+            <tr>
+                <td>
+                    <strong>${contact.username || 'Unknown'}</strong>
+                    <br>
+                    <small class="text-muted">${contact.user_id ? contact.user_id.substring(0, 16) + '...' : 'Unknown'}</small>
+                </td>
+                <td><span class="badge bg-info">${contact.role || 'Unknown'}</span></td>
+                <td><span class="badge bg-secondary">${contact.device_type || 'Unknown'}</span></td>
+                <td>${this.formatLocation(contact)}</td>
+                <td>${this.formatSignal(contact)}</td>
+                <td><span class="badge bg-primary">${contact.hop_count || 0}</span></td>
+                <td>${this.formatTimestamp(contact.first_heard)}</td>
+                <td>${this.formatTimeAgo(contact.last_seen)}</td>
+                <td><span class="badge bg-success">${contact.advert_count || 0}</span></td>
+                <td><span class="badge bg-warning">${contact.is_currently_tracked ? 'Yes' : 'No'}</span></td>
+                <td>
+                    <button class="btn btn-sm btn-outline-info" onclick="trackingManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
+                        <i class="fas fa-info-circle"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    }
+    
+    updateStatistics() {
+        const now = new Date();
+        const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        
+        // Calculate time-based metrics
+        const contacts24h = this.filteredData.filter(contact => {
+            const lastSeen = new Date(contact.last_seen);
+            return lastSeen >= oneDayAgo;
+        }).length;
+        
+        const contacts7d = this.filteredData.filter(contact => {
+            const lastSeen = new Date(contact.last_seen);
+            return lastSeen >= oneWeekAgo;
+        }).length;
+        
+        const contactsAll = this.filteredData.length;
+        
+        // Calculate advertisement metrics
+        const adverts24h = this.filteredData.filter(contact => {
+            const lastSeen = new Date(contact.last_seen);
+            return lastSeen >= oneDayAgo;
+        }).reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
+        
+        const adverts7d = this.filteredData.filter(contact => {
+            const lastSeen = new Date(contact.last_seen);
+            return lastSeen >= oneWeekAgo;
+        }).reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
+        
+        const advertsAll = this.filteredData.reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
+        
+        // Calculate new device metrics (devices first seen in the last 7 days)
+        // Debug: Log device types to see what we're working with
+        const deviceTypes = [...new Set(this.filteredData.map(contact => contact.device_type))];
+        console.log('Available device types:', deviceTypes);
+        console.log('Sample contact data:', this.filteredData[0]);
+        
+        // Also check for any devices first heard in the last week regardless of type
+        const anyNewDevices = this.filteredData.filter(contact => {
+            const firstHeard = new Date(contact.first_heard);
+            return firstHeard >= oneWeekAgo;
+        });
+        console.log('Any new devices in last week:', anyNewDevices.length);
+        console.log('Sample new device:', anyNewDevices[0]);
+        
+        // Try different possible device type values
+        const newCompanions = this.filteredData.filter(contact => {
+            const firstHeard = new Date(contact.first_heard);
+            const deviceType = (contact.device_type || '').toLowerCase();
+            return firstHeard >= oneWeekAgo && (
+                deviceType === 'companion' || 
+                deviceType === 'companions' ||
+                deviceType.includes('companion')
+            );
+        }).length;
+        
+        const newRepeaters = this.filteredData.filter(contact => {
+            const firstHeard = new Date(contact.first_heard);
+            const deviceType = (contact.device_type || '').toLowerCase();
+            return firstHeard >= oneWeekAgo && (
+                deviceType === 'repeater' || 
+                deviceType === 'repeaters' ||
+                deviceType.includes('repeater')
+            );
+        }).length;
+        
+        const newRoomServers = this.filteredData.filter(contact => {
+            const firstHeard = new Date(contact.first_heard);
+            const deviceType = (contact.device_type || '').toLowerCase();
+            return firstHeard >= oneWeekAgo && (
+                deviceType === 'room_server' || 
+                deviceType === 'roomserver' ||
+                deviceType === 'room_servers' ||
+                deviceType.includes('room') ||
+                deviceType.includes('server')
+            );
+        }).length;
+        
+        // Debug: Log the counts
+        console.log('New companions:', newCompanions);
+        console.log('New repeaters:', newRepeaters);
+        console.log('New room servers:', newRoomServers);
+        
+        // Update contact metrics
+        document.getElementById('contacts-24h').textContent = contacts24h;
+        document.getElementById('contacts-7d').textContent = contacts7d;
+        document.getElementById('contacts-all').textContent = contactsAll;
+        
+        // Update advertisement metrics
+        document.getElementById('adverts-24h').textContent = adverts24h;
+        document.getElementById('adverts-7d').textContent = adverts7d;
+        document.getElementById('adverts-all').textContent = advertsAll;
+        
+        // Update new device metrics
+        document.getElementById('new-companions').textContent = newCompanions;
+        document.getElementById('new-repeaters').textContent = newRepeaters;
+        document.getElementById('new-room-servers').textContent = newRoomServers;
+        
+        // Update activity trends
+        this.updateActivityTrends(contacts24h, contacts7d, contactsAll);
+    }
+    
+    updateActivityTrends(contacts24h, contacts7d, contactsAll) {
+        // Today's trend (24h vs 7d average)
+        const dailyAverage = contacts7d / 7;
+        const todayTrend = dailyAverage > 0 ? Math.round((contacts24h / dailyAverage) * 100) : 0;
+        const todayTrendIcon = todayTrend > 100 ? '📈' : todayTrend < 100 ? '📉' : '➡️';
+        
+        document.getElementById('trend-today').innerHTML = `
+            <div class="text-center">
+                <h5 class="mb-1">${contacts24h}</h5>
+                <div class="d-flex justify-content-center align-items-center">
+                    <span class="me-1">${todayTrendIcon}</span>
+                    <span class="badge bg-${todayTrend > 100 ? 'success' : todayTrend < 100 ? 'warning' : 'secondary'} small">
+                        ${todayTrend}%
+                    </span>
+                </div>
+                <small class="text-muted">Today</small>
+            </div>
+        `;
+        
+        // Week's trend (7d vs all time)
+        const weekTrend = contactsAll > 0 ? Math.round((contacts7d / contactsAll) * 100) : 0;
+        const weekTrendIcon = weekTrend > 50 ? '📈' : weekTrend < 30 ? '📉' : '➡️';
+        
+        document.getElementById('trend-week').innerHTML = `
+            <div class="text-center">
+                <h5 class="mb-1">${contacts7d}</h5>
+                <div class="d-flex justify-content-center align-items-center">
+                    <span class="me-1">${weekTrendIcon}</span>
+                    <span class="badge bg-${weekTrend > 50 ? 'success' : weekTrend < 30 ? 'warning' : 'secondary'} small">
+                        ${weekTrend}%
+                    </span>
+                </div>
+                <small class="text-muted">Week</small>
+            </div>
+        `;
+    }
+    
+    formatLastSeen(lastSeen) {
+        if (!lastSeen) return 'Never';
+        
+        const date = new Date(lastSeen);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHours / 24);
+        const diffWeeks = Math.floor(diffDays / 7);
+        const diffMonths = Math.floor(diffDays / 30);
+        
+        if (diffMonths > 0) {
+            return `${diffMonths}mo ago`;
+        } else if (diffWeeks > 0) {
+            return `${diffWeeks}w ago`;
+        } else if (diffDays > 0) {
+            return `${diffDays}d ago`;
+        } else if (diffHours > 0) {
+            return `${diffHours}h ago`;
+        } else if (diffMinutes > 0) {
+            return `${diffMinutes}m ago`;
+                                } else {
+            return 'Just now';
+        }
+    }
+    
+    formatLastMessage(lastMessage) {
+        if (!lastMessage) return 'Never';
+        
+        const date = new Date(lastMessage);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHours / 24);
+        const diffWeeks = Math.floor(diffDays / 7);
+        const diffMonths = Math.floor(diffDays / 30);
+        
+        if (diffMonths > 0) {
+            return `${diffMonths}mo ago`;
+        } else if (diffWeeks > 0) {
+            return `${diffWeeks}w ago`;
+        } else if (diffDays > 0) {
+            return `${diffDays}d ago`;
+        } else if (diffHours > 0) {
+            return `${diffHours}h ago`;
+        } else if (diffMinutes > 0) {
+            return `${diffMinutes}m ago`;
+                        } else {
+            return 'Just now';
+        }
+    }
+    
+    getStatusBadge(lastSeen) {
+        if (!lastSeen) return '<span class="badge bg-secondary">Unknown</span>';
+        
+        const date = new Date(lastSeen);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        
+        if (diffHours < 1) {
+            return '<span class="badge bg-success">Online</span>';
+        } else if (diffHours < 24) {
+            return '<span class="badge bg-warning">Recent</span>';
+                    } else {
+            return '<span class="badge bg-secondary">Offline</span>';
+        }
+    }
+    
+    formatLocation(contact) {
+        if (contact.city && contact.state) {
+            return `${contact.city}, ${contact.state}`;
+        } else if (contact.city) {
+            return contact.city;
+        } else if (contact.latitude && contact.longitude) {
+            return `${contact.latitude.toFixed(4)}, ${contact.longitude.toFixed(4)}`;
+        } else {
+            return '<span class="text-muted">Unknown</span>';
+        }
+    }
+    
+    formatSignal(contact) {
+        if (contact.snr !== null && contact.snr !== undefined) {
+            const snr = parseFloat(contact.snr);
+            if (snr > 0) {
+                return `<span class="badge bg-success">${snr.toFixed(1)} dB</span>`;
+            } else {
+                return `<span class="badge bg-warning">${snr.toFixed(1)} dB</span>`;
+            }
+        } else {
+            return '<span class="text-muted">N/A</span>';
+        }
+    }
+    
+    formatTimestamp(timestamp) {
+        if (!timestamp) return '<span class="text-muted">Never</span>';
+        
+        const date = new Date(timestamp);
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+    }
+    
+    formatTimeAgo(timestamp) {
+        if (!timestamp) return '<span class="text-muted">Never</span>';
+        
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHours / 24);
+        const diffWeeks = Math.floor(diffDays / 7);
+        const diffMonths = Math.floor(diffDays / 30);
+        
+        if (diffMonths > 0) {
+            return `${diffMonths}mo ago`;
+        } else if (diffWeeks > 0) {
+            return `${diffWeeks}w ago`;
+        } else if (diffDays > 0) {
+            return `${diffDays}d ago`;
+        } else if (diffHours > 0) {
+            return `${diffHours}h ago`;
+        } else if (diffMinutes > 0) {
+            return `${diffMinutes}m ago`;
+        } else {
+            return '<span class="text-success">Just now</span>';
+        }
+    }
+    
+    viewAdvertData(userId) {
+        // Find the contact data
+        const contact = this.filteredData.find(c => c.user_id === userId);
+        if (!contact) {
+            alert('Contact data not found');
+            return;
+        }
+        
+        // Create a modal to display the advertisement data
+        const modalHtml = `
+            <div class="modal fade" id="advertModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Advertisement Data - ${contact.username || 'Unknown'}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <pre class="bg-light p-3 rounded">${JSON.stringify(contact.raw_advert_data_parsed || contact.raw_advert_data || 'No advertisement data available', null, 2)}</pre>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+                                    </div>
+        `;
+        
+        // Remove existing modal if any
+        const existingModal = document.getElementById('advertModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+        
+        // Add modal to page
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('advertModal'));
+        modal.show();
+    }
+    
+    showError(message) {
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'error';
+        errorDiv.textContent = message;
+        
+        const content = document.querySelector('.container-fluid');
+        if (content) {
+            content.insertBefore(errorDiv, content.firstChild);
+            
+            setTimeout(() => {
+                if (errorDiv.parentNode) {
+                    errorDiv.parentNode.removeChild(errorDiv);
+                }
+            }, 5000);
+        }
+    }
+}
+
+// Initialize tracking manager when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    window.trackingManager = new ModernTrackingManager();
+        });
+        </script>
+
+<style>
+/* Sortable column styling - subtle and clean */
+.sortable {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    transition: all 0.2s ease;
+}
+
+.sortable i {
+    margin-left: 5px;
+    opacity: 0.5;
+    transition: opacity 0.2s ease;
+    font-size: 0.8em;
+}
+
+.sortable:hover i {
+    opacity: 0.8;
+}
+
+.sort-active i {
+    opacity: 1;
+    color: #0d6efd !important;
+}
+</style>
+{% endblock %}

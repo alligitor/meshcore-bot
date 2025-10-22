@@ -12,6 +12,7 @@ import random
 from typing import Dict, List, Optional, Any, Tuple
 from .base_command import BaseCommand
 from ..models import MeshMessage
+from ..utils import abbreviate_location, format_location_for_display
 
 
 class PrefixCommand(BaseCommand):
@@ -38,6 +39,7 @@ class PrefixCommand(BaseCommand):
         # Get geolocation settings from config
         self.show_repeater_locations = self.bot.config.getboolean('Prefix_Command', 'show_repeater_locations', fallback=True)
         self.use_reverse_geocoding = self.bot.config.getboolean('Prefix_Command', 'use_reverse_geocoding', fallback=True)
+        self.hide_source = self.bot.config.getboolean('Prefix_Command', 'hide_source', fallback=False)
     
     def get_help_text(self) -> str:
         if not self.api_url or self.api_url.strip() == "":
@@ -135,8 +137,52 @@ class PrefixCommand(BaseCommand):
         
         return None
     
+    def _find_flexible_match(self, api_name: str, db_locations: Dict[str, str]) -> Optional[str]:
+        """
+        Find a flexible match for an API name in the database locations.
+        
+        Matching strategy:
+        1. Exact match (highest priority)
+        2. Version number variations (e.g., "Name v4" matches "Name")
+        3. Partial match (e.g., "DN Field Repeater" matches "DN Field Repeater v4")
+        
+        Preserves numbered nodes (e.g., "Airhack 1" vs "Airhack 2" remain distinct)
+        """
+        # First try exact match
+        if api_name in db_locations:
+            return api_name
+        
+        # Try version number variations
+        # Remove common version patterns: v1, v2, v3, v4, v5, etc.
+        import re
+        base_name = re.sub(r'\s+v\d+$', '', api_name, flags=re.IGNORECASE)
+        
+        if base_name != api_name:  # Version was removed
+            # Try to find a database entry that matches the base name
+            for db_name in db_locations.keys():
+                if db_name.lower() == base_name.lower():
+                    return db_name
+                # Also try with version numbers
+                for version in ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9']:
+                    versioned_name = f"{base_name} {version}"
+                    if db_name.lower() == versioned_name.lower():
+                        return db_name
+        
+        # Try partial matching (but be careful with numbered nodes)
+        # Only do partial matching if the API name is shorter than the DB name
+        # This helps with cases like "DN Field Repeater" matching "DN Field Repeater v4"
+        for db_name in db_locations.keys():
+            # Check if API name is a prefix of DB name (but not vice versa)
+            if (len(api_name) < len(db_name) and 
+                db_name.lower().startswith(api_name.lower()) and
+                # Avoid matching numbered nodes (e.g., "Airhack" shouldn't match "Airhack 1")
+                not re.search(r'\s+\d+$', api_name)):  # API name doesn't end with a number
+                return db_name
+        
+        return None
+    
     def _enhance_api_data_with_locations(self, api_data: Dict[str, Any], db_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Enhance API data with location information from local database"""
+        """Enhance API data with location information from local database using flexible matching"""
         try:
             # Create a mapping of repeater names to location data from database
             db_locations = {}
@@ -145,17 +191,21 @@ class PrefixCommand(BaseCommand):
                 if ' (' in db_repeater and db_repeater.endswith(')'):
                     name, location = db_repeater.rsplit(' (', 1)
                     location = location.rstrip(')')
+                    # Store just the city/neighborhood part (not full location)
                     db_locations[name] = location
                 else:
                     # No location data in database
                     db_locations[db_repeater] = None
             
-            # Enhance API node names with location data
+            # Enhance API node names with location data using flexible matching
             enhanced_names = []
             for api_name in api_data.get('node_names', []):
-                # Check if we have location data for this repeater
-                if api_name in db_locations and db_locations[api_name]:
-                    enhanced_name = f"{api_name} ({db_locations[api_name]})"
+                # Try to find a flexible match
+                matched_db_name = self._find_flexible_match(api_name, db_locations)
+                
+                if matched_db_name and db_locations[matched_db_name]:
+                    # Use the API name but add location from database
+                    enhanced_name = f"{api_name} ({db_locations[matched_db_name]})"
                 else:
                     enhanced_name = api_name
                 enhanced_names.append(enhanced_name)
@@ -224,12 +274,12 @@ class PrefixCommand(BaseCommand):
         try:
             self.logger.info(f"Looking up prefix '{prefix}' in local database")
             
-            # Query the repeater_contacts table for repeaters with matching prefix
+            # Query the complete_contact_tracking table for repeaters with matching prefix
             # Include inactive repeaters for location enhancement (they still have valid location data)
             query = '''
-                SELECT name, public_key, device_type, last_seen, latitude, longitude, city, state, country
-                FROM repeater_contacts 
-                WHERE public_key LIKE ?
+                SELECT name, public_key, device_type, last_heard as last_seen, latitude, longitude, city, state, country, role
+                FROM complete_contact_tracking 
+                WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
                 ORDER BY name
             '''
             
@@ -256,19 +306,17 @@ class PrefixCommand(BaseCommand):
                 
                 # Add location information if enabled and available
                 if self.show_repeater_locations:
-                    location_parts = []
-                    
-                    # Add city if available
-                    if row['city']:
-                        location_parts.append(row['city'])
-                    
-                    # Add state if available and different from city
-                    if row['state'] and row['state'] not in location_parts:
-                        location_parts.append(row['state'])
+                    # Use the utility function to format location with abbreviation
+                    location_str = format_location_for_display(
+                        city=row['city'],
+                        state=row['state'],
+                        country=row['country'],
+                        max_length=20  # Reasonable limit for location in prefix output
+                    )
                     
                     # If we have coordinates but no city, try reverse geocoding
                     # Skip 0,0 coordinates as they indicate "hidden" location
-                    if (not location_parts and 
+                    if (not location_str and 
                         row['latitude'] is not None and 
                         row['longitude'] is not None and 
                         not (row['latitude'] == 0.0 and row['longitude'] == 0.0) and
@@ -280,7 +328,7 @@ class PrefixCommand(BaseCommand):
                                     row['latitude'], row['longitude']
                                 )
                                 if city:
-                                    location_parts.append(city)
+                                    location_str = abbreviate_location(city, 20)
                             else:
                                 # Fallback to basic geocoding
                                 from geopy.geocoders import Nominatim
@@ -288,19 +336,21 @@ class PrefixCommand(BaseCommand):
                                 location = geolocator.reverse(f"{row['latitude']}, {row['longitude']}")
                                 if location:
                                     address = location.raw.get('address', {})
-                                    city = (address.get('city') or
-                                           address.get('town') or
-                                           address.get('village') or
-                                           address.get('hamlet') or
-                                           address.get('municipality'))
-                                    if city:
-                                        location_parts.append(city)
+                                    # Try neighborhood first, then city, then town, etc.
+                                    raw_location = (address.get('neighbourhood') or
+                                                  address.get('suburb') or
+                                                  address.get('city') or
+                                                  address.get('town') or
+                                                  address.get('village') or
+                                                  address.get('hamlet') or
+                                                  address.get('municipality'))
+                                    if raw_location:
+                                        location_str = abbreviate_location(raw_location, 20)
                         except Exception as e:
                             self.logger.debug(f"Error reverse geocoding {row['latitude']}, {row['longitude']}: {e}")
                     
                     # Add location to name if we have any location info
-                    if location_parts:
-                        location_str = ", ".join(location_parts)
+                    if location_str:
                         name += f" ({location_str})"
                 
                 node_names.append(name)
@@ -339,8 +389,8 @@ class PrefixCommand(BaseCommand):
             try:
                 query = '''
                     SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
-                    FROM repeater_contacts 
-                    WHERE is_active = 1 
+                    FROM complete_contact_tracking 
+                    WHERE role IN ('repeater', 'roomserver')
                     AND LENGTH(public_key) >= 2
                 '''
                 results = self.bot.db_manager.execute_query(query)
@@ -420,20 +470,24 @@ class PrefixCommand(BaseCommand):
         for i, name in enumerate(node_names, 1):
             response += f"{i}. {name}\n"
         
-        # Add source info
-        if source == 'database':
-            # No additional info needed for database responses
-            pass
+        # Add source info (unless hidden by config)
+        if not self.hide_source:
+            if source == 'database':
+                # No additional info needed for database responses
+                pass
+            else:
+                # Add API source info - extract domain from API URL
+                try:
+                    from urllib.parse import urlparse
+                    parsed_url = urlparse(self.api_url)
+                    domain = parsed_url.netloc
+                    response += f"\nSource: {domain}"
+                except Exception:
+                    # Fallback if URL parsing fails
+                    response += f"\nSource: API"
         else:
-            # Add API source info - extract domain from API URL
-            try:
-                from urllib.parse import urlparse
-                parsed_url = urlparse(self.api_url)
-                domain = parsed_url.netloc
-                response += f"\nSource: {domain}"
-            except Exception:
-                # Fallback if URL parsing fails
-                response += f"\nSource: API"
+            # Remove trailing newline when source is hidden
+            response = response.rstrip('\n')
         
         return response
     

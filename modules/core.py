@@ -11,6 +11,8 @@ import colorlog
 import time
 import threading
 import schedule
+import signal
+import atexit
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -46,6 +48,9 @@ class MeshCoreBot:
         self.meshcore = None
         self.connected = False
         
+        # Bot start time for uptime tracking
+        self.start_time = time.time()
+        
         # Initialize database manager first (needed by plugins)
         db_path = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
         self.logger.info(f"Initializing database manager with database: {db_path}")
@@ -56,6 +61,25 @@ class MeshCoreBot:
         except Exception as e:
             self.logger.error(f"Failed to initialize database manager: {e}")
             raise
+        
+        # Store start time in database for web viewer access
+        try:
+            self.db_manager.set_bot_start_time(self.start_time)
+            self.logger.info("Bot start time stored in database")
+        except Exception as e:
+            self.logger.warning(f"Could not store start time in database: {e}")
+        
+        # Initialize web viewer integration (after database manager)
+        try:
+            from .web_viewer.integration import WebViewerIntegration
+            self.web_viewer_integration = WebViewerIntegration(self)
+            self.logger.info("Web viewer integration initialized")
+            
+            # Register cleanup handler for web viewer
+            atexit.register(self._cleanup_web_viewer)
+        except Exception as e:
+            self.logger.warning(f"Web viewer integration failed: {e}")
+            self.web_viewer_integration = None
         
         # Initialize modules
         self.rate_limiter = RateLimiter(
@@ -212,6 +236,17 @@ startup_advert = false
 # false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
 auto_manage_contacts = false
 
+[Admin_ACL]
+# Admin Access Control List (ACL) for restricted commands
+# Only users with public keys listed here can execute admin commands
+# Format: comma-separated list of public keys (without spaces)
+# Example: f5d2b56d19b24412756933e917d4632e088cdd5daeadc9002feca73bf5d2b56d,another_key_here
+admin_pubkeys = 
+
+# Commands that require admin access (comma-separated)
+# These commands will only work for users in the admin_pubkeys list
+admin_commands = repeater
+
 [Keywords]
 # Keyword-response pairs (keyword = response format)
 # Available fields: {sender}, {connection_info}, {snr}, {timestamp}, {path}
@@ -316,6 +351,22 @@ repeater_prefix_api_url =
 # Recommended: 1-6 hours (data doesn't change frequently)
 repeater_prefix_cache_hours = 1
 
+[Prefix_Command]
+# Enable or disable repeater geolocation in prefix command
+# true: Show city names with repeaters when location data is available
+# false: Show only repeater names without location information
+show_repeater_locations = true
+
+# Use reverse geocoding for coordinates without city names
+# true: Automatically look up city names from GPS coordinates
+# false: Only show coordinates if no city name is available
+use_reverse_geocoding = true
+
+# Hide prefix source information
+# true: Hide "Source: domain.com" line from prefix command output
+# false: Show source information (default)
+hide_source = false
+
 [Weather]
 # Default state for city name disambiguation
 # When users type "wx seattle", it will search for "seattle, WA, USA"
@@ -410,6 +461,33 @@ use_zulu_time = false
         
         # Log the configuration for debugging
         self.logger.info(f"Logging configured - Bot: {logging.getLevelName(log_level)}, MeshCore: {logging.getLevelName(meshcore_log_level)}")
+        
+        # Setup routing info capture for web viewer
+        self._setup_routing_capture()
+        
+        # Setup signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+    
+    def _setup_routing_capture(self):
+        """Setup routing information capture for web viewer"""
+        # Web viewer doesn't need complex routing capture
+        # It uses direct database access instead of complex integration
+        if not (hasattr(self, 'web_viewer_integration') and 
+                self.web_viewer_integration):
+            return
+        
+        self.logger.info("Web viewer routing capture setup complete")
+    
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown"""
+        def signal_handler(signum, frame):
+            self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            self._cleanup_web_viewer()
+            # Let the main loop handle the rest of the shutdown
+        
+        # Register signal handlers
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
     
     async def connect(self) -> bool:
         """Connect to MeshCore node using official package"""
@@ -546,6 +624,11 @@ use_zulu_time = false
         # Start scheduler thread
         self.scheduler.start()
         
+        # Start web viewer if enabled
+        if self.web_viewer_integration and self.web_viewer_integration.enabled:
+            self.web_viewer_integration.start_viewer()
+            self.logger.info("Web viewer started")
+        
         # Send startup advert if enabled
         await self.send_startup_advert()
         
@@ -553,7 +636,28 @@ use_zulu_time = false
         self.logger.info("Bot is running. Press Ctrl+C to stop.")
         try:
             while self.connected:
-                await asyncio.sleep(1)
+                # Monitor web viewer process and health
+                if self.web_viewer_integration and self.web_viewer_integration.enabled:
+                    # Check if process died
+                    if (self.web_viewer_integration and 
+                        self.web_viewer_integration.viewer_process and 
+                        self.web_viewer_integration.viewer_process.poll() is not None):
+                        try:
+                            self.logger.warning("Web viewer process died, restarting...")
+                        except (AttributeError, TypeError):
+                            print("Web viewer process died, restarting...")
+                        self.web_viewer_integration.restart_viewer()
+                    
+                    # Simple health check for web viewer
+                    if (self.web_viewer_integration and 
+                        not self.web_viewer_integration.is_viewer_healthy()):
+                        try:
+                            self.logger.warning("Web viewer health check failed, restarting...")
+                            self.web_viewer_integration.restart_viewer()
+                        except (AttributeError, TypeError) as e:
+                            print(f"Web viewer health check failed: {e}")
+                
+                await asyncio.sleep(5)  # Check every 5 seconds
         except KeyboardInterrupt:
             self.logger.info("Received interrupt signal")
         finally:
@@ -561,13 +665,45 @@ use_zulu_time = false
     
     async def stop(self):
         """Stop the bot"""
-        self.logger.info("Stopping MeshCore Bot...")
+        try:
+            self.logger.info("Stopping MeshCore Bot...")
+        except (AttributeError, TypeError):
+            print("Stopping MeshCore Bot...")
+        
         self.connected = False
+        
+        # Stop web viewer with proper shutdown sequence
+        if self.web_viewer_integration:
+            # Web viewer has simpler shutdown
+            self.web_viewer_integration.stop_viewer()
+            try:
+                self.logger.info("Web viewer stopped")
+            except (AttributeError, TypeError):
+                print("Web viewer stopped")
         
         if self.meshcore:
             await self.meshcore.disconnect()
         
-        self.logger.info("Bot stopped")
+        try:
+            self.logger.info("Bot stopped")
+        except (AttributeError, TypeError):
+            print("Bot stopped")
+    
+    def _cleanup_web_viewer(self):
+        """Cleanup web viewer on exit"""
+        try:
+            if hasattr(self, 'web_viewer_integration') and self.web_viewer_integration:
+                # Web viewer has simpler cleanup
+                self.web_viewer_integration.stop_viewer()
+                try:
+                    self.logger.info("Web viewer cleanup completed")
+                except (AttributeError, TypeError):
+                    print("Web viewer cleanup completed")
+        except Exception as e:
+            try:
+                self.logger.error(f"Error during web viewer cleanup: {e}")
+            except (AttributeError, TypeError):
+                print(f"Error during web viewer cleanup: {e}")
     
     async def send_startup_advert(self):
         """Send a startup advert if enabled in config"""

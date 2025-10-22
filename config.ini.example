@@ -79,6 +79,17 @@ bot_latitude = 40.7128
 # Example: -74.0060 for New York City, -123.00 for Victoria BC
 bot_longitude = -74.0060
 
+[Admin_ACL]
+# Admin Access Control List (ACL) for restricted commands
+# Only users with public keys listed here can execute admin commands
+# Format: comma-separated list of public keys (without spaces)
+# Example: 3e14a5fa9c52e7b6b8e14f987cd12ab1e3dc9fb64a2bbf0e19dca85e9f43a120, another key here
+admin_pubkeys = 
+
+# Commands that require admin access (comma-separated)
+# These commands will only work for users in the admin_pubkeys list
+admin_commands = repeater,webviewer
+
 [Jokes]
 # Enable or disable the joke command
 # true: Joke command is available
@@ -225,6 +236,22 @@ repeater_prefix_api_url =
 # Recommended: 1-6 hours (data doesn't change frequently)
 repeater_prefix_cache_hours = 1
 
+[Prefix_Command]
+# Enable or disable repeater geolocation in prefix command
+# true: Show city names with repeaters when location data is available
+# false: Show only repeater names without location information
+show_repeater_locations = true
+
+# Use reverse geocoding for coordinates without city names
+# true: Automatically look up city names from GPS coordinates
+# false: Only show coordinates if no city name is available
+use_reverse_geocoding = true
+
+# Hide prefix source information
+# true: Hide "Source: domain.com" line from prefix command output
+# false: Show source information (default)
+hide_source = false
+
 [Weather]
 # Default state for city name disambiguation
 # When users type "wx seattle", it will search for "seattle, WA, USA"
@@ -359,3 +386,28 @@ max_proximity_range = 200
 # true: Hacker command is available (responds to Linux commands with supervillain mainframe errors)
 # false: Hacker command is disabled
 hacker_enabled = false
+
+[Web_Viewer]
+# Enable or disable the web data viewer
+# true: web viewer is available for viewing bot data
+# false: web viewer is disabled
+enabled = true
+
+# Web viewer host address
+# 127.0.0.1: Only accessible from localhost
+# 0.0.0.0: Accessible from any network interface
+host = 127.0.0.1
+
+# Web viewer port
+# Default: 8080 (viewer uses port 8080)
+port = 8080
+
+# Enable debug mode for the web viewer
+# true: Enable Flask debug mode (auto-reload on changes)
+# false: Production mode
+debug = false
+
+# Auto-start web viewer with bot
+# true: Start web viewer automatically when bot starts
+# false: Start web viewer manually
+auto_start = false

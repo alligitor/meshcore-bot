@@ -111,7 +111,7 @@ class RepeaterCommand(BaseCommand):
         # Handle multi-message responses (like locations command)
         if isinstance(response, tuple) and response[0] == "multi_message":
             # Send first message
-            await self.bot.command_manager.send_response(message, response[1])
+            await self.send_response(message, response[1])
             
             # Wait for bot TX rate limiter to allow next message
             import asyncio
@@ -121,10 +121,10 @@ class RepeaterCommand(BaseCommand):
             await asyncio.sleep(sleep_time)
             
             # Send second message
-            await self.bot.command_manager.send_response(message, response[2])
+            await self.send_response(message, response[2])
         else:
             # Send single message as usual
-            await self.bot.command_manager.send_response(message, response)
+            await self.send_response(message, response)
         
         return True
     
@@ -568,7 +568,7 @@ class RepeaterCommand(BaseCommand):
         try:
             stats = await self.bot.repeater_manager.get_contact_statistics()
             
-            response = "📊 **Complete Contact Tracking Statistics:**\n\n"
+            response = "📊 **Contact Tracking Statistics:**\n\n"
             response += f"• **Total Contacts Ever Heard:** {stats.get('total_heard', 0)}\n"
             response += f"• **Currently Tracked by Device:** {stats.get('currently_tracked', 0)}\n"
             response += f"• **Recent Activity (24h):** {stats.get('recent_activity', 0)}\n\n"
@@ -1018,14 +1018,59 @@ class RepeaterCommand(BaseCommand):
                 status = await self._get_geocoding_status()
                 return status
             elif args[0] == "trigger":
-                # Manually trigger background geocoding
+                # Manually trigger background geocoding (single contact)
                 await self.bot.repeater_manager._background_geocoding()
-                return "🌍 Background geocoding triggered"
+                return "🌍 Background geocoding triggered (1 contact)"
+            elif args[0] == "bulk":
+                # Trigger bulk geocoding for multiple contacts
+                batch_size = 10
+                if len(args) > 1 and args[1].isdigit():
+                    batch_size = int(args[1])
+                    batch_size = min(batch_size, 50)  # Cap at 50 for safety
+                
+                result = await self.bot.repeater_manager.populate_missing_geolocation_data(
+                    dry_run=False, 
+                    batch_size=batch_size
+                )
+                
+                if 'error' in result:
+                    return f"❌ Bulk geocoding error: {result['error']}"
+                
+                return (f"🌍 Bulk geocoding completed:\n"
+                       f"Found: {result['total_found']} contacts\n"
+                       f"Updated: {result['updated']} contacts\n"
+                       f"Errors: {result['errors']}\n"
+                       f"Skipped: {result['skipped']}")
+            elif args[0] == "dry-run":
+                # Test bulk geocoding without making changes
+                batch_size = 10
+                if len(args) > 1 and args[1].isdigit():
+                    batch_size = int(args[1])
+                    batch_size = min(batch_size, 50)
+                
+                result = await self.bot.repeater_manager.populate_missing_geolocation_data(
+                    dry_run=True, 
+                    batch_size=batch_size
+                )
+                
+                if 'error' in result:
+                    return f"❌ Dry run error: {result['error']}"
+                
+                return (f"🌍 Dry run results:\n"
+                       f"Would update: {result['updated']} contacts\n"
+                       f"Found: {result['total_found']} contacts\n"
+                       f"Errors: {result['errors']}\n"
+                       f"Skipped: {result['skipped']}\n"
+                       f"💡 Use '!repeater geocode bulk' to apply changes")
             elif args[0] == "status":
                 # Show detailed geocoding status
                 return await self._get_geocoding_status()
             else:
-                return "Usage: !repeater geocode [trigger|status]\n  trigger - Manually trigger geocoding\n  status - Show geocoding status"
+                return ("Usage: !repeater geocode [trigger|bulk|dry-run|status]\n"
+                       "  trigger - Geocode 1 contact\n"
+                       "  bulk [N] - Geocode up to N contacts (default: 10, max: 50)\n"
+                       "  dry-run [N] - Test geocoding without changes\n"
+                       "  status - Show geocoding status")
         except Exception as e:
             self.logger.error(f"Error in geocoding command: {e}")
             return f"❌ Geocoding error: {e}"

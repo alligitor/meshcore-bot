@@ -415,6 +415,12 @@ class CommandManager:
     async def send_response(self, message: MeshMessage, content: str) -> bool:
         """Unified method for sending responses to users"""
         try:
+            # Store the response content for web viewer capture
+            if hasattr(self, '_last_response'):
+                self._last_response = content
+            else:
+                self._last_response = content
+            
             if message.is_dm:
                 return await self.send_dm(message.sender_id, content)
             else:
@@ -443,9 +449,11 @@ class CommandManager:
                 self.logger.info(f"Command '{command_name}' matched, executing")
                 
                 # Check if command can execute (cooldown, DM requirements, etc.)
-                if not command.can_execute(message):
+                if not command.can_execute_now(message):
                     if command.requires_dm and not message.is_dm:
                         await self.send_response(message, f"Command '{command_name}' can only be used in DMs")
+                    elif command.requires_admin_access():
+                        await self.send_response(message, f"❌ Access denied: Command '{command_name}' requires admin privileges")
                     elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
                         # Check if it's the per-user version (takes user_id parameter)
                         import inspect
@@ -468,11 +476,46 @@ class CommandManager:
                             command._record_execution(message.sender_id)
                         else:
                             command._record_execution()
-                    await command.execute(message)
+                    
+                    # Execute the command
+                    success = await command.execute(message)
+                    
+                    # Capture command data for web viewer (with small delay to ensure response is set)
+                    if (hasattr(self.bot, 'web_viewer_integration') and 
+                        self.bot.web_viewer_integration and 
+                        self.bot.web_viewer_integration.bot_integration):
+                        try:
+                            # Small delay to ensure send_response has completed
+                            await asyncio.sleep(0.1)
+                            
+                            # Get the response that was sent (if any)
+                            response = "Command executed"  # Default response
+                            if hasattr(self, '_last_response') and self._last_response:
+                                response = self._last_response
+                            elif hasattr(command, 'last_response') and command.last_response:
+                                response = command.last_response
+                            
+                            self.bot.web_viewer_integration.bot_integration.capture_command(
+                                message, command_name, response, success if success is not None else True
+                            )
+                        except Exception as e:
+                            self.logger.debug(f"Failed to capture command data for web viewer: {e}")
+                    
                 except Exception as e:
                     self.logger.error(f"Error executing command '{command_name}': {e}")
                     # Send error message to user
                     await self.send_response(message, f"Error executing {command_name}: {e}")
+                    
+                    # Capture failed command for web viewer
+                    if (hasattr(self.bot, 'web_viewer_integration') and 
+                        self.bot.web_viewer_integration and 
+                        self.bot.web_viewer_integration.bot_integration):
+                        try:
+                            self.bot.web_viewer_integration.bot_integration.capture_command(
+                                message, command_name, f"Error: {e}", False
+                            )
+                        except Exception as capture_error:
+                            self.logger.debug(f"Failed to capture failed command data: {capture_error}")
                 return
     
     def get_plugin_by_keyword(self, keyword: str) -> Optional[BaseCommand]:
