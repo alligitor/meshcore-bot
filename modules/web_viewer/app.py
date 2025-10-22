@@ -153,10 +153,6 @@ class BotDataViewer:
             """Cache management page"""
             return render_template('cache.html')
         
-        @self.app.route('/purging')
-        def purging():
-            """Purging log page"""
-            return render_template('purging.html')
         
         @self.app.route('/stats')
         def stats():
@@ -232,15 +228,6 @@ class BotDataViewer:
                 self.logger.error(f"Error optimizing database: {e}")
                 return jsonify({'success': False, 'error': str(e)}), 500
         
-        @self.app.route('/api/purging')
-        def api_purging():
-            """Get purging log data"""
-            try:
-                purging = self._get_purging_data()
-                return jsonify(purging)
-            except Exception as e:
-                self.logger.error(f"Error getting purging: {e}")
-                return jsonify({'error': str(e)}), 500
         
         @self.app.route('/api/stream_data', methods=['POST'])
         def api_stream_data():
@@ -875,7 +862,6 @@ class BotDataViewer:
             'message_stats': 'Message statistics and analytics',
             'command_stats': 'Command execution statistics',
             'path_stats': 'Network path statistics',
-            'purging_log': 'Repeater purging activity log',
             'geocoding_cache': 'Geocoding service cache',
             'generic_cache': 'General purpose cache storage'
         }
@@ -1052,34 +1038,6 @@ class BotDataViewer:
             self.logger.error(f"Error getting cache data: {e}")
             return {'error': str(e)}
     
-    def _get_purging_data(self):
-        """Get purging log data"""
-        try:
-            conn = self._get_db_connection()
-            cursor = conn.cursor()
-            
-            # Get recent purging activity
-            cursor.execute("""
-                SELECT timestamp, action, details, user_id
-                FROM adverts 
-                WHERE timestamp > datetime('now', '-7 days')
-                ORDER BY timestamp DESC
-                LIMIT 100
-            """)
-            
-            purging = []
-            for row in cursor.fetchall():
-                purging.append({
-                    'timestamp': row['timestamp'],
-                    'action': row.get('action', 'unknown'),
-                    'details': row.get('details', ''),
-                    'user_id': row['user_id']
-                })
-            
-            return {'purging': purging}
-        except Exception as e:
-            self.logger.error(f"Error getting purging data: {e}")
-            return {'error': str(e)}
     
     def _get_bot_uptime(self):
         """Get bot uptime in seconds from database"""
