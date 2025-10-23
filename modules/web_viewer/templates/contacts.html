@@ -123,9 +123,9 @@
                         <span class="input-group-text">
                             <i class="fas fa-search"></i>
                         </span>
-                        <input type="text" class="form-control" id="search-tracking" placeholder="Search contacts..." autocomplete="off">
+                        <input type="text" class="form-control" id="search-contacts" placeholder="Search contacts..." autocomplete="off">
                     </div>
-                    <button class="btn btn-sm btn-primary" id="refresh-tracking">
+                    <button class="btn btn-sm btn-primary" id="refresh-contacts">
                         <i class="fas fa-sync"></i> Refresh
                     </button>
                 </div>
@@ -138,14 +138,14 @@
                             <th class="sortable" data-sort="username">
                                 Name <i class="fas fa-sort"></i>
                             </th>
-                            <th class="sortable" data-sort="role">
-                                Role <i class="fas fa-sort"></i>
-                            </th>
                             <th class="sortable" data-sort="device_type">
                                 Device Type <i class="fas fa-sort"></i>
                             </th>
                             <th class="sortable" data-sort="location">
                                 Location <i class="fas fa-sort"></i>
+                            </th>
+                            <th class="sortable" data-sort="distance">
+                                Distance <i class="fas fa-sort"></i>
                             </th>
                             <th class="sortable" data-sort="snr">
                                 SNR <i class="fas fa-sort"></i>
@@ -162,16 +162,13 @@
                             <th class="sortable" data-sort="advert_count">
                                 Adverts <i class="fas fa-sort"></i>
                             </th>
-                            <th class="sortable" data-sort="is_currently_tracked">
-                                Tracked <i class="fas fa-sort"></i>
-                            </th>
                             <th>Actions</th>
                         </tr>
                     </thead>
-                        <tbody id="tracking-table-body">
+                        <tbody id="contacts-table-body">
                             <tr>
-                                <td colspan="11" class="text-center">
-                                    <div class="loading">Loading tracking data...</div>
+                                <td colspan="9" class="text-center">
+                                    <div class="loading">Loading contacts data...</div>
                                 </td>
                             </tr>
                     </tbody>
@@ -185,59 +182,59 @@
 
 {% block extra_js %}
         <script>
-class ModernTrackingManager {
+class ModernContactsManager {
     constructor() {
-        this.trackingData = [];
+        this.contactsData = [];
         this.filteredData = [];
         this.searchTerm = '';
         this.sortColumn = 'last_seen';
         this.sortDirection = 'desc';
-        this.initializeTracking();
+        this.initializeContacts();
     }
     
-    async initializeTracking() {
-        await this.loadTrackingData();
+    async initializeContacts() {
+        await this.loadContactsData();
         this.setupEventHandlers();
         this.applySort();
         this.updateSortIcons();
-        this.renderTrackingData();
+        this.renderContactsData();
         this.updateStatistics();
     }
     
-    async loadTrackingData() {
+    async loadContactsData() {
         try {
             const response = await fetch('/api/contacts');
             const data = await response.json();
             
             if (data.error) {
-                this.showError('Failed to load tracking data: ' + data.error);
+                this.showError('Failed to load contacts data: ' + data.error);
                 return;
             }
             
-            this.trackingData = data.tracking_data || [];
-            this.filteredData = [...this.trackingData];
+            this.contactsData = data.tracking_data || [];
+            this.filteredData = [...this.contactsData];
             
         } catch (error) {
-            console.error('Error loading tracking data:', error);
-            this.showError('Failed to load tracking data: ' + error.message);
+            console.error('Error loading contacts data:', error);
+            this.showError('Failed to load contacts data: ' + error.message);
         }
     }
     
     setupEventHandlers() {
-        document.getElementById('refresh-tracking').addEventListener('click', () => {
-            this.loadTrackingData().then(() => {
+        document.getElementById('refresh-contacts').addEventListener('click', () => {
+            this.loadContactsData().then(() => {
                 this.applySearch();
                 this.applySort();
-                this.renderTrackingData();
+                this.renderContactsData();
                 this.updateStatistics();
             });
         });
         
-        document.getElementById('search-tracking').addEventListener('input', (e) => {
+        document.getElementById('search-contacts').addEventListener('input', (e) => {
             this.searchTerm = e.target.value.toLowerCase().trim();
             this.applySearch();
             this.applySort();
-            this.renderTrackingData();
+            this.renderContactsData();
             this.updateStatistics();
         });
         
@@ -247,7 +244,7 @@ class ModernTrackingManager {
                 const column = header.dataset.sort;
                 this.setSort(column);
                 this.applySort();
-                this.renderTrackingData();
+                this.renderContactsData();
                 this.updateSortIcons();
             });
         });
@@ -278,7 +275,7 @@ class ModernTrackingManager {
                 // Date sorting
                 aValue = new Date(aValue);
                 bValue = new Date(bValue);
-            } else if (this.sortColumn === 'snr' || this.sortColumn === 'hop_count' || this.sortColumn === 'advert_count') {
+            } else if (this.sortColumn === 'snr' || this.sortColumn === 'hop_count' || this.sortColumn === 'advert_count' || this.sortColumn === 'distance') {
                 // Numeric sorting
                 aValue = parseFloat(aValue) || 0;
                 bValue = parseFloat(bValue) || 0;
@@ -300,8 +297,6 @@ class ModernTrackingManager {
         switch (column) {
             case 'username':
                 return contact.username || '';
-            case 'role':
-                return contact.role || '';
             case 'device_type':
                 return contact.device_type || '';
             case 'location':
@@ -316,8 +311,8 @@ class ModernTrackingManager {
                 return contact.last_seen;
             case 'advert_count':
                 return contact.advert_count;
-            case 'is_currently_tracked':
-                return contact.is_currently_tracked ? 1 : 0;
+            case 'distance':
+                return contact.distance || 0;
             default:
                 return '';
         }
@@ -359,11 +354,11 @@ class ModernTrackingManager {
     
     applySearch() {
         if (!this.searchTerm) {
-            this.filteredData = [...this.trackingData];
+            this.filteredData = [...this.contactsData];
             return;
         }
         
-        this.filteredData = this.trackingData.filter(contact => {
+        this.filteredData = this.contactsData.filter(contact => {
             // Search in all text fields (case-insensitive)
             const searchableFields = [
                 contact.username || '',
@@ -387,13 +382,13 @@ class ModernTrackingManager {
         });
     }
     
-    renderTrackingData() {
-        const tbody = document.getElementById('tracking-table-body');
+    renderContactsData() {
+        const tbody = document.getElementById('contacts-table-body');
         
         if (this.filteredData.length === 0) {
             const message = this.searchTerm ? 
                 `No contacts match "${this.searchTerm}"` : 
-                'No tracking data available';
+                'No contacts data available';
             tbody.innerHTML = `
                 <tr>
                     <td colspan="11" class="text-center text-muted">
@@ -411,17 +406,16 @@ class ModernTrackingManager {
                     <br>
                     <small class="text-muted">${contact.user_id ? contact.user_id.substring(0, 16) + '...' : 'Unknown'}</small>
                 </td>
-                <td><span class="badge bg-info">${contact.role || 'Unknown'}</span></td>
-                <td><span class="badge bg-secondary">${contact.device_type || 'Unknown'}</span></td>
+                <td>${this.formatDeviceType(contact)}</td>
                 <td>${this.formatLocation(contact)}</td>
+                <td>${this.formatDistance(contact)}</td>
                 <td>${this.formatSignal(contact)}</td>
                 <td><span class="badge bg-primary">${contact.hop_count || 0}</span></td>
                 <td>${this.formatTimestamp(contact.first_heard)}</td>
                 <td>${this.formatTimeAgo(contact.last_seen)}</td>
                 <td><span class="badge bg-success">${contact.advert_count || 0}</span></td>
-                <td><span class="badge bg-warning">${contact.is_currently_tracked ? 'Yes' : 'No'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-outline-info" onclick="trackingManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
+                    <button class="btn btn-sm btn-outline-info" onclick="contactsManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
                         <i class="fas fa-info-circle"></i>
                     </button>
                 </td>
@@ -651,6 +645,39 @@ class ModernTrackingManager {
         }
     }
     
+    formatDistance(contact) {
+        if (contact.distance !== undefined && contact.distance !== null) {
+            if (contact.distance < 1) {
+                return `${(contact.distance * 1000).toFixed(0)}m`;
+            } else {
+                return `${contact.distance.toFixed(1)}km`;
+            }
+        } else {
+            return '<span class="text-muted">N/A</span>';
+        }
+    }
+    
+    formatDeviceType(contact) {
+        const deviceType = contact.device_type || 'Unknown';
+        const role = contact.role || '';
+        
+        // Color code based on role
+        let badgeClass = 'bg-secondary'; // Default for unknown
+        let displayText = deviceType;
+        
+        if (role.toLowerCase() === 'repeater') {
+            badgeClass = 'bg-primary'; // Blue for Repeater
+        } else if (role.toLowerCase() === 'roomserver') {
+            badgeClass = 'bg-success'; // Green for RoomServer
+        } else if (role.toLowerCase() === 'companion') {
+            badgeClass = 'bg-warning'; // Yellow for Companion
+        } else if (role.toLowerCase() === 'sensor') {
+            badgeClass = 'bg-info'; // Light blue for Sensor
+        }
+        
+        return `<span class="badge ${badgeClass}">${displayText}</span>`;
+    }
+    
     formatSignal(contact) {
         if (contact.snr !== null && contact.snr !== undefined) {
             const snr = parseFloat(contact.snr);
@@ -758,9 +785,9 @@ class ModernTrackingManager {
     }
 }
 
-// Initialize tracking manager when page loads
+// Initialize contacts manager when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    window.trackingManager = new ModernTrackingManager();
+    window.contactsManager = new ModernContactsManager();
         });
         </script>
 

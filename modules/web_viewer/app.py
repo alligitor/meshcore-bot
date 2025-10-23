@@ -146,7 +146,7 @@ class BotDataViewer:
         @self.app.route('/contacts')
         def contacts():
             """Contacts page - unified contact management and tracking"""
-            return render_template('tracking.html')
+            return render_template('contacts.html')
         
         @self.app.route('/cache')
         def cache():
@@ -946,6 +946,10 @@ class BotDataViewer:
             conn = self._get_db_connection()
             cursor = conn.cursor()
             
+            # Get bot location from config
+            bot_lat = self.config.getfloat('Bot', 'bot_latitude', fallback=None)
+            bot_lon = self.config.getfloat('Bot', 'bot_longitude', fallback=None)
+            
             cursor.execute("""
                 SELECT public_key, name, role, device_type, 
                        latitude, longitude, city, state, country,
@@ -975,6 +979,12 @@ class BotDataViewer:
                     except:
                         raw_advert_data_parsed = None
                 
+                # Calculate distance if both bot and contact have coordinates
+                distance = None
+                if (bot_lat is not None and bot_lon is not None and 
+                    row['latitude'] is not None and row['longitude'] is not None):
+                    distance = self._calculate_distance(bot_lat, bot_lon, row['latitude'], row['longitude'])
+                
                 tracking.append({
                     'user_id': row['public_key'],
                     'username': row['name'],
@@ -995,7 +1005,8 @@ class BotDataViewer:
                     'raw_advert_data_parsed': raw_advert_data_parsed,
                     'signal_strength': row['signal_strength'],
                     'total_messages': row['total_messages'],
-                    'last_message': row['last_message']
+                    'last_message': row['last_message'],
+                    'distance': distance
                 })
             
             return {'tracking_data': tracking}
@@ -1005,6 +1016,24 @@ class BotDataViewer:
         finally:
             if conn:
                 conn.close()
+    
+    def _calculate_distance(self, lat1, lon1, lat2, lon2):
+        """Calculate distance between two points using Haversine formula"""
+        import math
+        
+        # Convert latitude and longitude from degrees to radians
+        lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+        
+        # Haversine formula
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        
+        # Radius of earth in kilometers
+        r = 6371
+        
+        return c * r
     
     def _get_cache_data(self):
         """Get cache data"""

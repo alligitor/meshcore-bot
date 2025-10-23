@@ -262,6 +262,8 @@ class SportsCommand(BaseCommand):
         '76ers': {'sport': 'basketball', 'league': 'nba', 'team_id': '20'},
         'knicks': {'sport': 'basketball', 'league': 'nba', 'team_id': '18'},
         'pelicans': {'sport': 'basketball', 'league': 'nba', 'team_id': '3'},
+        'trail blazers': {'sport': 'basketball', 'league': 'nba', 'team_id': '22'},
+        'blazers': {'sport': 'basketball', 'league': 'nba', 'team_id': '22'},
         
         # WNBA Teams
         'storm': {'sport': 'basketball', 'league': 'wnba', 'team_id': '14'},
@@ -706,6 +708,7 @@ class SportsCommand(BaseCommand):
             'mil': ['bucks', 'brewers'],
             'portland': ['trail blazers', 'timbers'],
             'por': ['trail blazers', 'timbers'],
+            'pdx': ['trail blazers', 'timbers'],
             'salt lake': ['jazz', 'real salt lake'],
             'utah': ['jazz', 'real salt lake'],
             'orlando': ['magic', 'orlando city'],
@@ -1039,24 +1042,41 @@ class SportsCommand(BaseCommand):
     async def fetch_team_game_data(self, team_info: Dict[str, str]) -> Optional[Dict]:
         """Fetch structured game data for a team with timestamp for sorting"""
         try:
-            # Construct API URL
-            url = f"{self.ESPN_BASE_URL}/{team_info['sport']}/{team_info['league']}/scoreboard"
+            from datetime import datetime, timedelta
             
-            # Make API request
-            response = requests.get(url, timeout=self.url_timeout)
-            response.raise_for_status()
+            # Check multiple dates to catch recent games and upcoming games
+            dates_to_check = []
+            today = datetime.now()
             
-            data = response.json()
-            events = data.get('events', [])
+            # Check yesterday, today, and tomorrow
+            for days_offset in [-1, 0, 1]:
+                check_date = today + timedelta(days=days_offset)
+                dates_to_check.append(check_date.strftime('%Y%m%d'))
             
-            if not events:
-                return None
+            # Also check current scoreboard (no date filter) for upcoming games
+            dates_to_check.append(None)
             
-            # Find games involving the team
-            for event in events:
-                game_data = self.parse_game_event_with_timestamp(event, team_info['team_id'], team_info['sport'], team_info['league'])
-                if game_data:
-                    return game_data
+            for date_str in dates_to_check:
+                if date_str:
+                    url = f"{self.ESPN_BASE_URL}/{team_info['sport']}/{team_info['league']}/scoreboard?dates={date_str}"
+                else:
+                    url = f"{self.ESPN_BASE_URL}/{team_info['sport']}/{team_info['league']}/scoreboard"
+                
+                # Make API request
+                response = requests.get(url, timeout=self.url_timeout)
+                response.raise_for_status()
+                
+                data = response.json()
+                events = data.get('events', [])
+                
+                if not events:
+                    continue
+                
+                # Find games involving the team
+                for event in events:
+                    game_data = self.parse_game_event_with_timestamp(event, team_info['team_id'], team_info['sport'], team_info['league'])
+                    if game_data:
+                        return game_data
             
             return None
             

@@ -42,7 +42,7 @@ modules/web_viewer/
 │   ├── modern_index.html         # Dashboard
 │   ├── modern_realtime.html      # Real-time monitoring
 │   ├── modern_contacts.html      # Contact management
-│   ├── modern_tracking.html      # Contact tracking
+│   ├── contacts.html             # Contact tracking
 │   ├── modern_cache.html         # Cache management
 │   ├── modern_purging.html       # Purging log
 │   └── modern_stats.html         # Statistics
