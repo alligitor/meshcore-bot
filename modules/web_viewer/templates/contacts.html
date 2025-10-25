@@ -211,8 +211,11 @@ class ModernContactsManager {
                 return;
             }
             
-            this.contactsData = data.tracking_data || [];
-            this.filteredData = [...this.contactsData];
+            this.contactsData = {
+                tracking_data: data.tracking_data || [],
+                server_stats: data.server_stats || {}
+            };
+            this.filteredData = [...this.contactsData.tracking_data];
             
         } catch (error) {
             console.error('Error loading contacts data:', error);
@@ -354,11 +357,11 @@ class ModernContactsManager {
     
     applySearch() {
         if (!this.searchTerm) {
-            this.filteredData = [...this.contactsData];
+            this.filteredData = [...this.contactsData.tracking_data];
             return;
         }
         
-        this.filteredData = this.contactsData.filter(contact => {
+        this.filteredData = this.contactsData.tracking_data.filter(contact => {
             // Search in all text fields (case-insensitive)
             const searchableFields = [
                 contact.username || '',
@@ -441,18 +444,37 @@ class ModernContactsManager {
         
         const contactsAll = this.filteredData.length;
         
-        // Calculate advertisement metrics
-        const adverts24h = this.filteredData.filter(contact => {
+        // Calculate advertisement metrics using daily tracking data
+        // Note: These should now be provided by the server from the daily_advertisements table
+        // Fallback to client-side calculation if server data not available
+        
+        // Try to get server-provided daily stats first
+        const serverStats = this.contactsData.server_stats || {};
+        console.log('Contacts data structure:', typeof this.contactsData, 'has server_stats:', 'server_stats' in this.contactsData);
+        console.log('Server stats received:', serverStats);
+        const adverts24h = (serverStats.advertisements_24h !== undefined) ? serverStats.advertisements_24h : this.filteredData.filter(contact => {
             const lastSeen = new Date(contact.last_seen);
-            return lastSeen >= oneDayAgo;
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const contactDate = new Date(lastSeen.getFullYear(), lastSeen.getMonth(), lastSeen.getDate());
+            return contactDate.getTime() === today.getTime();
         }).reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
         
-        const adverts7d = this.filteredData.filter(contact => {
+        const adverts7d = (serverStats.advertisements_7d !== undefined) ? serverStats.advertisements_7d : this.filteredData.filter(contact => {
             const lastSeen = new Date(contact.last_seen);
-            return lastSeen >= oneWeekAgo;
+            return lastSeen >= oneWeekAgo && lastSeen < oneDayAgo;
         }).reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
         
-        const advertsAll = this.filteredData.reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
+        const advertsAll = (serverStats.total_advertisements !== undefined) ? serverStats.total_advertisements : this.filteredData.reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
+        
+        console.log('Final advertisement counts:', {
+            '24h': adverts24h,
+            '7d': adverts7d, 
+            'All': advertsAll,
+            'using_server_stats': (serverStats.advertisements_24h !== undefined) && 
+                                  (serverStats.advertisements_7d !== undefined) && 
+                                  (serverStats.total_advertisements !== undefined)
+        });
         
         // Calculate new device metrics (devices first seen in the last 7 days)
         // Debug: Log device types to see what we're working with

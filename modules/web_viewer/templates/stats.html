@@ -197,7 +197,7 @@ class ModernStatsManager {
     
     updateStatistics() {
         document.getElementById('total-contacts').textContent = this.statsData.contact_count || 0;
-        document.getElementById('total-adverts').textContent = this.statsData.advert_count || 0;
+        document.getElementById('total-adverts').textContent = this.statsData.total_advertisements || 0;
         document.getElementById('recent-activity').textContent = this.statsData.recent_contacts_24h || 0;
         
         // Calculate growth rate
@@ -211,7 +211,7 @@ class ModernStatsManager {
         // Activity distribution chart
         const activityChart = document.getElementById('activity-chart');
         const recentContacts = this.statsData.recent_contacts_24h || 0;
-        const recentAdverts = this.statsData.recent_adverts_24h || 0;
+        const recentAdverts = this.statsData.advertisements_24h || 0;
         const total = recentContacts + recentAdverts;
         
         if (total > 0) {
@@ -264,8 +264,8 @@ class ModernStatsManager {
         // Advert statistics
         const advertStats = document.getElementById('advert-stats');
         advertStats.innerHTML = `
-            <li><strong>Total Adverts:</strong> ${this.statsData.advert_count || 0}</li>
-            <li><strong>Recent (24h):</strong> ${this.statsData.recent_adverts_24h || 0}</li>
+            <li><strong>Total Adverts:</strong> ${this.statsData.total_advertisements || 0}</li>
+            <li><strong>Recent (24h):</strong> ${this.statsData.advertisements_24h || 0}</li>
             <li><strong>Active Users:</strong> ${this.statsData.active_users_24h || 0}</li>
             <li><strong>Last Updated:</strong> ${new Date().toLocaleString()}</li>
         `;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MeshCore Bot Data Viewer
-Complete web interface using Flask-SocketIO 5.x best practices
+Bot montoring web interface using Flask-SocketIO 5.x
 """
 
 import sqlite3
@@ -10,7 +10,7 @@ import time
 import configparser
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect
 from pathlib import Path
@@ -565,25 +565,66 @@ class BotDataViewer:
                 """)
                 stats['unique_device_types'] = cursor.fetchone()[0]
             
-            # Advertisement statistics
-            if 'complete_contact_tracking' in tables:
+            # Advertisement statistics using daily tracking table
+            if 'daily_stats' in tables:
+                # Total advertisements (all time)
                 cursor.execute("""
-                    SELECT SUM(advert_count) FROM complete_contact_tracking
+                    SELECT SUM(advert_count) FROM daily_stats
                 """)
                 total_adverts = cursor.fetchone()[0]
                 stats['total_advertisements'] = total_adverts or 0
                 
+                # 24h advertisements
                 cursor.execute("""
-                    SELECT SUM(advert_count) FROM complete_contact_tracking 
-                    WHERE last_heard > datetime('now', '-24 hours')
+                    SELECT SUM(advert_count) FROM daily_stats 
+                    WHERE date = date('now')
                 """)
                 stats['advertisements_24h'] = cursor.fetchone()[0] or 0
                 
+                # 7d advertisements (last 7 days, excluding today)
                 cursor.execute("""
-                    SELECT SUM(advert_count) FROM complete_contact_tracking 
-                    WHERE last_heard > datetime('now', '-7 days')
+                    SELECT SUM(advert_count) FROM daily_stats 
+                    WHERE date >= date('now', '-7 days') AND date < date('now')
                 """)
                 stats['advertisements_7d'] = cursor.fetchone()[0] or 0
+                
+                # Nodes per day statistics
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                    WHERE date = date('now')
+                """)
+                stats['nodes_24h'] = cursor.fetchone()[0] or 0
+                
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                    WHERE date >= date('now', '-6 days')
+                """)
+                stats['nodes_7d'] = cursor.fetchone()[0] or 0
+                
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT public_key) FROM daily_stats
+                """)
+                stats['nodes_all'] = cursor.fetchone()[0] or 0
+            else:
+                # Fallback to old method if daily table doesn't exist yet
+                if 'complete_contact_tracking' in tables:
+                    cursor.execute("""
+                        SELECT SUM(advert_count) FROM complete_contact_tracking
+                    """)
+                    total_adverts = cursor.fetchone()[0]
+                    stats['total_advertisements'] = total_adverts or 0
+                    
+                    cursor.execute("""
+                        SELECT SUM(advert_count) FROM complete_contact_tracking 
+                        WHERE last_heard > datetime('now', '-24 hours')
+                    """)
+                    stats['advertisements_24h'] = cursor.fetchone()[0] or 0
+                    
+                    cursor.execute("""
+                        SELECT SUM(advert_count) FROM complete_contact_tracking 
+                        WHERE last_heard > datetime('now', '-7 days')
+                    """)
+                    stats['advertisements_7d'] = cursor.fetchone()[0] or 0
             
             # Repeater contacts (if exists)
             if 'repeater_contacts' in tables:
@@ -959,7 +1000,6 @@ class BotDataViewer:
                        COUNT(*) as total_messages,
                        MAX(last_advert_timestamp) as last_message
                 FROM complete_contact_tracking 
-                WHERE last_heard > datetime('now', '-7 days')
                 GROUP BY public_key, name, role, device_type, 
                          latitude, longitude, city, state, country,
                          snr, hop_count, first_heard, last_heard,
@@ -1009,7 +1049,57 @@ class BotDataViewer:
                     'distance': distance
                 })
             
-            return {'tracking_data': tracking}
+            # Get server statistics for daily tracking using direct database queries
+            server_stats = {}
+            try:
+                # Check if daily_stats table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_stats'")
+                if cursor.fetchone():
+                    # 24h: Last 24 hours of advertisements
+                    cursor.execute("""
+                        SELECT SUM(advert_count) FROM daily_stats 
+                        WHERE date >= date('now', '-1 day')
+                    """)
+                    server_stats['advertisements_24h'] = cursor.fetchone()[0] or 0
+                    
+                    # 7d: Previous 6 days (excluding today)
+                    cursor.execute("""
+                        SELECT SUM(advert_count) FROM daily_stats 
+                        WHERE date >= date('now', '-7 days') AND date < date('now')
+                    """)
+                    server_stats['advertisements_7d'] = cursor.fetchone()[0] or 0
+                    
+                    # All: Everything
+                    cursor.execute("""
+                        SELECT SUM(advert_count) FROM daily_stats
+                    """)
+                    server_stats['total_advertisements'] = cursor.fetchone()[0] or 0
+                    
+                    # Nodes per day statistics
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                        WHERE date = date('now')
+                    """)
+                    server_stats['nodes_24h'] = cursor.fetchone()[0] or 0
+                    
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                        WHERE date >= date('now', '-7 days') AND date < date('now')
+                    """)
+                    server_stats['nodes_7d'] = cursor.fetchone()[0] or 0
+                    
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats
+                    """)
+                    server_stats['nodes_all'] = cursor.fetchone()[0] or 0
+                    
+            except Exception as e:
+                self.logger.debug(f"Could not get server stats: {e}")
+            
+            return {
+                'tracking_data': tracking,
+                'server_stats': server_stats
+            }
         except Exception as e:
             self.logger.error(f"Error getting tracking data: {e}")
             return {'error': str(e)}

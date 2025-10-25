@@ -136,50 +136,13 @@ class PathCommand(BaseCommand):
         repeater_info = {}
         
         try:
-            # First try to get data from API cache (like prefix command does)
-            api_data = await self._get_api_cache_data()
+            # Skip API cache for path decoding - use database with improved proximity logic
+            # API cache doesn't have recency-based proximity selection needed for path decoding
+            api_data = None
             
             # Query the database for repeaters with matching prefixes
             # Node IDs are typically the first 2 characters of the public key
             for node_id in node_ids:
-                # Check API cache first
-                if api_data and node_id in api_data:
-                    api_prefix_data = api_data[node_id]
-                    if api_prefix_data['node_names']:
-                        # Use API data
-                        if len(api_prefix_data['node_names']) > 1:
-                            # Multiple matches - show collision warning
-                            repeater_info[node_id] = {
-                                'found': True,
-                                'collision': True,
-                                'matches': len(api_prefix_data['node_names']),
-                                'node_id': node_id,
-                                'repeaters': [
-                                    {
-                                        'name': name,
-                                        'public_key': f"{node_id}...",
-                                        'device_type': 'Unknown',
-                                        'last_seen': 'API',
-                                        'is_active': True,
-                                        'source': 'api'
-                                    } for name in api_prefix_data['node_names']
-                                ]
-                            }
-                        else:
-                            # Single match
-                            repeater_info[node_id] = {
-                                'name': api_prefix_data['node_names'][0],
-                                'public_key': f"{node_id}...",
-                                'device_type': 'Unknown',
-                                'last_seen': 'API',
-                                'is_active': True,
-                                'found': True,
-                                'collision': False,
-                                'source': 'api'
-                            }
-                        continue
-                
-                # Fallback to complete tracking database if API cache doesn't have this prefix
                 # First try complete tracking database (all heard contacts, filtered by role)
                 if hasattr(self.bot, 'repeater_manager'):
                     try:
@@ -505,8 +468,9 @@ class PathCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance  # Invert so closer = higher score
             
-            # Weight proximity more heavily for message reception (70% proximity, 30% recency)
-            combined_score = (proximity_score * 0.7) + (recency_score * 0.3)
+            # Weight recency more heavily for path decoding (70% recency, 30% proximity)
+            # Recent repeaters are more likely to have been involved in the message path
+            combined_score = (recency_score * 0.7) + (proximity_score * 0.3)
             combined_scores.append((combined_score, distance, repeater))
         
         if not combined_scores:
@@ -846,8 +810,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(avg_distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Combined score: 70% proximity, 30% recency (proximity more important for message reception)
-            combined_score = (proximity_score * 0.7) + (recency_score * 0.3)
+            # Combined score: 70% recency, 30% proximity (recency more important for path decoding)
+            combined_score = (recency_score * 0.7) + (proximity_score * 0.3)
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
@@ -896,8 +860,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Combined score: 70% proximity, 30% recency (proximity more important for message reception)
-            combined_score = (proximity_score * 0.7) + (recency_score * 0.3)
+            # Combined score: 70% recency, 30% proximity (recency more important for path decoding)
+            combined_score = (recency_score * 0.7) + (proximity_score * 0.3)
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score

@@ -84,6 +84,17 @@ class RepeaterManager:
                 out_path_len INTEGER
             ''')
             
+            # Create daily_stats table for daily statistics tracking
+            self.db_manager.create_table('daily_stats', '''
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL,
+                public_key TEXT NOT NULL,
+                advert_count INTEGER DEFAULT 1,
+                first_advert_time TIMESTAMP,
+                last_advert_time TIMESTAMP,
+                UNIQUE(date, public_key)
+            ''')
+            
             # Create purging_log table for audit trail
             self.db_manager.create_table('purging_log', '''
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,13 +238,13 @@ class RepeaterManager:
                 advert_count = existing[0]['advert_count'] + 1
                 self.db_manager.execute_update('''
                     UPDATE complete_contact_tracking 
-                    SET last_heard = ?, advert_count = ?, role = ?, device_type = ?,
+                    SET name = ?, last_heard = ?, advert_count = ?, role = ?, device_type = ?,
                         latitude = ?, longitude = ?, city = ?, state = ?, country = ?, 
                         raw_advert_data = ?, signal_strength = ?, snr = ?, hop_count = ?, 
                         last_advert_timestamp = ?, out_path = ?, out_path_len = ?
                     WHERE public_key = ?
                 ''', (
-                    current_time, advert_count, role, device_type_str,
+                    name, current_time, advert_count, role, device_type_str,
                     location_info['latitude'], location_info['longitude'], 
                     location_info['city'], location_info['state'], location_info['country'],
                     json.dumps(advert_data), signal_strength, snr, hop_count,
@@ -262,11 +273,54 @@ class RepeaterManager:
             # Update the currently_tracked flag based on device contact list
             await self._update_currently_tracked_status(public_key)
             
+            # Track daily advertisement statistics
+            await self._track_daily_advertisement(public_key, name, role, device_type_str, 
+                                                location_info, signal_strength, snr, hop_count, current_time)
+            
             return True
             
         except Exception as e:
             self.logger.error(f"Error tracking contact advertisement: {e}")
             return False
+    
+    async def _track_daily_advertisement(self, public_key: str, name: str, role: str, device_type: str,
+                                       location_info: Dict, signal_strength: float, snr: float, 
+                                       hop_count: int, timestamp: datetime):
+        """Track daily advertisement statistics for accurate time-based reporting"""
+        try:
+            from datetime import date
+            
+            # Get today's date
+            today = date.today()
+            
+            # Check if we already have an entry for this contact today
+            existing_daily = self.db_manager.execute_query(
+                'SELECT id, advert_count, first_advert_time FROM daily_stats WHERE date = ? AND public_key = ?',
+                (today, public_key)
+            )
+            
+            if existing_daily:
+                # Update existing daily entry
+                daily_advert_count = existing_daily[0]['advert_count'] + 1
+                self.db_manager.execute_update('''
+                    UPDATE daily_stats 
+                    SET advert_count = ?, last_advert_time = ?
+                    WHERE date = ? AND public_key = ?
+                ''', (daily_advert_count, timestamp, today, public_key))
+                
+                self.logger.debug(f"Updated daily stats for {name}: {daily_advert_count} adverts today")
+            else:
+                # Insert new daily entry
+                self.db_manager.execute_update('''
+                    INSERT INTO daily_stats 
+                    (date, public_key, advert_count, first_advert_time, last_advert_time)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (today, public_key, 1, timestamp, timestamp))
+                
+                self.logger.debug(f"Added daily stats for {name}: first advert today")
+                
+        except Exception as e:
+            self.logger.error(f"Error tracking daily advertisement: {e}")
     
     def _determine_contact_role(self, contact_data: Dict) -> str:
         """Determine the role of a contact based on MeshCore specifications"""
@@ -1416,65 +1470,86 @@ class RepeaterManager:
             # Track whether device removal was successful
             device_removal_successful = False
             
-            # Remove the contact using the proper MeshCore API
-            try:
-                self.logger.info(f"Removing contact '{contact_name}' from device using MeshCore API...")
-                self.logger.debug(f"Contact details: public_key={public_key}, contact_key={contact_key}, name='{contact_name}'")
-                
-                # Try different key formats for removal
-                removal_keys_to_try = []
-                
-                # Add the public key if it's different from contact key
-                if public_key != contact_key:
-                    removal_keys_to_try.append(public_key)
-                
-                # Add the contact key
-                if contact_key:
-                    removal_keys_to_try.append(contact_key)
-                
-                # Add the public key as bytes if it's a hex string
+            # Verify contact still exists before attempting removal
+            contact_still_exists = any(
+                contact_data.get('public_key', key) == public_key 
+                for key, contact_data in self.bot.meshcore.contacts.items()
+            )
+            
+            if not contact_still_exists:
+                self.logger.info(f"✅ Contact '{contact_name}' not found in device contacts (already removed) - treating as success")
+                device_removal_successful = True
+            else:
+                # Remove the contact using the proper MeshCore API
                 try:
-                    if len(public_key) == 64:  # 32 bytes in hex
-                        public_key_bytes = bytes.fromhex(public_key)
-                        removal_keys_to_try.append(public_key_bytes)
-                except:
-                    pass
-                
-                self.logger.debug(f"Will try removal with keys: {removal_keys_to_try}")
-                
-                # Try each key format
-                for key_to_try in removal_keys_to_try:
+                    self.logger.info(f"Removing contact '{contact_name}' from device using MeshCore API...")
+                    self.logger.debug(f"Contact details: public_key={public_key}, contact_key={contact_key}, name='{contact_name}'")
+                    
+                    # Try different key formats for removal
+                    removal_keys_to_try = []
+                    
+                    # Add the public key if it's different from contact key
+                    if public_key != contact_key:
+                        removal_keys_to_try.append(public_key)
+                    
+                    # Add the contact key
+                    if contact_key:
+                        removal_keys_to_try.append(contact_key)
+                    
+                    # Add the public key as bytes if it's a hex string
                     try:
-                        self.logger.debug(f"Trying removal with key: {key_to_try} (type: {type(key_to_try)})")
-                        result = await asyncio.wait_for(
-                            self.bot.meshcore.commands.remove_contact(key_to_try),
-                            timeout=30.0
-                        )
-                        
-                        # Check if removal was successful
-                        if result.type == EventType.OK:
-                            device_removal_successful = True
-                            self.logger.info(f"✅ Successfully removed contact '{contact_name}' from device using key: {key_to_try}")
-                            break
-                        else:
-                            # Log detailed error information
-                            error_code = result.payload.get('error_code', 'unknown') if hasattr(result, 'payload') else 'unknown'
-                            self.logger.debug(f"❌ Removal failed with key {key_to_try}: {result}")
-                            self.logger.debug(f"❌ Error type: {result.type}, Error code: {error_code}")
-                    except Exception as e:
-                        self.logger.debug(f"Exception with key {key_to_try}: {e}")
-                        continue
-                
-                # If all key formats failed, try fallback methods
-                if not device_removal_successful:
-                    self.logger.warning(f"All key formats failed for '{contact_name}' - trying fallback methods...")
+                        if len(public_key) == 64:  # 32 bytes in hex
+                            public_key_bytes = bytes.fromhex(public_key)
+                            removal_keys_to_try.append(public_key_bytes)
+                    except:
+                        pass
+                    
+                    self.logger.debug(f"Will try removal with keys: {removal_keys_to_try}")
+                    
+                    # Try each key format
+                    for key_to_try in removal_keys_to_try:
+                        try:
+                            self.logger.debug(f"Trying removal with key: {key_to_try} (type: {type(key_to_try)})")
+                            result = await asyncio.wait_for(
+                                self.bot.meshcore.commands.remove_contact(key_to_try),
+                                timeout=30.0
+                            )
+                            
+                            # Check if removal was successful
+                            if result.type == EventType.OK:
+                                device_removal_successful = True
+                                self.logger.info(f"✅ Successfully removed contact '{contact_name}' from device using key: {key_to_try}")
+                                break
+                            elif result.type == EventType.ERROR:
+                                # Log detailed error information
+                                error_code = result.payload.get('error_code', 'unknown') if hasattr(result, 'payload') else 'unknown'
+                                self.logger.debug(f"❌ Removal failed with key {key_to_try}: {result}")
+                                self.logger.debug(f"❌ Error type: {result.type}, Error code: {error_code}")
+                                
+                                # Error code 2 typically means "contact not found" - treat as success
+                                if error_code == 2:
+                                    self.logger.info(f"✅ Contact '{contact_name}' not found (already removed) - treating as success")
+                                    device_removal_successful = True
+                                    break
+                            else:
+                                # Log other error types
+                                error_code = result.payload.get('error_code', 'unknown') if hasattr(result, 'payload') else 'unknown'
+                                self.logger.debug(f"❌ Removal failed with key {key_to_try}: {result}")
+                                self.logger.debug(f"❌ Error type: {result.type}, Error code: {error_code}")
+                        except Exception as e:
+                            self.logger.debug(f"Exception with key {key_to_try}: {e}")
+                            continue
+                    
+                    # If all key formats failed, try fallback methods
+                    if not device_removal_successful:
+                        self.logger.warning(f"All key formats failed for '{contact_name}' - trying fallback methods...")
+                        device_removal_successful = await self._try_fallback_removal_methods(public_key, contact_name, reason)
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to remove contact '{contact_name}' from device: {e}")
+                    # Try fallback methods on exception
+                    self.logger.info(f"Attempting fallback methods for contact '{contact_name}' due to exception...")
                     device_removal_successful = await self._try_fallback_removal_methods(public_key, contact_name, reason)
-                
-            except Exception as e:
-                self.logger.error(f"Failed to remove contact '{contact_name}' from device: {e}")
-                # Try fallback methods on exception
-                self.logger.info(f"Attempting fallback methods for contact '{contact_name}' due to exception...")
-                device_removal_successful = await self._try_fallback_removal_methods(public_key, contact_name, reason)
             
             # Only mark as inactive in database if device removal was successful
             if device_removal_successful:
@@ -1541,12 +1616,10 @@ class RepeaterManager:
                 self.logger.info(f"Fallback Method 2: Alternative meshcore-cli commands...")
                 from meshcore_cli.meshcore_cli import next_cmd
                 
-                # Try different removal commands
+                # Try different removal commands (using valid meshcore-cli commands)
                 alternative_commands = [
-                    ["delete_contact", public_key],
-                    ["remove", public_key],
-                    ["del", public_key],
-                    ["clear_contact", public_key]
+                    ["remove_contact", public_key],
+                    ["del_contact", public_key]
                 ]
                 
                 for cmd in alternative_commands:
@@ -1601,6 +1674,11 @@ class RepeaterManager:
                         if result.type == EventType.OK:
                             self.logger.info(f"✅ Fallback Method 3 succeeded using contact key via API")
                             return True
+                        elif result.type == EventType.ERROR:
+                            error_code = result.payload.get('error_code', 'unknown') if hasattr(result, 'payload') else 'unknown'
+                            if error_code == 2:
+                                self.logger.info(f"✅ Contact not found (already removed) - treating as success")
+                                return True
                     except Exception as e:
                         self.logger.debug(f"API removal with contact key failed: {e}")
                     
@@ -3011,3 +3089,92 @@ class RepeaterManager:
                 'success': False,
                 'error': str(e)
             }
+    
+    def get_daily_advertisement_stats(self, days: int = 30) -> Dict:
+        """Get daily advertisement statistics for the specified number of days"""
+        try:
+            from datetime import date, timedelta
+            
+            # Calculate date range
+            end_date = date.today()
+            start_date = end_date - timedelta(days=days-1)
+            
+            # Get daily advertisement counts with contact details
+            daily_stats = self.db_manager.execute_query('''
+                SELECT ds.date, 
+                       COUNT(DISTINCT ds.public_key) as unique_nodes,
+                       SUM(ds.advert_count) as total_adverts,
+                       AVG(ds.advert_count) as avg_adverts_per_node,
+                       COUNT(DISTINCT c.role) as unique_roles,
+                       COUNT(DISTINCT c.device_type) as unique_device_types
+                FROM daily_stats ds
+                LEFT JOIN complete_contact_tracking c ON ds.public_key = c.public_key
+                WHERE ds.date >= ? AND ds.date <= ?
+                GROUP BY ds.date
+                ORDER BY ds.date DESC
+            ''', (start_date, end_date))
+            
+            # Get summary statistics
+            summary = self.db_manager.execute_query('''
+                SELECT 
+                    COUNT(DISTINCT ds.public_key) as total_unique_nodes,
+                    SUM(ds.advert_count) as total_advertisements,
+                    COUNT(DISTINCT ds.date) as active_days,
+                    AVG(ds.advert_count) as avg_adverts_per_day,
+                    COUNT(DISTINCT c.role) as unique_roles,
+                    COUNT(DISTINCT c.device_type) as unique_device_types
+                FROM daily_stats ds
+                LEFT JOIN complete_contact_tracking c ON ds.public_key = c.public_key
+                WHERE ds.date >= ? AND ds.date <= ?
+            ''', (start_date, end_date))
+            
+            return {
+                'daily_stats': daily_stats,
+                'summary': summary[0] if summary else {},
+                'date_range': {
+                    'start': start_date.isoformat(),
+                    'end': end_date.isoformat(),
+                    'days': days
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error getting daily advertisement stats: {e}")
+            return {'error': str(e)}
+    
+    def get_nodes_per_day_stats(self, days: int = 30) -> Dict:
+        """Get nodes-per-day statistics for accurate daily tracking"""
+        try:
+            from datetime import date, timedelta
+            
+            # Calculate date range
+            end_date = date.today()
+            start_date = end_date - timedelta(days=days-1)
+            
+            # Get nodes per day with role breakdowns
+            nodes_per_day = self.db_manager.execute_query('''
+                SELECT ds.date, 
+                       COUNT(DISTINCT ds.public_key) as unique_nodes,
+                       COUNT(DISTINCT CASE WHEN c.role = 'repeater' THEN ds.public_key END) as repeaters,
+                       COUNT(DISTINCT CASE WHEN c.role = 'companion' THEN ds.public_key END) as companions,
+                       COUNT(DISTINCT CASE WHEN c.role = 'roomserver' THEN ds.public_key END) as room_servers,
+                       COUNT(DISTINCT CASE WHEN c.role = 'sensor' THEN ds.public_key END) as sensors
+                FROM daily_stats ds
+                LEFT JOIN complete_contact_tracking c ON ds.public_key = c.public_key
+                WHERE ds.date >= ? AND ds.date <= ?
+                GROUP BY ds.date
+                ORDER BY ds.date DESC
+            ''', (start_date, end_date))
+            
+            return {
+                'nodes_per_day': nodes_per_day,
+                'date_range': {
+                    'start': start_date.isoformat(),
+                    'end': end_date.isoformat(),
+                    'days': days
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error getting nodes per day stats: {e}")
+            return {'error': str(e)}
