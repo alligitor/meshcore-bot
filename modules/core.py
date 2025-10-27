@@ -373,6 +373,39 @@ hide_source = false
 # Use 2-letter state abbreviation (e.g., WA, CA, NY, TX)
 default_state = WA
 
+[Path_Command]
+# Geographic proximity calculation method
+# simple: Use proximity to bot location (default)
+# path: Use proximity to previous/next nodes in the path for more realistic routing
+proximity_method = simple
+
+# Enable path proximity fallback
+# When path proximity can't be calculated (missing location data), fall back to simple proximity
+# true: Fall back to bot location proximity when path data unavailable
+# false: Show collision warning when path proximity unavailable
+path_proximity_fallback = true
+
+# Maximum range for geographic proximity guessing (kilometers)
+# Repeaters beyond this distance will have reduced confidence or be rejected
+# Set to 0 to disable range limiting
+max_proximity_range = 200
+
+# Maximum age for repeater data in path matching (days)
+# Only include repeaters that have been heard within this many days
+# Helps filter out stale or inactive repeaters from path decoding
+# Set to 0 to disable age filtering
+max_repeater_age_days = 14
+
+# Confidence indicator symbols for path command
+# High confidence (>= 0.9): Shows when path decoding is very reliable
+high_confidence_symbol = 🎯
+
+# Medium confidence (>= 0.8): Shows when path decoding is reasonably reliable
+medium_confidence_symbol = 📍
+
+# Low confidence (< 0.8): Shows when path decoding has uncertainty
+low_confidence_symbol = ❓
+
 [Solar_Config]
 # URL timeout for external API calls (seconds)
 url_timeout = 10

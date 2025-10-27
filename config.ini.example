@@ -381,6 +381,22 @@ path_proximity_fallback = true
 # Set to 0 to disable range limiting
 max_proximity_range = 200
 
+# Maximum age for repeater data in path matching (days)
+# Only include repeaters that have been heard within this many days
+# Helps filter out stale or inactive repeaters from path decoding
+# Set to 0 to disable age filtering
+max_repeater_age_days = 14
+
+# Confidence indicator symbols for path command
+# High confidence (>= 0.9): Shows when path decoding is very reliable
+high_confidence_symbol = 🎯
+
+# Medium confidence (>= 0.8): Shows when path decoding is reasonably reliable
+medium_confidence_symbol = 📍
+
+# Low confidence (< 0.8): Shows when path decoding has uncertainty
+low_confidence_symbol = ❓
+
 [Hacker]
 # Enable or disable the hacker command
 # true: Hacker command is available (responds to Linux commands with supervillain mainframe errors)

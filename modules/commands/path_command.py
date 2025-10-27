@@ -38,6 +38,11 @@ class PathCommand(BaseCommand):
         self.max_proximity_range = bot.config.getfloat('Path_Command', 'max_proximity_range', fallback=200.0)
         self.max_repeater_age_days = bot.config.getint('Path_Command', 'max_repeater_age_days', fallback=14)
         
+        # Get confidence indicator symbols from config
+        self.high_confidence_symbol = bot.config.get('Path_Command', 'high_confidence_symbol', fallback='🎯')
+        self.medium_confidence_symbol = bot.config.get('Path_Command', 'medium_confidence_symbol', fallback='📍')
+        self.low_confidence_symbol = bot.config.get('Path_Command', 'low_confidence_symbol', fallback='❓')
+        
         try:
             # Try to get location from Bot section
             if bot.config.has_section('Bot'):
@@ -902,11 +907,11 @@ class PathCommand(BaseCommand):
                     
                     # Add confidence indicator
                     if confidence >= 0.9:
-                        confidence_indicator = "🎯"
+                        confidence_indicator = self.high_confidence_symbol
                     elif confidence >= 0.8:
-                        confidence_indicator = "📍"
+                        confidence_indicator = self.medium_confidence_symbol
                     else:
-                        confidence_indicator = "~"
+                        confidence_indicator = self.low_confidence_symbol
                     
                     line = f"{node_id}: {name} {confidence_indicator}"
                 else:
@@ -933,6 +938,9 @@ class PathCommand(BaseCommand):
     
     async def _send_path_response(self, message: MeshMessage, response: str):
         """Send path response, splitting into multiple messages if necessary"""
+        # Store the complete response for web viewer integration
+        self.last_response = response
+        
         if len(response) <= 130:
             # Single message is fine
             await self.send_response(message, response)
@@ -969,29 +977,6 @@ class PathCommand(BaseCommand):
             # Send the last message if there's content
             if current_message:
                 await self.send_response(message, current_message)
-            
-            # Send the complete response to the bot for internal processing
-            # This ensures the bot receives the full response without ellipsis
-            await self._send_complete_response_to_bot(message, response)
-    
-    async def _send_complete_response_to_bot(self, message: MeshMessage, complete_response: str):
-        """Send the complete response to the bot for internal processing"""
-        try:
-            # Send complete response to web viewer for display using the correct method
-            if hasattr(self.bot, 'web_viewer_integration') and self.bot.web_viewer_integration:
-                # Use the capture_command method to store the complete response
-                self.bot.web_viewer_integration.capture_command(
-                    message=message,
-                    command_name="path",
-                    response=complete_response,
-                    success=True
-                )
-            
-            # Log the complete response for debugging
-            self.logger.info(f"Complete path response sent to bot: {complete_response}")
-            
-        except Exception as e:
-            self.logger.warning(f"Error sending complete response to bot: {e}")
     
     async def _extract_path_from_recent_messages(self) -> str:
         """Extract path from the current message's path information (same as test command)"""
@@ -1000,7 +985,6 @@ class PathCommand(BaseCommand):
             # This is the same reliable source that the test command uses
             if hasattr(self, '_current_message') and self._current_message and self._current_message.path:
                 path_string = self._current_message.path
-                self.logger.info(f"Using path from current message: {path_string}")
                 
                 # Check if it's a direct connection
                 if "Direct" in path_string or "0 hops" in path_string:
@@ -1017,7 +1001,6 @@ class PathCommand(BaseCommand):
                 # Check if it looks like a comma-separated path
                 if ',' in path_part:
                     path_input = path_part
-                    self.logger.info(f"Found path from current message: {path_input}")
                     return await self._decode_path(path_input)
                 else:
                     # Single node or unknown format
