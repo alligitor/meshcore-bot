@@ -925,8 +925,8 @@ class RepeaterManager:
         try:
             from geopy.geocoders import Nominatim
             
-            # Initialize geocoder
-            geolocator = Nominatim(user_agent="meshcore-bot")
+            # Initialize geocoder with proper timeout
+            geolocator = Nominatim(user_agent="meshcore-bot", timeout=10)
             
             # Perform reverse geocoding
             location = geolocator.reverse(f"{latitude}, {longitude}")
@@ -953,8 +953,8 @@ class RepeaterManager:
         try:
             from geopy.geocoders import Nominatim
             
-            # Initialize geocoder
-            geolocator = Nominatim(user_agent="meshcore-bot")
+            # Initialize geocoder with proper timeout
+            geolocator = Nominatim(user_agent="meshcore-bot", timeout=10)
             
             # Perform reverse geocoding
             location = geolocator.reverse(f"{latitude}, {longitude}")
