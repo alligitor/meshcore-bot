@@ -283,6 +283,11 @@ class CommandManager:
             # Get channel number from channel name
             channel_num = self.bot.channel_manager.get_channel_number(channel)
             
+            # Check if channel was found (None indicates channel name not found)
+            if channel_num is None:
+                self.logger.error(f"Channel '{channel}' not found. Cannot send message.")
+                return False
+            
             self.logger.info(f"Sending channel message to {channel} (channel {channel_num}): {content}")
             
             # Use meshcore-cli send_chan_msg function

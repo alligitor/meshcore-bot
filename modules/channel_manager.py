@@ -217,14 +217,22 @@ class ChannelManager:
             self.logger.warning(f"Channel {channel_num} not found in cached channels")
             return f"Channel{channel_num}"
     
-    def get_channel_number(self, channel_name: str) -> int:
-        """Get channel number from channel name"""
+    def get_channel_number(self, channel_name: str) -> Optional[int]:
+        """
+        Get channel number from channel name
+        
+        Args:
+            channel_name: The channel name to look up
+            
+        Returns:
+            Channel number if found, None if not found (to distinguish from channel 0)
+        """
         for num, channel_info in self._channels_cache.items():
             if channel_info.get('channel_name', '').lower() == channel_name.lower():
                 return num
         
         self.logger.warning(f"Channel name '{channel_name}' not found in cached channels")
-        return 0
+        return None
     
     def get_channel_key(self, channel_num: int) -> str:
         """Get channel encryption key from channel number"""
