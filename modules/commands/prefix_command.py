@@ -44,10 +44,10 @@ class PrefixCommand(BaseCommand):
     def get_help_text(self) -> str:
         if not self.api_url or self.api_url.strip() == "":
             location_note = " (with city names)" if self.show_repeater_locations else ""
-            return f"Look up repeaters by two-character prefix using local database{location_note}. Usage: 'prefix 1A', 'prefix free' (list available prefixes). Note: API disabled - using local data only."
+            return f"Look up repeaters by two-character prefix using local database{location_note}. Usage: 'prefix 1A', 'prefix free' or 'prefix available' (list available prefixes). Note: API disabled - using local data only."
         
         location_note = " (with city names)" if self.show_repeater_locations else ""
-        return f"Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A', 'prefix free' (list available prefixes), or 'prefix refresh'."
+        return f"Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A', 'prefix free' or 'prefix available' (list available prefixes), or 'prefix refresh'."
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with 'prefix' keyword"""
@@ -86,8 +86,8 @@ class PrefixCommand(BaseCommand):
             response = "🔄 Repeater prefix cache refreshed!"
             return await self.send_response(message, response)
         
-        # Handle free command
-        if command == "FREE":
+        # Handle free/available command
+        if command == "FREE" or command == "AVAILABLE":
             free_prefixes, total_free = await self.get_free_prefixes()
             if free_prefixes:
                 response = self.format_free_prefixes_response(free_prefixes, total_free)
