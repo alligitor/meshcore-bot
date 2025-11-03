@@ -367,6 +367,18 @@ use_reverse_geocoding = true
 # false: Show source information (default)
 hide_source = false
 
+# Prefix heard time window (days)
+# Number of days to look back when showing prefix results (default command behavior)
+# Only repeaters heard within this window will be shown by default
+# Use "prefix XX all" to show all repeaters regardless of time
+prefix_heard_days = 7
+
+# Prefix free time window (days)
+# Number of days to look back when determining which prefixes are "free"
+# Only repeaters heard within this window will be considered as using a prefix
+# Repeaters not heard in this window will be excluded from used prefixes list
+prefix_free_days = 30
+
 [Weather]
 # Default state for city name disambiguation
 # When users type "wx seattle", it will search for "seattle, WA, USA"

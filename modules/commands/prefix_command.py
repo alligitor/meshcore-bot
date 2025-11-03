@@ -40,14 +40,18 @@ class PrefixCommand(BaseCommand):
         self.show_repeater_locations = self.bot.config.getboolean('Prefix_Command', 'show_repeater_locations', fallback=True)
         self.use_reverse_geocoding = self.bot.config.getboolean('Prefix_Command', 'use_reverse_geocoding', fallback=True)
         self.hide_source = self.bot.config.getboolean('Prefix_Command', 'hide_source', fallback=False)
+        
+        # Get time window settings from config
+        self.prefix_heard_days = self.bot.config.getint('Prefix_Command', 'prefix_heard_days', fallback=7)
+        self.prefix_free_days = self.bot.config.getint('Prefix_Command', 'prefix_free_days', fallback=30)
     
     def get_help_text(self) -> str:
         if not self.api_url or self.api_url.strip() == "":
             location_note = " (with city names)" if self.show_repeater_locations else ""
-            return f"Look up repeaters by two-character prefix using local database{location_note}. Usage: 'prefix 1A', 'prefix free' or 'prefix available' (list available prefixes). Note: API disabled - using local data only."
+            return f"Look up repeaters by two-character prefix using local database{location_note}. Usage: 'prefix 1A' (shows recent), 'prefix 1A all' (shows all), 'prefix free' (list available prefixes). Note: API disabled - using local data only."
         
         location_note = " (with city names)" if self.show_repeater_locations else ""
-        return f"Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A', 'prefix free' or 'prefix available' (list available prefixes), or 'prefix refresh'."
+        return f"Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A' (shows recent), 'prefix 1A all' (shows all), 'prefix free' (list available prefixes), or 'prefix refresh'."
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with 'prefix' keyword"""
@@ -95,24 +99,38 @@ class PrefixCommand(BaseCommand):
                 response = "❌ Unable to determine free prefixes. Try 'prefix refresh' first."
             return await self.send_response(message, response)
         
+        # Check for "all" modifier
+        include_all = False
+        if len(parts) >= 3 and parts[2].upper() == "ALL":
+            include_all = True
+        
         # Validate prefix format
         if len(command) != 2 or not command.isalnum():
             response = "❌ Invalid prefix format. Use two characters (e.g., prefix 1A)"
             return await self.send_response(message, response)
         
         # Get prefix data
-        prefix_data = await self.get_prefix_data(command)
+        prefix_data = await self.get_prefix_data(command, include_all=include_all)
         
         if prefix_data is None:
             response = f"❌ No repeaters found with prefix '{command}'"
             return await self.send_response(message, response)
         
+        # Add include_all flag to data for formatting
+        prefix_data['include_all'] = include_all
+        
         # Format response
         response = self.format_prefix_response(command, prefix_data)
         return await self.send_response(message, response)
     
-    async def get_prefix_data(self, prefix: str) -> Optional[Dict[str, Any]]:
-        """Get prefix data from API first, enhanced with local database location data"""
+    async def get_prefix_data(self, prefix: str, include_all: bool = False) -> Optional[Dict[str, Any]]:
+        """Get prefix data from API first, enhanced with local database location data
+        
+        Args:
+            prefix: The two-character prefix to look up
+            include_all: If True, show all repeaters regardless of last_heard time.
+                        If False (default), only show repeaters heard within prefix_heard_days.
+        """
         # Only refresh cache if API is configured
         if self.api_url and self.api_url.strip():
             current_time = time.time()
@@ -125,7 +143,7 @@ class PrefixCommand(BaseCommand):
             api_data = self.cache_data.get(prefix)
         
         # Get local database data for location enhancement
-        db_data = await self.get_prefix_data_from_db(prefix)
+        db_data = await self.get_prefix_data_from_db(prefix, include_all=include_all)
         
         # If we have API data, enhance it with local location data
         if api_data and db_data:
@@ -269,19 +287,38 @@ class PrefixCommand(BaseCommand):
         except Exception as e:
             self.logger.error(f"Unexpected error refreshing cache: {e}")
     
-    async def get_prefix_data_from_db(self, prefix: str) -> Optional[Dict[str, Any]]:
-        """Get prefix data from the bot's SQLite database as fallback"""
+    async def get_prefix_data_from_db(self, prefix: str, include_all: bool = False) -> Optional[Dict[str, Any]]:
+        """Get prefix data from the bot's SQLite database as fallback
+        
+        Args:
+            prefix: The two-character prefix to look up
+            include_all: If True, show all repeaters regardless of last_heard time.
+                        If False (default), only show repeaters heard within prefix_heard_days.
+        """
         try:
-            self.logger.info(f"Looking up prefix '{prefix}' in local database")
+            if include_all:
+                self.logger.info(f"Looking up prefix '{prefix}' in local database (all entries)")
+            else:
+                self.logger.info(f"Looking up prefix '{prefix}' in local database (last {self.prefix_heard_days} days)")
             
             # Query the complete_contact_tracking table for repeaters with matching prefix
-            # Include inactive repeaters for location enhancement (they still have valid location data)
-            query = '''
-                SELECT name, public_key, device_type, last_heard as last_seen, latitude, longitude, city, state, country, role
-                FROM complete_contact_tracking 
-                WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
-                ORDER BY name
-            '''
+            # By default, only include repeaters heard within prefix_heard_days
+            # If include_all is True, include all repeaters regardless of last_heard time
+            if include_all:
+                query = '''
+                    SELECT name, public_key, device_type, last_heard as last_seen, latitude, longitude, city, state, country, role
+                    FROM complete_contact_tracking 
+                    WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
+                    ORDER BY name
+                '''
+            else:
+                query = f'''
+                    SELECT name, public_key, device_type, last_heard as last_seen, latitude, longitude, city, state, country, role
+                    FROM complete_contact_tracking 
+                    WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
+                    AND last_heard >= datetime('now', '-{self.prefix_heard_days} days')
+                    ORDER BY name
+                '''
             
             # The prefix should match the first two characters of the public key
             prefix_pattern = f"{prefix}%"
@@ -385,13 +422,14 @@ class PrefixCommand(BaseCommand):
             
             self.logger.info(f"Found {len(used_prefixes)} used prefixes from API cache")
             
-            # Add prefixes from database
+            # Add prefixes from database (filtered by prefix_free_days)
             try:
-                query = '''
+                query = f'''
                     SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
                     FROM complete_contact_tracking 
                     WHERE role IN ('repeater', 'roomserver')
                     AND LENGTH(public_key) >= 2
+                    AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
                 '''
                 results = self.bot.db_manager.execute_query(query)
                 for row in results:
@@ -456,13 +494,19 @@ class PrefixCommand(BaseCommand):
         node_count = data['node_count']
         node_names = data['node_names']
         source = data.get('source', 'api')
+        include_all = data.get('include_all', True)  # Default to True for API responses
         
         # Get bot name for database responses
         bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
         
         if source == 'database':
-            # Database response format
-            response = f"{bot_name} has heard {node_count} repeater{'s' if node_count != 1 else ''} with prefix {prefix}:\n"
+            # Database response format - keep brief for character limit
+            if include_all:
+                response = f"Prefix {prefix}: {node_count} repeater{'s' if node_count != 1 else ''}\n"
+            else:
+                # Show time period for default behavior - use abbreviated form
+                days_str = f"{self.prefix_heard_days}d" if self.prefix_heard_days != 7 else "7d"
+                response = f"Prefix {prefix}: {node_count} repeater{'s' if node_count != 1 else ''} ({days_str})\n"
         else:
             # API response format
             response = f"📡 Prefix {prefix} ({node_count} repeater{'s' if node_count != 1 else ''}):\n"
