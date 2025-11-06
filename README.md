@@ -149,7 +149,9 @@ The bot responds to these commands:
 - `moon` - Moon phase and times
 - `solar` - Solar conditions
 - `hfcond` - HF band conditions
-- `satpass <NORAD>` - Satellite pass information
+- `satpass <NORAD>` - Satellite pass information (default: radio passes, all passes above horizon)
+- `satpass <NORAD> visual` - Visual passes only (must be visually observable)
+- `satpass <shortcut>` - Use shortcuts like `iss`, `hst`, `hubble`, `goes18`, `tiangong`
 
 **Gaming Commands:**
 - `dice` - Roll dice (d6 by default, or specify like `dice d20`, `dice 2d6`)

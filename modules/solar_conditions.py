@@ -341,12 +341,18 @@ def get_moon(lat=None, lon=None):
         logger.error(f"Exception in get_moon: {e}")
         return ERROR_FETCHING_DATA
 
-def get_next_satellite_pass(satellite, lat=None, lon=None):
-    """Get the next satellite pass for a given satellite"""
+def get_next_satellite_pass(satellite, lat=None, lon=None, use_visual=False):
+    """Get the next satellite pass for a given satellite
+    
+    Args:
+        satellite: NORAD ID or satellite identifier
+        lat: Observer latitude (optional, uses config if not provided)
+        lon: Observer longitude (optional, uses config if not provided)
+        use_visual: If True, use visualpasses endpoint (only visually observable passes)
+                   If False, use radiopasses endpoint (all passes above horizon, default)
+    """
     try:
         pass_data = ''
-        # Get the next satellite pass for a given satellite
-        visual_pass_api = "https://api.n2yo.com/rest/v1/satellite/visualpasses/"
         
         if lat is None and lon is None:
             lat = get_config_value('Bot', 'bot_latitude', DEFAULT_LATITUDE)
@@ -358,7 +364,21 @@ def get_next_satellite_pass(satellite, lat=None, lon=None):
             logger.error("System: Missing API key free at https://www.n2yo.com/login/")
             return "not configured, bug your sysop"
         
-        url = f"{visual_pass_api}{satellite}/{lat}/{lon}/0/2/300/&apiKey={n2yo_key}"
+        # Choose endpoint based on use_visual parameter
+        if use_visual:
+            # Visual passes: requires satellite to be visually observable (illuminated, dark sky)
+            # Format: /visualpasses/{id}/{lat}/{lng}/{alt}/{days}/{min_visibility_seconds}
+            api_base = "https://api.n2yo.com/rest/v1/satellite/visualpasses/"
+            url = f"{api_base}{satellite}/{lat}/{lon}/0/10/60/&apiKey={n2yo_key}"
+            endpoint_type = "visual"
+        else:
+            # Radio passes: all passes above horizon (default, matches N2YO website)
+            # Format: /radiopasses/{id}/{lat}/{lng}/{alt}/{days}/{min_elevation_degrees}
+            api_base = "https://api.n2yo.com/rest/v1/satellite/radiopasses/"
+            url = f"{api_base}{satellite}/{lat}/{lon}/0/10/0/&apiKey={n2yo_key}"
+            endpoint_type = "radio"
+        
+        logger.debug(f"Satellite pass request: NORAD {satellite}, {endpoint_type} passes, location: {lat}, {lon}")
         
         # Get the next pass data
         try:
@@ -367,28 +387,79 @@ def get_next_satellite_pass(satellite, lat=None, lon=None):
             next_pass_data = requests.get(url, timeout=DEFAULT_URL_TIMEOUT)
             if next_pass_data.ok:
                 pass_json = next_pass_data.json()
-                if 'info' in pass_json and 'passescount' in pass_json['info'] and pass_json['info']['passescount'] > 0:
+                passes_count = pass_json.get('info', {}).get('passescount', 0)
+                logger.debug(f"N2YO API response: {passes_count} {endpoint_type} passes found")
+                
+                if 'info' in pass_json and passes_count > 0:
                     satname = pass_json['info']['satname']
-                    pass_time = pass_json['passes'][0]['startUTC']
-                    pass_duration = pass_json['passes'][0]['duration']
-                    pass_max_el = pass_json['passes'][0]['maxEl']
-                    pass_rise_time = datetime.fromtimestamp(pass_time).strftime('%a %d %I:%M%p')
-                    pass_start_az_compass = pass_json['passes'][0]['startAzCompass']
-                    pass_set_time = datetime.fromtimestamp(pass_time + pass_duration).strftime('%a %d %I:%M%p')
-                    pass_end_az_compass = pass_json['passes'][0]['endAzCompass']
                     
-                    # Format duration nicely
-                    duration_hours = pass_duration // 60
-                    duration_minutes = pass_duration % 60
-                    if duration_hours > 0:
-                        duration_str = f"{duration_hours}h{duration_minutes}m"
+                    # Find the first pass that hasn't occurred yet (startUTC is in the future)
+                    current_time_utc = datetime.now(timezone.utc).timestamp()
+                    
+                    # Find the first future pass
+                    next_pass = None
+                    pass_index = 0
+                    for idx, pass_entry in enumerate(pass_json['passes']):
+                        pass_utc_time = pass_entry['startUTC']
+                        if pass_utc_time >= current_time_utc:
+                            next_pass = pass_entry
+                            pass_index = idx
+                            logger.debug(f"Selected pass {idx} for {satname}: {datetime.fromtimestamp(pass_utc_time, tz=timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M')}, maxEl={pass_entry['maxEl']}°")
+                            break
+                    
+                    # If no future pass found, use the first one (shouldn't happen with 10-day lookahead)
+                    if next_pass is None:
+                        next_pass = pass_json['passes'][0]
+                        logger.warning(f"All passes for {satname} appear to be in the past, using first pass")
+                        pass_index = 0
+                    
+                    pass_time = next_pass['startUTC']
+                    # Calculate duration from endUTC - startUTC if duration field not present (radiopasses)
+                    if 'duration' in next_pass:
+                        pass_duration = next_pass['duration']
                     else:
-                        duration_str = f"{duration_minutes}m"
+                        pass_duration = next_pass['endUTC'] - next_pass['startUTC']
+                    pass_max_el = next_pass['maxEl']
+                    pass_start_az_compass = next_pass['startAzCompass']
+                    pass_end_az_compass = next_pass['endAzCompass']
+                    
+                    # Validate duration - LEO passes are typically 5-15 minutes, max under 1 hour
+                    # Geostationary satellites don't have traditional passes
+                    MAX_REASONABLE_PASS_DURATION = 7200  # 2 hours in seconds (very generous upper bound)
+                    if pass_duration > MAX_REASONABLE_PASS_DURATION:
+                        logger.warning(f"Satellite {satname} has unreasonable pass duration: {pass_duration}s. May be geostationary or invalid data.")
+                        pass_data = f"{satname} appears to be geostationary or has invalid pass data. Geostationary satellites don't have traditional passes - they remain in a fixed position relative to Earth."
+                        return pass_data
+                    
+                    # Convert UTC timestamp to local time
+                    pass_utc = datetime.fromtimestamp(pass_time, tz=timezone.utc)
+                    pass_local = pass_utc.astimezone()
+                    set_utc = datetime.fromtimestamp(pass_time + pass_duration, tz=timezone.utc)
+                    set_local = set_utc.astimezone()
+                    
+                    # Format times based on zulu time preference
+                    use_zulu = get_config_value('Solar_Config', 'use_zulu_time', DEFAULT_ZULU_TIME)
+                    if use_zulu:
+                        pass_rise_time = pass_local.strftime('%a %d %H:%M')
+                        pass_set_time = set_local.strftime('%a %d %H:%M')
+                    else:
+                        pass_rise_time = pass_local.strftime('%a %d %I:%M%p')
+                        pass_set_time = set_local.strftime('%a %d %I:%M%p')
+                    
+                    # Format duration nicely (duration is in seconds from N2YO)
+                    duration_minutes = pass_duration // 60
+                    duration_seconds = pass_duration % 60
+                    if duration_minutes > 0:
+                        duration_str = f"{duration_minutes}m{duration_seconds}s"
+                    else:
+                        duration_str = f"{duration_seconds}s"
                     
                     pass_data = f"{satname} @{pass_rise_time} Az:{pass_start_az_compass} for{duration_str}, MaxEl:{pass_max_el}° Set@{pass_set_time} Az:{pass_end_az_compass}"
-                elif pass_json['info']['passescount'] == 0:
+                elif passes_count == 0:
                     satname = pass_json['info']['satname']
-                    pass_data = f"{satname} has no upcoming passes"
+                    pass_type = "visible" if use_visual else ""
+                    logger.debug(f"Satellite {satname} (NORAD {satellite}) has no {pass_type} passes in next 10 days")
+                    pass_data = f"{satname} has no {pass_type} passes in the next 10 days from this location"
             else:
                 logger.error(f"System: Error fetching satellite pass data {satellite}")
                 pass_data = ERROR_FETCHING_DATA

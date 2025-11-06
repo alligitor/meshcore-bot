@@ -14,7 +14,7 @@ class SatpassCommand(BaseCommand):
     # Plugin metadata
     name = "satpass"
     keywords = ['satpass']
-    description = "Get satellite pass info: satpass <NORAD_number_or_shortcut>"
+    description = "Get satellite pass info: satpass <NORAD_number_or_shortcut> [visual]"
     category = "solar"
     
     # Common satellite shortcuts
@@ -50,6 +50,13 @@ class SatpassCommand(BaseCommand):
             
             satellite_input = parts[1].lower()
             
+            # Check for "visual" or "vis" option
+            use_visual = False
+            if len(parts) >= 3:
+                option = parts[2].lower()
+                if option in ['visual', 'vis']:
+                    use_visual = True
+            
             # Check if it's a shortcut first
             if satellite_input in self.SATELLITE_SHORTCUTS:
                 satellite = self.SATELLITE_SHORTCUTS[satellite_input]
@@ -58,7 +65,7 @@ class SatpassCommand(BaseCommand):
                 satellite = satellite_input
             
             # Get satellite pass information
-            pass_info = get_next_satellite_pass(satellite)
+            pass_info = get_next_satellite_pass(satellite, use_visual=use_visual)
             
             # Send response
             response = f"🛰️ Satellite Pass:\n{pass_info}"
@@ -100,7 +107,7 @@ class SatpassCommand(BaseCommand):
         other_list = [f"{name} ({self.SATELLITE_SHORTCUTS[name]})" for name in other if name in self.SATELLITE_SHORTCUTS]
         shortcuts_text += ", ".join(other_list) + "\n"
         
-        shortcuts_text += "\nExamples:\n• satpass iss\n• satpass noaa15\n• satpass 25544"
+        shortcuts_text += "\nExamples:\n• satpass iss\n• satpass noaa15\n• satpass 25544\n• satpass 27607 visual (visual passes only)"
         
         return shortcuts_text
     
