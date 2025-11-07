@@ -83,16 +83,31 @@ class BotDataViewer:
         # Create logs directory if it doesn't exist
         os.makedirs('logs', exist_ok=True)
         
-        # Configure logging
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('logs/web_viewer_modern.log'),
-                logging.StreamHandler()
-            ]
-        )
+        # Get or create logger (don't use basicConfig as it may conflict with existing logging)
         self.logger = logging.getLogger('modern_web_viewer')
+        self.logger.setLevel(logging.DEBUG)
+        
+        # Remove existing handlers to avoid duplicates
+        self.logger.handlers.clear()
+        
+        # Create file handler
+        file_handler = logging.FileHandler('logs/web_viewer_modern.log')
+        file_handler.setLevel(logging.DEBUG)
+        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        self.logger.addHandler(file_handler)
+        
+        # Create console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(console_formatter)
+        self.logger.addHandler(console_handler)
+        
+        # Prevent propagation to root logger to avoid duplicate messages
+        self.logger.propagate = False
+        
+        self.logger.info("Web viewer logging initialized")
     
     def _load_config(self, config_path):
         """Load configuration from file"""
@@ -338,8 +353,36 @@ class BotDataViewer:
                     return jsonify({'error': 'Contact does not have valid coordinates'}), 400
                 
                 # Perform geocoding
-                self.logger.info(f"Manual geocoding requested for {name} ({public_key[:16]}...)")
-                location_info = self.repeater_manager._get_full_location_from_coordinates(lat, lon)
+                self.logger.info(f"Manual geocoding requested for {name} ({public_key[:16]}...) at coordinates {lat}, {lon}")
+                # sqlite3.Row objects use dictionary-style access with []
+                current_city = contact['city']
+                current_state = contact['state']
+                current_country = contact['country']
+                self.logger.debug(f"Current location data - city: {current_city}, state: {current_state}, country: {current_country}")
+                
+                try:
+                    location_info = self.repeater_manager._get_full_location_from_coordinates(lat, lon)
+                    self.logger.debug(f"Geocoding result for {name}: {location_info}")
+                except Exception as geocode_error:
+                    conn.close()
+                    self.logger.error(f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}", exc_info=True)
+                    return jsonify({
+                        'success': False,
+                        'error': f'Geocoding exception: {str(geocode_error)}',
+                        'location': {}
+                    }), 500
+                
+                # Check if geocoding returned any useful data
+                has_location_data = location_info.get('city') or location_info.get('state') or location_info.get('country')
+                
+                if not has_location_data:
+                    conn.close()
+                    self.logger.warning(f"Geocoding returned no location data for {name} at {lat}, {lon}. Result: {location_info}")
+                    return jsonify({
+                        'success': False,
+                        'error': 'Geocoding returned no location data. The coordinates may be invalid or the geocoding service may be unavailable.',
+                        'location': location_info
+                    }), 500
                 
                 # Update database with new location data
                 cursor.execute('''
@@ -356,16 +399,26 @@ class BotDataViewer:
                 conn.commit()
                 conn.close()
                 
+                # Build success message with what was found
+                found_parts = []
+                if location_info.get('city'):
+                    found_parts.append(f"city: {location_info['city']}")
+                if location_info.get('state'):
+                    found_parts.append(f"state: {location_info['state']}")
+                if location_info.get('country'):
+                    found_parts.append(f"country: {location_info['country']}")
+                
+                success_message = f'Successfully geocoded {name} - Found {", ".join(found_parts)}'
                 self.logger.info(f"Successfully geocoded {name}: {location_info}")
                 
                 return jsonify({
                     'success': True,
                     'location': location_info,
-                    'message': f'Successfully geocoded {name}'
+                    'message': success_message
                 })
                 
             except Exception as e:
-                self.logger.error(f"Error geocoding contact: {e}")
+                self.logger.error(f"Error geocoding contact: {e}", exc_info=True)
                 return jsonify({'error': str(e)}), 500
     
     def _setup_socketio_handlers(self):

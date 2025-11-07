@@ -839,24 +839,29 @@ class ModernContactsManager {
             
             const data = await response.json();
             
-            if (!response.ok) {
+            if (!response.ok || !data.success) {
                 throw new Error(data.error || 'Geocoding failed');
+            }
+            
+            // Check if we got any location data
+            if (!data.location || (!data.location.city && !data.location.state && !data.location.country)) {
+                throw new Error('Geocoding returned no location data');
             }
             
             // Update the contact data in our local array
             const contactIndex = this.filteredData.findIndex(c => c.user_id === userId);
             if (contactIndex !== -1) {
-                this.filteredData[contactIndex].city = data.location.city;
-                this.filteredData[contactIndex].state = data.location.state;
-                this.filteredData[contactIndex].country = data.location.country;
+                this.filteredData[contactIndex].city = data.location.city || this.filteredData[contactIndex].city;
+                this.filteredData[contactIndex].state = data.location.state || this.filteredData[contactIndex].state;
+                this.filteredData[contactIndex].country = data.location.country || this.filteredData[contactIndex].country;
             }
             
             // Also update in the main contacts data
             const mainContactIndex = this.contactsData.tracking_data.findIndex(c => c.user_id === userId);
             if (mainContactIndex !== -1) {
-                this.contactsData.tracking_data[mainContactIndex].city = data.location.city;
-                this.contactsData.tracking_data[mainContactIndex].state = data.location.state;
-                this.contactsData.tracking_data[mainContactIndex].country = data.location.country;
+                this.contactsData.tracking_data[mainContactIndex].city = data.location.city || this.contactsData.tracking_data[mainContactIndex].city;
+                this.contactsData.tracking_data[mainContactIndex].state = data.location.state || this.contactsData.tracking_data[mainContactIndex].state;
+                this.contactsData.tracking_data[mainContactIndex].country = data.location.country || this.contactsData.tracking_data[mainContactIndex].country;
             }
             
             // Re-render the table to show updated location

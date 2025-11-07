@@ -1076,10 +1076,14 @@ class RepeaterManager:
                 location_info['latitude'] is not None and 
                 location_info['longitude'] is not None and 
                 not (location_info['latitude'] == 0.0 and location_info['longitude'] == 0.0) and
-                not (location_info['state'] and location_info['country'])
+                not (location_info['state'] and location_info['country'] and location_info['city'])
             )
             if should_geocode:
-                self.logger.debug(f"📍 New contact {name}, will geocode coordinates (missing state/country)")
+                missing_fields = []
+                if not location_info.get('state'): missing_fields.append("state")
+                if not location_info.get('country'): missing_fields.append("country")
+                if not location_info.get('city'): missing_fields.append("city")
+                self.logger.debug(f"📍 New contact {name}, will geocode coordinates (missing {', '.join(missing_fields)})")
             return should_geocode, updated_location_info
         
         # Extract existing location data
@@ -1101,12 +1105,13 @@ class RepeaterManager:
                 abs(location_info['longitude'] - existing_lon) > 0.001
             )
             
-            # Check if we have sufficient location data (state AND country)
-            has_sufficient_location_data = existing_state and existing_country
+            # Check if we have sufficient location data (state AND country AND city)
+            # City is important for display, so we should geocode if it's missing
+            has_sufficient_location_data = existing_state and existing_country and existing_city
             
             # Only geocode if:
             # 1. Coordinates changed significantly (repeater moved), OR
-            # 2. We're missing both state and country (critical location data)
+            # 2. We're missing state, country, or city (incomplete location data)
             should_geocode = coordinates_changed or not has_sufficient_location_data
             
             if not should_geocode:
@@ -1115,11 +1120,15 @@ class RepeaterManager:
                 updated_location_info['city'] = existing_city
                 updated_location_info['state'] = existing_state
                 updated_location_info['country'] = existing_country
-                self.logger.debug(f"📍 Using existing location data for {name} (coordinates unchanged, has state/country)")
+                self.logger.debug(f"📍 Using existing location data for {name} (coordinates unchanged, has state/country/city)")
             elif coordinates_changed:
                 self.logger.debug(f"📍 Location changed significantly for {name} (moved >111m), will geocode new coordinates")
             else:
-                self.logger.debug(f"📍 Missing state/country for {name}, will geocode coordinates")
+                missing_fields = []
+                if not existing_state: missing_fields.append("state")
+                if not existing_country: missing_fields.append("country")
+                if not existing_city: missing_fields.append("city")
+                self.logger.debug(f"📍 Missing {', '.join(missing_fields)} for {name}, will geocode coordinates")
         else:
             # No valid coordinates in new data, keep existing location
             updated_location_info['latitude'] = existing_lat if existing_lat != 0.0 else None
@@ -1229,9 +1238,12 @@ class RepeaterManager:
             )
             
             # Perform reverse geocoding
+            self.logger.debug(f"Calling Nominatim reverse geocoding for {latitude}, {longitude}")
             location = geolocator.reverse(f"{latitude}, {longitude}")
+            
             if location:
                 address = location.raw.get('address', {})
+                self.logger.debug(f"Geocoding API returned address data: {list(address.keys())}")
                 
                 # Get city name from various fields
                 city = (address.get('city') or 
@@ -1248,6 +1260,7 @@ class RepeaterManager:
                         location_info['city'] = f"{neighborhood}, {city}"
                     else:
                         location_info['city'] = city
+                    self.logger.debug(f"Extracted city: {location_info['city']}")
                 
                 # Get state/province information
                 state = (address.get('state') or 
@@ -1256,12 +1269,16 @@ class RepeaterManager:
                         address.get('county'))
                 if state:
                     location_info['state'] = state
+                    self.logger.debug(f"Extracted state: {state}")
                 
                 # Get country information
                 country = (address.get('country') or 
                           address.get('country_code'))
                 if country:
                     location_info['country'] = country
+                    self.logger.debug(f"Extracted country: {country}")
+            else:
+                self.logger.warning(f"Geocoding API returned no location for {latitude}, {longitude}")
             
             # Cache the result for 24 hours to avoid duplicate API calls
             self.db_manager.cache_json(cache_key, location_info, "geolocation", cache_hours=24)
