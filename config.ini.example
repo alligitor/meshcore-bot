@@ -1,7 +1,8 @@
 [Connection]
-# Connection type: serial or ble
+# Connection type: serial, ble, or tcp
 # serial: Connect via USB serial port
 # ble: Connect via Bluetooth Low Energy
+# tcp: Connect via TCP/IP
 connection_type = serial
 
 # Serial port (for serial connection)
@@ -11,6 +12,11 @@ serial_port = /dev/ttyUSB0
 # BLE device name (for BLE connection)
 # Leave commented out for auto-detection, or specify exact device name
 #ble_device_name = MeshCore
+
+# TCP hostname or IP address (for TCP connection)
+#hostname = 192.168.1.60
+# TCP port (for TCP connection)
+#tcp_port = 5000
 
 # Connection timeout in seconds
 timeout = 30

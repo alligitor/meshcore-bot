@@ -1,10 +1,10 @@
 # MeshCore Bot
 
-A Python bot that connects to MeshCore mesh networks via serial port or BLE. The bot responds to messages containing configured keywords, executes commands, and provides various data services including weather, solar conditions, and satellite pass information.
+A Python bot that connects to MeshCore mesh networks via serial port, BLE, or TCP/IP. The bot responds to messages containing configured keywords, executes commands, and provides various data services including weather, solar conditions, and satellite pass information.
 
 ## Features
 
-- **Connection Methods**: Serial port or BLE (Bluetooth Low Energy)
+- **Connection Methods**: Serial port, BLE (Bluetooth Low Energy), or TCP/IP
 - **Keyword Responses**: Configurable keyword-response pairs with template variables
 - **Command System**: Plugin-based command architecture with built-in commands
 - **Rate Limiting**: Configurable rate limiting to prevent network spam
@@ -76,8 +76,11 @@ The bot uses `config.ini` for all settings. Key configuration sections:
 ### Connection
 ```ini
 [Connection]
-connection_type = serial          # serial or ble
-serial_port = /dev/ttyUSB0        # Serial port path
+connection_type = serial          # serial, ble, or tcp
+serial_port = /dev/ttyUSB0        # Serial port path (for serial)
+#hostname = 192.168.1.60         # TCP hostname/IP (for TCP)
+#tcp_port = 5000                  # TCP port (for TCP)
+#ble_device_name = MeshCore       # BLE device name (for BLE)
 timeout = 30                      # Connection timeout
 ```
 
@@ -217,6 +220,17 @@ help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcon
    ble_device_name = MeshCore
    ```
 
+### TCP Connection
+
+1. Ensure your MeshCore device has TCP/IP connectivity (e.g., via gateway or bridge)
+2. Configure TCP in `config.ini`:
+   ```ini
+   [Connection]
+   connection_type = tcp
+   hostname = 192.168.1.60  # IP address or hostname
+   tcp_port = 5000          # TCP port (default: 5000)
+   ```
+
 ## Troubleshooting
 
 ### Common Issues
@@ -231,11 +245,18 @@ help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcon
    - Check device name in config
    - Verify BLE permissions
 
-3. **Message Parsing Errors**:
+3. **TCP Connection Issues**:
+   - Verify hostname/IP address is correct
+   - Check that TCP port is open and accessible
+   - Ensure network connectivity to the device
+   - Verify the MeshCore device supports TCP connections
+   - Check firewall settings if connection fails
+
+4. **Message Parsing Errors**:
    - Enable DEBUG logging for detailed information
    - Check meshcore library documentation for protocol details
 
-4. **Rate Limiting**:
+5. **Rate Limiting**:
    - Adjust `rate_limit_seconds` in config
    - Check logs for rate limiting messages
 

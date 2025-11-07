@@ -122,9 +122,10 @@ class MeshCoreBot:
     def create_default_config(self):
         """Create default configuration file"""
         default_config = """[Connection]
-# Connection type: serial or ble
+# Connection type: serial, ble, or tcp
 # serial: Connect via USB serial port
 # ble: Connect via Bluetooth Low Energy
+# tcp: Connect via TCP/IP
 connection_type = serial
 
 # Serial port (for serial connection)
@@ -134,6 +135,11 @@ serial_port = /dev/ttyUSB0
 # BLE device name (for BLE connection)
 # Leave commented out for auto-detection, or specify exact device name
 #ble_device_name = MeshCore
+
+# TCP hostname or IP address (for TCP connection)
+#hostname = 192.168.1.60
+# TCP port (for TCP connection)
+#tcp_port = 5000
 
 # Connection timeout in seconds
 timeout = 30
@@ -548,6 +554,15 @@ use_zulu_time = false
                 serial_port = self.config.get('Connection', 'serial_port', fallback='/dev/ttyUSB0')
                 self.logger.info(f"Connecting via serial port: {serial_port}")
                 self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
+            elif connection_type == 'tcp':
+                # Create TCP connection
+                hostname = self.config.get('Connection', 'hostname', fallback=None)
+                tcp_port = self.config.getint('Connection', 'tcp_port', fallback=5000)
+                if not hostname:
+                    self.logger.error("TCP connection requires 'hostname' to be set in config")
+                    return False
+                self.logger.info(f"Connecting via TCP: {hostname}:{tcp_port}")
+                self.meshcore = await meshcore.MeshCore.create_tcp(hostname, tcp_port, debug=False)
             else:
                 # Create BLE connection (default)
                 ble_device_name = self.config.get('Connection', 'ble_device_name', fallback=None)
