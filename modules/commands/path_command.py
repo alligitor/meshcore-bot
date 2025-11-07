@@ -38,6 +38,12 @@ class PathCommand(BaseCommand):
         self.max_proximity_range = bot.config.getfloat('Path_Command', 'max_proximity_range', fallback=200.0)
         self.max_repeater_age_days = bot.config.getint('Path_Command', 'max_repeater_age_days', fallback=14)
         
+        # Get recency/proximity weighting (0.0 to 1.0, where 1.0 = 100% recency, 0.0 = 100% proximity)
+        # Default 0.4 means 40% recency, 60% proximity (more balanced for path routing)
+        recency_weight = bot.config.getfloat('Path_Command', 'recency_weight', fallback=0.4)
+        self.recency_weight = max(0.0, min(1.0, recency_weight))  # Clamp to 0.0-1.0
+        self.proximity_weight = 1.0 - self.recency_weight
+        
         # Get confidence indicator symbols from config
         self.high_confidence_symbol = bot.config.get('Path_Command', 'high_confidence_symbol', fallback='🎯')
         self.medium_confidence_symbol = bot.config.get('Path_Command', 'medium_confidence_symbol', fallback='📍')
@@ -473,9 +479,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance  # Invert so closer = higher score
             
-            # Weight recency more heavily for path decoding (70% recency, 30% proximity)
-            # Recent repeaters are more likely to have been involved in the message path
-            combined_score = (recency_score * 0.7) + (proximity_score * 0.3)
+            # Use configurable weighting (default: 40% recency, 60% proximity)
+            combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
             combined_scores.append((combined_score, distance, repeater))
         
         if not combined_scores:
@@ -815,8 +820,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(avg_distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Combined score: 70% recency, 30% proximity (recency more important for path decoding)
-            combined_score = (recency_score * 0.7) + (proximity_score * 0.3)
+            # Use configurable weighting (default: 40% recency, 60% proximity)
+            combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
@@ -865,8 +870,8 @@ class PathCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Combined score: 70% recency, 30% proximity (recency more important for path decoding)
-            combined_score = (recency_score * 0.7) + (proximity_score * 0.3)
+            # Use configurable weighting (default: 40% recency, 60% proximity)
+            combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score

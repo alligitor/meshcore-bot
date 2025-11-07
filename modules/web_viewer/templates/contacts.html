@@ -418,9 +418,17 @@ class ModernContactsManager {
                 <td>${this.formatTimeAgo(contact.last_seen)}</td>
                 <td><span class="badge bg-success">${contact.advert_count || 0}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-outline-info" onclick="contactsManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
-                        <i class="fas fa-info-circle"></i>
-                    </button>
+                    <div class="btn-group" role="group">
+                        <button class="btn btn-sm btn-outline-info" onclick="contactsManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
+                            <i class="fas fa-info-circle"></i>
+                        </button>
+                        ${contact.latitude && contact.longitude && contact.latitude !== 0 && contact.longitude !== 0 ? 
+                            `<button class="btn btn-sm btn-outline-primary" onclick="contactsManager.geocodeContact('${contact.user_id.replace(/'/g, "\\'")}', this)" title="Geocode Location">
+                                <i class="fas fa-map-marker-alt"></i>
+                            </button>` : 
+                            ''
+                        }
+                    </div>
                 </td>
             </tr>
         `).join('');
@@ -789,10 +797,94 @@ class ModernContactsManager {
         modal.show();
     }
     
+    async geocodeContact(userId, buttonElement = null) {
+        // Find the contact data
+        const contact = this.filteredData.find(c => c.user_id === userId);
+        if (!contact) {
+            this.showError('Contact data not found');
+            return;
+        }
+        
+        // Check if contact has valid coordinates
+        if (!contact.latitude || !contact.longitude || contact.latitude === 0 || contact.longitude === 0) {
+            this.showError('Contact does not have valid coordinates');
+            return;
+        }
+        
+        // Get the button element - use passed element or find it
+        const button = buttonElement || document.querySelector(`button[onclick*="${userId.substring(0, 16)}"]`);
+        if (!button) {
+            this.showError('Button not found');
+            return;
+        }
+        
+        // Disable button and show loading state
+        const originalHTML = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        button.classList.remove('btn-outline-primary');
+        button.classList.add('btn-secondary');
+        
+        try {
+            // Call the geocoding API
+            const response = await fetch('/api/geocode-contact', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    public_key: userId
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Geocoding failed');
+            }
+            
+            // Update the contact data in our local array
+            const contactIndex = this.filteredData.findIndex(c => c.user_id === userId);
+            if (contactIndex !== -1) {
+                this.filteredData[contactIndex].city = data.location.city;
+                this.filteredData[contactIndex].state = data.location.state;
+                this.filteredData[contactIndex].country = data.location.country;
+            }
+            
+            // Also update in the main contacts data
+            const mainContactIndex = this.contactsData.tracking_data.findIndex(c => c.user_id === userId);
+            if (mainContactIndex !== -1) {
+                this.contactsData.tracking_data[mainContactIndex].city = data.location.city;
+                this.contactsData.tracking_data[mainContactIndex].state = data.location.state;
+                this.contactsData.tracking_data[mainContactIndex].country = data.location.country;
+            }
+            
+            // Re-render the table to show updated location
+            this.renderContactsData();
+            
+            // Show success message
+            this.showSuccess(data.message || 'Location geocoded successfully');
+            
+        } catch (error) {
+            console.error('Error geocoding contact:', error);
+            this.showError('Failed to geocode contact: ' + error.message);
+        } finally {
+            // Restore button state
+            button.disabled = false;
+            button.innerHTML = originalHTML;
+            button.classList.remove('btn-secondary');
+            button.classList.add('btn-outline-primary');
+        }
+    }
+    
     showError(message) {
         const errorDiv = document.createElement('div');
-        errorDiv.className = 'error';
-        errorDiv.textContent = message;
+        errorDiv.className = 'alert alert-danger alert-dismissible fade show';
+        errorDiv.setAttribute('role', 'alert');
+        errorDiv.innerHTML = `
+            <strong>Error:</strong> ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        `;
         
         const content = document.querySelector('.container-fluid');
         if (content) {
@@ -801,6 +893,27 @@ class ModernContactsManager {
             setTimeout(() => {
                 if (errorDiv.parentNode) {
                     errorDiv.parentNode.removeChild(errorDiv);
+                }
+            }, 5000);
+        }
+    }
+    
+    showSuccess(message) {
+        const successDiv = document.createElement('div');
+        successDiv.className = 'alert alert-success alert-dismissible fade show';
+        successDiv.setAttribute('role', 'alert');
+        successDiv.innerHTML = `
+            <strong>Success:</strong> ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        `;
+        
+        const content = document.querySelector('.container-fluid');
+        if (content) {
+            content.insertBefore(successDiv, content.firstChild);
+            
+            setTimeout(() => {
+                if (successDiv.parentNode) {
+                    successDiv.parentNode.removeChild(successDiv);
                 }
             }, 5000);
         }

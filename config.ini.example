@@ -96,6 +96,24 @@ admin_pubkeys =
 # These commands will only work for users in the admin_pubkeys list
 admin_commands = repeater,webviewer
 
+[Companion_Purge]
+# Enable companion contact purging
+# true: Purge inactive companions when contact list is full
+# false: Never purge companions (default: false for safety)
+companion_purge_enabled = false
+
+# Days since last DM to consider companion inactive
+# Companions who haven't DM'd the bot in this many days may be purged
+companion_dm_threshold_days = 30
+
+# Days since last advert to consider companion inactive
+# Companions who haven't adverted in this many days may be purged
+companion_advert_threshold_days = 30
+
+# Minimum days since last activity (DM or advert) before purge
+# Companions must be inactive for at least this many days
+companion_min_inactive_days = 30
+
 [Jokes]
 # Enable or disable the joke command
 # true: Joke command is available
@@ -404,6 +422,14 @@ max_proximity_range = 200
 # Helps filter out stale or inactive repeaters from path decoding
 # Set to 0 to disable age filtering
 max_repeater_age_days = 14
+
+# Recency vs Proximity weighting (0.0 to 1.0)
+# Controls how much recency (when last heard) vs proximity (distance) matters
+# 0.0 = 100% proximity (only distance matters)
+# 1.0 = 100% recency (only when last heard matters)
+# 0.4 = 40% recency, 60% proximity (default - balanced for path routing)
+# Lower values favor closer repeaters, higher values favor recently heard repeaters
+recency_weight = 0.4
 
 # Confidence indicator symbols for path command
 # High confidence (>= 0.9): Shows when path decoding is very reliable

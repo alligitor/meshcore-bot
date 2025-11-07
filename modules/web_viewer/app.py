@@ -108,9 +108,20 @@ class BotDataViewer:
             from modules.db_manager import DBManager
             # Create a minimal bot object for DBManager
             class MinimalBot:
-                def __init__(self, logger):
+                def __init__(self, logger, config, db_manager=None):
                     self.logger = logger
-            self.db_manager = DBManager(MinimalBot(self.logger), self.db_path)
+                    self.config = config
+                    self.db_manager = db_manager
+            
+            # Create DBManager first
+            minimal_bot = MinimalBot(self.logger, self.config)
+            self.db_manager = DBManager(minimal_bot, self.db_path)
+            
+            # Now set db_manager on the minimal bot for RepeaterManager
+            minimal_bot.db_manager = self.db_manager
+            
+            # Initialize repeater manager for geocoding functionality
+            self.repeater_manager = RepeaterManager(minimal_bot)
             
             # Store database paths for direct connection
             self.db_path = self.db_path
@@ -290,6 +301,71 @@ class BotDataViewer:
                 
             except Exception as e:
                 self.logger.error(f"Error getting recent commands: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/geocode-contact', methods=['POST'])
+        def api_geocode_contact():
+            """Manually geocode a contact by public_key"""
+            try:
+                data = request.get_json()
+                if not data or 'public_key' not in data:
+                    return jsonify({'error': 'public_key is required'}), 400
+                
+                public_key = data['public_key']
+                
+                # Get contact data from database
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT latitude, longitude, name, city, state, country
+                    FROM complete_contact_tracking
+                    WHERE public_key = ?
+                ''', (public_key,))
+                
+                contact = cursor.fetchone()
+                if not contact:
+                    conn.close()
+                    return jsonify({'error': 'Contact not found'}), 404
+                
+                lat = contact['latitude']
+                lon = contact['longitude']
+                name = contact['name']
+                
+                # Check if we have valid coordinates
+                if lat is None or lon is None or lat == 0.0 or lon == 0.0:
+                    conn.close()
+                    return jsonify({'error': 'Contact does not have valid coordinates'}), 400
+                
+                # Perform geocoding
+                self.logger.info(f"Manual geocoding requested for {name} ({public_key[:16]}...)")
+                location_info = self.repeater_manager._get_full_location_from_coordinates(lat, lon)
+                
+                # Update database with new location data
+                cursor.execute('''
+                    UPDATE complete_contact_tracking
+                    SET city = ?, state = ?, country = ?
+                    WHERE public_key = ?
+                ''', (
+                    location_info.get('city'),
+                    location_info.get('state'),
+                    location_info.get('country'),
+                    public_key
+                ))
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"Successfully geocoded {name}: {location_info}")
+                
+                return jsonify({
+                    'success': True,
+                    'location': location_info,
+                    'message': f'Successfully geocoded {name}'
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error geocoding contact: {e}")
                 return jsonify({'error': str(e)}), 500
     
     def _setup_socketio_handlers(self):

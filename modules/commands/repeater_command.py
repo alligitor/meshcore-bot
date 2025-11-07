@@ -205,14 +205,18 @@ class RepeaterCommand(BaseCommand):
             return f"❌ Error listing repeaters: {e}"
     
     async def _handle_purge(self, args: List[str]) -> str:
-        """Purge repeater contacts"""
+        """Purge repeater or companion contacts"""
         if not hasattr(self.bot, 'repeater_manager'):
             return "Repeater manager not initialized. Please check bot configuration."
         
         if not args:
-            return "Usage: !repeater purge [all|days|name] [reason]\nExamples:\n  !repeater purge all 'Clear all repeaters'\n  !repeater purge all force 'Force clear all repeaters'\n  !repeater purge 30 'Auto-cleanup old repeaters'\n  !repeater purge 'Hillcrest' 'Remove specific repeater'"
+            return "Usage: !repeater purge [all|days|name|companions] [reason]\nExamples:\n  !repeater purge all 'Clear all repeaters'\n  !repeater purge companions 'Clear inactive companions'\n  !repeater purge companions 30 'Purge companions inactive 30+ days'\n  !repeater purge 30 'Auto-cleanup old repeaters'\n  !repeater purge 'Hillcrest' 'Remove specific repeater'"
         
         try:
+            # Check if purging companions
+            if args[0].lower() == 'companions':
+                return await self._handle_purge_companions(args[1:])
+            
             if args[0].lower() == 'all':
                 # Check for force flag
                 force_purge = len(args) > 1 and args[1].lower() == 'force'
@@ -357,6 +361,91 @@ class RepeaterCommand(BaseCommand):
             return "❌ Invalid number of days. Please provide a valid integer."
         except Exception as e:
             return f"❌ Error purging repeaters: {e}"
+    
+    async def _handle_purge_companions(self, args: List[str]) -> str:
+        """Purge companion contacts based on inactivity"""
+        if not hasattr(self.bot, 'repeater_manager'):
+            return "Repeater manager not initialized. Please check bot configuration."
+        
+        if not self.bot.repeater_manager.companion_purge_enabled:
+            return "❌ Companion purge disabled. Enable: [Companion_Purge] companion_purge_enabled = true"
+        
+        try:
+            # Check for days argument
+            days_old = None
+            reason = "Manual purge - inactive companions"
+            
+            if args:
+                try:
+                    # Try to parse first arg as number of days
+                    days_old = int(args[0])
+                    reason = " ".join(args[1:]) if len(args) > 1 else f"Manual purge - companions inactive {days_old}+ days"
+                except ValueError:
+                    # Not a number, treat as reason
+                    reason = " ".join(args) if args else "Manual purge - inactive companions"
+            
+            # Get companions for purging
+            if days_old:
+                # Purge companions inactive for specified days
+                companions_to_purge = await self.bot.repeater_manager._get_companions_for_purging(999)  # Get all eligible
+                # Filter by days
+                from datetime import datetime, timedelta
+                cutoff_date = datetime.now() - timedelta(days=days_old)
+                filtered_companions = []
+                for companion in companions_to_purge:
+                    if companion.get('last_activity'):
+                        try:
+                            last_activity = datetime.fromisoformat(companion['last_activity'])
+                            if last_activity < cutoff_date:
+                                filtered_companions.append(companion)
+                        except:
+                            pass
+                    elif companion.get('days_inactive', 0) >= days_old:
+                        filtered_companions.append(companion)
+                companions_to_purge = filtered_companions
+            else:
+                # Get companions based on configured thresholds
+                companions_to_purge = await self.bot.repeater_manager._get_companions_for_purging(999)  # Get all eligible
+            
+            if not companions_to_purge:
+                return "❌ No companions match criteria (inactive for DM+advert thresholds, not in ACL)"
+            
+            # Purge companions (compact format for 130 char limit)
+            total_to_purge = len(companions_to_purge)
+            purged_count = 0
+            failed_count = 0
+            
+            for i, companion in enumerate(companions_to_purge):
+                self.logger.info(f"Purging companion {i+1}/{total_to_purge}: {companion['name']}")
+                
+                success = await self.bot.repeater_manager.purge_companion_from_contacts(
+                    companion['public_key'], reason
+                )
+                
+                if success:
+                    purged_count += 1
+                else:
+                    failed_count += 1
+                
+                # Add delay between purges to avoid overwhelming the radio
+                # Use 2 seconds to give radio time to process each removal
+                if i < total_to_purge - 1:
+                    await asyncio.sleep(2)
+            
+            # Build compact response (must fit in 130 chars)
+            if failed_count > 0:
+                response = f"✅ {purged_count}/{total_to_purge} companions purged, {failed_count} failed"
+            else:
+                response = f"✅ {purged_count}/{total_to_purge} companions purged"
+            
+            # Truncate if still too long
+            if len(response) > 130:
+                response = f"✅ {purged_count}/{total_to_purge} purged"
+            
+            return response
+            
+        except Exception as e:
+            return f"❌ Error purging companions: {e}"
     
     async def _handle_restore(self, args: List[str]) -> str:
         """Restore purged repeater contacts"""
