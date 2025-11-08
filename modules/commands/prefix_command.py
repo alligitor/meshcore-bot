@@ -92,11 +92,11 @@ class PrefixCommand(BaseCommand):
         
         # Handle free/available command
         if command == "FREE" or command == "AVAILABLE":
-            free_prefixes, total_free = await self.get_free_prefixes()
-            if free_prefixes:
-                response = self.format_free_prefixes_response(free_prefixes, total_free)
-            else:
+            free_prefixes, total_free, has_data = await self.get_free_prefixes()
+            if not has_data:
                 response = "❌ Unable to determine free prefixes. Try 'prefix refresh' first."
+            else:
+                response = self.format_free_prefixes_response(free_prefixes, total_free)
             return await self.send_response(message, response)
         
         # Check for "all" modifier
@@ -404,11 +404,19 @@ class PrefixCommand(BaseCommand):
             self.logger.error(f"Error querying database for prefix '{prefix}': {e}")
             return None
     
-    async def get_free_prefixes(self) -> Tuple[List[str], int]:
-        """Get list of available (unused) prefixes and total count"""
+    async def get_free_prefixes(self) -> Tuple[List[str], int, bool]:
+        """Get list of available (unused) prefixes and total count
+        
+        Returns:
+            Tuple of (selected_prefixes, total_free, has_data)
+            - selected_prefixes: List of up to 10 randomly selected free prefixes
+            - total_free: Total number of free prefixes
+            - has_data: True if we have valid data (from cache or database), False otherwise
+        """
         try:
             # Get all used prefixes from both API cache and database
             used_prefixes = set()
+            has_data = False
             
             # Always try to refresh cache if it's empty or stale
             current_time = time.time()
@@ -417,12 +425,14 @@ class PrefixCommand(BaseCommand):
                 await self.refresh_cache()
             
             # Add prefixes from API cache
-            for prefix in self.cache_data.keys():
-                used_prefixes.add(prefix.upper())
-            
-            self.logger.info(f"Found {len(used_prefixes)} used prefixes from API cache")
+            if self.cache_data:
+                for prefix in self.cache_data.keys():
+                    used_prefixes.add(prefix.upper())
+                has_data = True
+                self.logger.info(f"Found {len(used_prefixes)} used prefixes from API cache")
             
             # Add prefixes from database (filtered by prefix_free_days)
+            db_prefixes_found = False
             try:
                 query = f'''
                     SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
@@ -436,8 +446,17 @@ class PrefixCommand(BaseCommand):
                     prefix = row['prefix'].upper()
                     if len(prefix) == 2:
                         used_prefixes.add(prefix)
+                        db_prefixes_found = True
+                if db_prefixes_found:
+                    has_data = True
+                    self.logger.info(f"Found additional prefixes from database")
             except Exception as e:
                 self.logger.warning(f"Error getting prefixes from database: {e}")
+            
+            # If we don't have any data from either source, return early
+            if not has_data:
+                self.logger.warning("No data available for free prefixes lookup (empty cache and database)")
+                return [], 0, False
             
             # Generate all valid hex prefixes (01-FE, excluding 00 and FF)
             all_prefixes = []
@@ -460,11 +479,11 @@ class PrefixCommand(BaseCommand):
             else:
                 selected_prefixes = random.sample(free_prefixes, 10)
             
-            return selected_prefixes, total_free
+            return selected_prefixes, total_free, True
             
         except Exception as e:
             self.logger.error(f"Error getting free prefixes: {e}")
-            return [], 0
+            return [], 0, False
     
     def format_free_prefixes_response(self, free_prefixes: List[str], total_free: int) -> str:
         """Format the free prefixes response"""
