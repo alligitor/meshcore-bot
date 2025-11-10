@@ -168,6 +168,7 @@ class PathCommand(BaseCommand):
                                     'public_key': row['public_key'],
                                     'device_type': row['device_type'],
                                     'last_seen': row['last_heard'],
+                                    'last_heard': row['last_heard'],  # Include last_heard for recency calculation
                                     'is_active': row['is_currently_tracked'],
                                     'latitude': row['latitude'],
                                     'longitude': row['longitude'],
@@ -189,7 +190,7 @@ class PathCommand(BaseCommand):
                         # Build query with age filtering if configured
                         if self.max_repeater_age_days > 0:
                             query = '''
-                                SELECT name, public_key, device_type, last_heard as last_seen, 
+                                SELECT name, public_key, device_type, last_heard, last_heard as last_seen, 
                                        latitude, longitude, city, state, country,
                                        advert_count, signal_strength, hop_count, role
                                 FROM complete_contact_tracking 
@@ -199,7 +200,7 @@ class PathCommand(BaseCommand):
                             '''.format(self.max_repeater_age_days)
                         else:
                             query = '''
-                                SELECT name, public_key, device_type, last_heard as last_seen, 
+                                SELECT name, public_key, device_type, last_heard, last_heard as last_seen, 
                                        latitude, longitude, city, state, country,
                                        advert_count, signal_strength, hop_count, role
                                 FROM complete_contact_tracking 
@@ -218,6 +219,7 @@ class PathCommand(BaseCommand):
                                     'public_key': row['public_key'],
                                     'device_type': row['device_type'],
                                     'last_seen': row['last_seen'],
+                                    'last_heard': row.get('last_heard', row['last_seen']),  # Include last_heard for recency calculation
                                     'is_active': True,  # Assume active for path purposes
                                     'latitude': row['latitude'],
                                     'longitude': row['longitude'],
@@ -244,6 +246,7 @@ class PathCommand(BaseCommand):
                                 'public_key': row['public_key'],
                                 'device_type': row['device_type'],
                                 'last_seen': row['last_seen'],
+                                'last_heard': row.get('last_heard', row['last_seen']),  # Include last_heard for recency calculation
                                 'is_active': row['is_active'],
                                 'latitude': row['latitude'],
                                 'longitude': row['longitude'],

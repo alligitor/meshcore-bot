@@ -288,6 +288,12 @@ prefix_heard_days = 7
 # Repeaters not heard in this window will be excluded from used prefixes list
 prefix_free_days = 30
 
+# Maximum range for prefix filtering (kilometers)
+# Repeaters beyond this distance from bot location will be excluded from prefix lookups
+# This prevents prefix collisions from far-away repeaters from affecting local prefix availability
+# Set to 0 to disable range limiting
+max_prefix_range = 200
+
 [Weather]
 # Default state for city name disambiguation
 # When users type "wx seattle", it will search for "seattle, WA, USA"

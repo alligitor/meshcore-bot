@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Prefix command for the MeshCore Bot
-Handles repeater prefix lookups using the w0z.is API
+Handles repeater prefix lookups
 """
 
 import asyncio
@@ -9,6 +9,7 @@ import aiohttp
 import time
 import json
 import random
+import math
 from typing import Dict, List, Optional, Any, Tuple
 from .base_command import BaseCommand
 from ..models import MeshMessage
@@ -44,6 +45,18 @@ class PrefixCommand(BaseCommand):
         # Get time window settings from config
         self.prefix_heard_days = self.bot.config.getint('Prefix_Command', 'prefix_heard_days', fallback=7)
         self.prefix_free_days = self.bot.config.getint('Prefix_Command', 'prefix_free_days', fallback=30)
+        
+        # Get bot location and radius filter settings
+        self.bot_latitude = self.bot.config.getfloat('Bot', 'bot_latitude', fallback=None)
+        self.bot_longitude = self.bot.config.getfloat('Bot', 'bot_longitude', fallback=None)
+        self.max_prefix_range = self.bot.config.getfloat('Prefix_Command', 'max_prefix_range', fallback=200.0)
+        
+        # Check if we have valid bot location for distance filtering
+        self.distance_filtering_enabled = (
+            self.bot_latitude is not None and 
+            self.bot_longitude is not None and
+            self.max_prefix_range > 0
+        )
     
     def get_help_text(self) -> str:
         if not self.api_url or self.api_url.strip() == "":
@@ -329,9 +342,24 @@ class PrefixCommand(BaseCommand):
                 self.logger.info(f"No repeaters found in database with prefix '{prefix}'")
                 return None
             
-            # Extract node names and count
+            # Extract node names and count, filtering by distance if enabled
             node_names = []
             for row in results:
+                # Filter by distance if distance filtering is enabled
+                if self.distance_filtering_enabled:
+                    # Check if repeater has valid coordinates
+                    if (row['latitude'] is not None and 
+                        row['longitude'] is not None and
+                        not (row['latitude'] == 0.0 and row['longitude'] == 0.0)):
+                        distance = self._calculate_distance(
+                            self.bot_latitude, self.bot_longitude,
+                            row['latitude'], row['longitude']
+                        )
+                        # Skip repeaters beyond maximum range
+                        if distance > self.max_prefix_range:
+                            continue
+                    # Note: Repeaters without coordinates are included (can't filter unknown locations)
+                
                 name = row['name']
                 device_type = row['device_type']
                 
@@ -404,6 +432,24 @@ class PrefixCommand(BaseCommand):
             self.logger.error(f"Error querying database for prefix '{prefix}': {e}")
             return None
     
+    def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate haversine distance between two points in kilometers"""
+        # Convert latitude and longitude from degrees to radians
+        lat1_rad = math.radians(lat1)
+        lon1_rad = math.radians(lon1)
+        lat2_rad = math.radians(lat2)
+        lon2_rad = math.radians(lon2)
+        
+        # Haversine formula
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        
+        # Earth's radius in kilometers
+        earth_radius = 6371.0
+        return earth_radius * c
+    
     async def get_free_prefixes(self) -> Tuple[List[str], int, bool]:
         """Get list of available (unused) prefixes and total count
         
@@ -431,20 +477,44 @@ class PrefixCommand(BaseCommand):
                 has_data = True
                 self.logger.info(f"Found {len(used_prefixes)} used prefixes from API cache")
             
-            # Add prefixes from database (filtered by prefix_free_days)
+            # Add prefixes from database (filtered by prefix_free_days and distance if enabled)
             db_prefixes_found = False
             try:
-                query = f'''
-                    SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
-                    FROM complete_contact_tracking 
-                    WHERE role IN ('repeater', 'roomserver')
-                    AND LENGTH(public_key) >= 2
-                    AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
-                '''
+                # If distance filtering is enabled, we need location data to filter
+                if self.distance_filtering_enabled:
+                    query = f'''
+                        SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix, latitude, longitude
+                        FROM complete_contact_tracking 
+                        WHERE role IN ('repeater', 'roomserver')
+                        AND LENGTH(public_key) >= 2
+                        AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
+                    '''
+                else:
+                    query = f'''
+                        SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
+                        FROM complete_contact_tracking 
+                        WHERE role IN ('repeater', 'roomserver')
+                        AND LENGTH(public_key) >= 2
+                        AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
+                    '''
                 results = self.bot.db_manager.execute_query(query)
                 for row in results:
                     prefix = row['prefix'].upper()
                     if len(prefix) == 2:
+                        # Filter by distance if enabled
+                        if self.distance_filtering_enabled:
+                            # Check if repeater has valid coordinates
+                            if (row.get('latitude') is not None and 
+                                row.get('longitude') is not None and
+                                not (row.get('latitude') == 0.0 and row.get('longitude') == 0.0)):
+                                distance = self._calculate_distance(
+                                    self.bot_latitude, self.bot_longitude,
+                                    row['latitude'], row['longitude']
+                                )
+                                # Skip repeaters beyond maximum range
+                                if distance > self.max_prefix_range:
+                                    continue
+                            # Note: Repeaters without coordinates are included in used prefixes (conservative approach)
                         used_prefixes.add(prefix)
                         db_prefixes_found = True
                 if db_prefixes_found:
