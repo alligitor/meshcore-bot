@@ -93,6 +93,35 @@ class CommandManager:
         
         return connection_info
     
+    def format_keyword_response(self, response_format: str, message: MeshMessage) -> str:
+        """Format a keyword response string with message data"""
+        try:
+            connection_info = self.build_enhanced_connection_info(message)
+            
+            # Format timestamp
+            if message.timestamp and message.timestamp != 'unknown':
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromtimestamp(message.timestamp)
+                    time_str = dt.strftime("%H:%M:%S")
+                except:
+                    time_str = str(message.timestamp)
+            else:
+                time_str = "Unknown"
+            
+            # Format the response with available message data
+            return response_format.format(
+                sender=message.sender_id or "Unknown",
+                connection_info=connection_info,
+                path=message.path or "Unknown",
+                timestamp=time_str,
+                snr=message.snr or "Unknown",
+                rssi=message.rssi or "Unknown"
+            )
+        except (KeyError, ValueError):
+            # If formatting fails (no placeholders), return as-is
+            return response_format
+    
     def check_keywords(self, message: MeshMessage) -> List[tuple]:
         """Check message content for keywords and return matching responses"""
         matches = []
@@ -106,10 +135,14 @@ class CommandManager:
         if content_lower.startswith('help '):
             command_name = content_lower[5:].strip()  # Remove "help " prefix
             help_text = self.get_help_for_command(command_name, message)
+            # Format the help response with message data (same as other keywords)
+            help_text = self.format_keyword_response(help_text, message)
             matches.append(('help', help_text))
             return matches
         elif content_lower == 'help':
             help_text = self.get_general_help()
+            # Format the help response with message data (same as other keywords)
+            help_text = self.format_keyword_response(help_text, message)
             matches.append(('help', help_text))
             return matches
         
@@ -134,31 +167,10 @@ class CommandManager:
                 
             if keyword.lower() in content_lower:
                 try:
-                    # Build enhanced connection info with parsed route information
-                    connection_info = self.build_enhanced_connection_info(message)
-                    
-                    # Format timestamp
-                    if message.timestamp and message.timestamp != 'unknown':
-                        try:
-                            from datetime import datetime
-                            dt = datetime.fromtimestamp(message.timestamp)
-                            time_str = dt.strftime("%H:%M:%S")
-                        except:
-                            time_str = str(message.timestamp)
-                    else:
-                        time_str = "Unknown"
-                    
                     # Format the response with available message data
-                    response = response_format.format(
-                        sender=message.sender_id or "Unknown",
-                        connection_info=connection_info,
-                        path=message.path or "Unknown",
-                        timestamp=time_str,
-                        snr=message.snr or "Unknown",
-                        rssi=message.rssi or "Unknown"
-                    )
+                    response = self.format_keyword_response(response_format, message)
                     matches.append((keyword, response))
-                except (KeyError, ValueError) as e:
+                except Exception as e:
                     # Fallback to simple response if formatting fails
                     self.logger.warning(f"Error formatting response for '{keyword}': {e}")
                     matches.append((keyword, response_format))
