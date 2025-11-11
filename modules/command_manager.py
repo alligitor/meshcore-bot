@@ -8,6 +8,8 @@ import re
 import time
 import asyncio
 from typing import List, Dict, Tuple, Optional, Any
+from datetime import datetime
+import pytz
 from meshcore import EventType
 
 from .models import MeshMessage
@@ -98,15 +100,26 @@ class CommandManager:
         try:
             connection_info = self.build_enhanced_connection_info(message)
             
-            # Format timestamp
-            if message.timestamp and message.timestamp != 'unknown':
-                try:
-                    from datetime import datetime
-                    dt = datetime.fromtimestamp(message.timestamp)
-                    time_str = dt.strftime("%H:%M:%S")
-                except:
-                    time_str = str(message.timestamp)
-            else:
+            # Format timestamp - use bot's local time instead of message timestamp
+            # to avoid issues when sender's clock is wrong
+            try:
+                # Get configured timezone or use system timezone
+                timezone_str = self.bot.config.get('Bot', 'timezone', fallback='')
+                
+                if timezone_str:
+                    try:
+                        # Use configured timezone
+                        tz = pytz.timezone(timezone_str)
+                        dt = datetime.now(tz)
+                    except pytz.exceptions.UnknownTimeZoneError:
+                        # Fallback to system timezone if configured timezone is invalid
+                        dt = datetime.now()
+                else:
+                    # Use system timezone
+                    dt = datetime.now()
+                
+                time_str = dt.strftime("%H:%M:%S")
+            except:
                 time_str = "Unknown"
             
             # Format the response with available message data
