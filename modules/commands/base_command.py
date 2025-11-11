@@ -266,5 +266,6 @@ class BaseCommand(ABC):
             response = self.format_response(message, response_format)
             return await self.send_response(message, response)
         else:
-            # Fall back to execute method
-            return await self.execute(message)
+            # No response format configured - don't respond
+            # This prevents recursion and allows disabling commands by commenting them out in config
+            return False
