@@ -6,6 +6,8 @@ Provides common functionality and interface for command implementations
 
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any, Tuple
+from datetime import datetime
+import pytz
 from ..models import MeshMessage
 
 
@@ -154,15 +156,25 @@ class BaseCommand(ABC):
         return connection_info
     
     def format_timestamp(self, message: MeshMessage) -> str:
-        """Format message timestamp for display"""
-        if message.timestamp and message.timestamp != 'unknown':
-            try:
-                from datetime import datetime
-                dt = datetime.fromtimestamp(message.timestamp)
-                return dt.strftime("%H:%M:%S")
-            except:
-                return str(message.timestamp)
-        else:
+        """Format current bot time for display (not sender's timestamp to avoid clock issues)"""
+        try:
+            # Get configured timezone or use system timezone
+            timezone_str = self.bot.config.get('Bot', 'timezone', fallback='')
+            
+            if timezone_str:
+                try:
+                    # Use configured timezone
+                    tz = pytz.timezone(timezone_str)
+                    dt = datetime.now(tz)
+                except pytz.exceptions.UnknownTimeZoneError:
+                    # Fallback to system timezone if configured timezone is invalid
+                    dt = datetime.now()
+            else:
+                # Use system timezone
+                dt = datetime.now()
+            
+            return dt.strftime("%H:%M:%S")
+        except:
             return "Unknown"
     
     def format_response(self, message: MeshMessage, response_format: str) -> str:
@@ -266,5 +278,6 @@ class BaseCommand(ABC):
             response = self.format_response(message, response_format)
             return await self.send_response(message, response)
         else:
-            # Fall back to execute method
-            return await self.execute(message)
+            # No response format configured - don't respond
+            # This prevents recursion and allows disabling commands by commenting them out in config
+            return False
