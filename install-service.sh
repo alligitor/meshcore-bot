@@ -91,14 +91,17 @@ echo -e "${YELLOW}Step 6: Enabling service${NC}"
 systemctl enable "$SERVICE_NAME"
 echo -e "${GREEN}Enabled $SERVICE_NAME service${NC}"
 
-echo -e "${YELLOW}Step 7: Installing Python dependencies${NC}"
-# Install Python dependencies
-if command -v pip3 &> /dev/null; then
-    pip3 install -r "$INSTALL_DIR/requirements.txt"
-    echo -e "${GREEN}Installed Python dependencies${NC}"
-else
-    echo -e "${YELLOW}pip3 not found, please install dependencies manually${NC}"
-fi
+echo -e "${YELLOW}Step 7: Installing Python dependencies in virtual environment${NC}"
+# Create virtual environment
+python3 -m venv "$INSTALL_DIR/venv"
+echo -e "${GREEN}Created virtual environment${NC}"
+
+# Install dependencies in venv
+"$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+echo -e "${GREEN}Installed Python dependencies${NC}"
+
+# Update ownership of venv
+chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/venv"
 
 echo ""
 echo -e "${GREEN}Installation completed successfully!${NC}"
