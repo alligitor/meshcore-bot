@@ -255,10 +255,11 @@ admin_commands = repeater
 
 [Keywords]
 # Keyword-response pairs (keyword = response format)
-# Available fields: {sender}, {connection_info}, {snr}, {timestamp}, {path}
+# Available fields: {sender}, {connection_info}, {snr}, {rssi}, {timestamp}, {path}
 # {sender}: Name/ID of message sender
-# {connection_info}: "Direct connection (0 hops)" or "Routed through X hops"
+# {connection_info}: Path info, SNR, and RSSI combined (e.g., "01,5f (2 hops) | SNR: 15 dB | RSSI: -120 dBm")
 # {snr}: Signal-to-noise ratio in dB
+# {rssi}: Received signal strength indicator in dBm
 # {timestamp}: Message timestamp in HH:MM:SS format
 # {path}: Message routing path (e.g., "01,5f (2 hops)")
 test = "ack {sender}{phrase_part} | {connection_info} | Received at: {timestamp}"

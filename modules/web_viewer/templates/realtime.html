@@ -242,9 +242,16 @@
         // Format path display as comma-separated list
         const pathDisplay = data.path ? data.path.join(',') : 'No path';
         
-        // Format header with resolved components
-        const headerInfo = data.header ? 
-            `<div class="small text-muted">Header: ${data.header} (${data.route_type || 'Unknown'} | ${data.payload_type || 'Unknown'} | v${data.payload_version || 0})</div>` : '';
+        // Format header with resolved components (human-readable with names and numbers)
+        let headerInfo = '';
+        if (data.header) {
+            const routeName = data.route_type_name || 'Unknown';
+            const routeValue = data.route_type !== undefined ? `0x${data.route_type.toString(16).padStart(2, '0')}` : 'Unknown';
+            const payloadName = data.payload_type_name || 'Unknown';
+            const payloadValue = data.payload_type !== undefined ? `0x${data.payload_type.toString(16).padStart(2, '0')}` : 'Unknown';
+            const version = data.payload_version !== undefined ? `v${data.payload_version}` : 'v?';
+            headerInfo = `<div class="small text-muted">Header: ${data.header} (${routeName} (${routeValue}) | ${payloadName} (${payloadValue}) | ${version})</div>`;
+        }
         
         // Format transport info (only show if present)
         const transportInfo = data.has_transport && data.transport_codes ? 

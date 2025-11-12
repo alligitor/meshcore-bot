@@ -946,7 +946,9 @@ class PathCommand(BaseCommand):
     
     async def _send_path_response(self, message: MeshMessage, response: str):
         """Send path response, splitting into multiple messages if necessary"""
-        # Store the complete response for web viewer integration
+        # Store the complete response for web viewer integration BEFORE splitting
+        # command_manager will prioritize command.last_response over _last_response
+        # This ensures capture_command gets the full response, not just the last split message
         self.last_response = response
         
         if len(response) <= 130:
@@ -954,6 +956,7 @@ class PathCommand(BaseCommand):
             await self.send_response(message, response)
         else:
             # Split into multiple messages for over-the-air transmission
+            # But keep the full response in last_response for web viewer
             lines = response.split('\n')
             current_message = ""
             message_count = 0

@@ -519,11 +519,13 @@ class CommandManager:
                             await asyncio.sleep(0.1)
                             
                             # Get the response that was sent (if any)
+                            # Prioritize command.last_response (full response) over _last_response (may be split)
+                            # This ensures commands like path that split messages still show full response in webviewer
                             response = "Command executed"  # Default response
-                            if hasattr(self, '_last_response') and self._last_response:
-                                response = self._last_response
-                            elif hasattr(command, 'last_response') and command.last_response:
+                            if hasattr(command, 'last_response') and command.last_response:
                                 response = command.last_response
+                            elif hasattr(self, '_last_response') and self._last_response:
+                                response = self._last_response
                             
                             self.bot.web_viewer_integration.bot_integration.capture_command(
                                 message, command_name, response, success if success is not None else True

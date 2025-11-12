@@ -32,6 +32,21 @@ class BotIntegration:
             import json
             import time
             
+            # Ensure packet_data is a dict (might be passed as dict already)
+            if not isinstance(packet_data, dict):
+                packet_data = self._make_json_serializable(packet_data)
+                if not isinstance(packet_data, dict):
+                    # If still not a dict, wrap it
+                    packet_data = {'data': packet_data}
+            
+            # Add hops field from path_len if not already present
+            # path_len represents the number of hops (each byte = 1 hop)
+            if 'hops' not in packet_data and 'path_len' in packet_data:
+                packet_data['hops'] = packet_data.get('path_len', 0)
+            elif 'hops' not in packet_data:
+                # If no path_len either, default to 0 hops
+                packet_data['hops'] = 0
+            
             # Convert non-serializable objects to strings
             serializable_data = self._make_json_serializable(packet_data)
             
