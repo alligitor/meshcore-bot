@@ -785,16 +785,16 @@ class RepeaterManager:
             return []
     
     async def _get_companions_for_purging(self, count: int) -> List[Dict]:
-        """Get list of companion contacts to purge based on activity criteria"""
+        """Get list of companion contacts to purge based on activity scoring"""
         try:
             if not self.companion_purge_enabled:
                 self.logger.debug("Companion purging is disabled")
                 return []
             
-            # Get companions directly from device contacts
-            device_companions = []
             current_time = datetime.now()
+            scored_companions = []
             
+            # Get activity data from database for all companions
             for contact_key, contact_data in self.bot.meshcore.contacts.items():
                 # Check if this is a companion device
                 if not self._is_companion_device(contact_data):
@@ -808,13 +808,34 @@ class RepeaterManager:
                     self.logger.debug(f"Skipping companion {name} - in ACL")
                     continue
                 
-                # Get last DM activity
+                # Get activity data from database
                 last_dm = self._get_last_dm_activity(public_key)
-                
-                # Get last advert activity
                 last_advert = self._get_last_advert_activity(public_key)
                 
-                # Determine most recent activity (DM or advert)
+                # Get tracking data from complete_contact_tracking table
+                # Try with role filter first, then without if no results
+                tracking_query = '''
+                    SELECT last_heard, last_advert_timestamp, advert_count, first_heard
+                    FROM complete_contact_tracking
+                    WHERE public_key = ?
+                    ORDER BY CASE WHEN role = 'companion' THEN 0 ELSE 1 END
+                    LIMIT 1
+                '''
+                tracking_data = self.db_manager.execute_query(tracking_query, (public_key,))
+                
+                # Get DM count from message_stats
+                dm_count = 0
+                if name:
+                    dm_query = '''
+                        SELECT COUNT(*) as dm_count
+                        FROM message_stats
+                        WHERE sender_id = ? AND is_dm = 1
+                    '''
+                    dm_results = self.db_manager.execute_query(dm_query, (name,))
+                    if dm_results and dm_results[0].get('dm_count'):
+                        dm_count = dm_results[0]['dm_count']
+                
+                # Determine most recent activity
                 last_activity = None
                 if last_dm and last_advert:
                     last_activity = max(last_dm, last_advert)
@@ -822,6 +843,22 @@ class RepeaterManager:
                     last_activity = last_dm
                 elif last_advert:
                     last_activity = last_advert
+                elif tracking_data and tracking_data[0].get('last_heard'):
+                    # Fallback to last_heard from tracking
+                    try:
+                        last_heard = tracking_data[0]['last_heard']
+                        if isinstance(last_heard, str):
+                            last_activity = datetime.fromisoformat(last_heard.replace('Z', '+00:00'))
+                        elif isinstance(last_heard, (int, float)):
+                            last_activity = datetime.fromtimestamp(last_heard)
+                        elif isinstance(last_heard, datetime):
+                            last_activity = last_heard
+                    except:
+                        pass
+                
+                # Skip very recently active (last 2 hours) - protect active users
+                if last_activity and last_activity > current_time - timedelta(hours=2):
+                    continue
                 
                 # Calculate days since last activity
                 days_inactive = None
@@ -844,68 +881,75 @@ class RepeaterManager:
                     else:
                         days_inactive = 999  # Very old if no data
                 
-                # Check if companion meets purge criteria
-                dm_threshold_met = True
-                advert_threshold_met = True
+                # Get activity counts
+                advert_count = 0
+                if tracking_data and tracking_data[0].get('advert_count'):
+                    advert_count = tracking_data[0]['advert_count']
                 
-                if last_dm:
-                    days_since_dm = (current_time - last_dm).days
-                    dm_threshold_met = days_since_dm >= self.companion_dm_threshold_days
-                else:
-                    # No DM history - check if we have minimum inactive days
-                    dm_threshold_met = days_inactive >= self.companion_min_inactive_days if days_inactive else False
+                total_activity = dm_count + advert_count
                 
-                if last_advert:
-                    days_since_advert = (current_time - last_advert).days
-                    advert_threshold_met = days_since_advert >= self.companion_advert_threshold_days
-                else:
-                    # No advert history - check if we have minimum inactive days
-                    advert_threshold_met = days_inactive >= self.companion_min_inactive_days if days_inactive else False
+                # Calculate purge score (lower = more eligible for purging)
+                # Score factors:
+                # 1. Days inactive (primary factor - more days = lower score)
+                # 2. Total activity count (lower activity = lower score)
+                # 3. Recency bonus (recent activity = higher score, but we already filtered < 2 hours)
                 
-                # Only add if both thresholds are met (hasn't DM'd AND hasn't adverted recently)
-                if dm_threshold_met and advert_threshold_met:
-                    device_companions.append({
-                        'public_key': public_key,
-                        'name': name,
-                        'last_dm': last_dm.isoformat() if last_dm else 'never',
-                        'last_advert': last_advert.isoformat() if last_advert else 'never',
-                        'last_activity': last_activity.isoformat() if last_activity else None,
-                        'days_inactive': days_inactive,
-                        'latitude': contact_data.get('adv_lat'),
-                        'longitude': contact_data.get('adv_lon'),
-                        'city': contact_data.get('city'),
-                        'state': contact_data.get('state'),
-                        'country': contact_data.get('country')
-                    })
+                # Base score: days inactive (more days = lower score)
+                # Use negative so higher days = lower score
+                base_score = -days_inactive if days_inactive is not None else -999
+                
+                # Activity bonus: more activity = slightly higher score (less purgeable)
+                # But this is secondary to inactivity
+                activity_bonus = min(total_activity * 0.1, 10)  # Cap at 10 points
+                
+                # Final score: lower = more purgeable
+                purge_score = base_score + activity_bonus
+                
+                scored_companions.append({
+                    'public_key': public_key,
+                    'name': name,
+                    'last_dm': last_dm.isoformat() if last_dm else 'never',
+                    'last_advert': last_advert.isoformat() if last_advert else 'never',
+                    'last_activity': last_activity.isoformat() if last_activity else None,
+                    'days_inactive': days_inactive,
+                    'dm_count': dm_count,
+                    'advert_count': advert_count,
+                    'total_activity': total_activity,
+                    'purge_score': purge_score,
+                    'latitude': contact_data.get('adv_lat'),
+                    'longitude': contact_data.get('adv_lon'),
+                    'city': contact_data.get('city'),
+                    'state': contact_data.get('state'),
+                    'country': contact_data.get('country')
+                })
             
-            # Sort by priority (most inactive first, then without location data)
-            device_companions.sort(key=lambda x: (
-                # Priority 1: Most inactive first
-                -x['days_inactive'] if x['days_inactive'] else -999,
-                # Priority 2: Without location data first
-                0 if not (x.get('latitude') and x.get('longitude')) else 1
+            # Sort by purge score (lowest first = most purgeable first)
+            # Secondary sort: without location data first (less useful contacts)
+            scored_companions.sort(key=lambda x: (
+                x['purge_score'],  # Lower score = more purgeable
+                0 if not (x.get('latitude') and x.get('longitude')) else 1  # No location = more purgeable
             ))
             
-            # Apply additional filtering
-            filtered_companions = []
-            for companion in device_companions:
-                # Skip very recently active (last 2 hours) - more lenient
-                if companion['last_activity']:
-                    try:
-                        last_activity_dt = datetime.fromisoformat(companion['last_activity'])
-                        if last_activity_dt > current_time - timedelta(hours=2):
-                            continue
-                    except:
-                        pass
-                
-                filtered_companions.append(companion)
-                
-                if len(filtered_companions) >= count:
-                    break
+            # Enhanced debugging
+            total_companions_checked = sum(1 for contact_data in self.bot.meshcore.contacts.values() 
+                                          if self._is_companion_device(contact_data))
+            acl_skipped = sum(1 for contact_key, contact_data in self.bot.meshcore.contacts.items()
+                            if self._is_companion_device(contact_data) and 
+                            self._is_in_acl(contact_data.get('public_key', contact_key)))
+            recent_skipped = total_companions_checked - acl_skipped - len(scored_companions)
             
-            self.logger.debug(f"Found {len(device_companions)} device companions, {len(filtered_companions)} available for purging")
+            self.logger.debug(f"Companion purge analysis: {total_companions_checked} total companions, "
+                            f"{acl_skipped} in ACL (skipped), {recent_skipped} recently active (skipped), "
+                            f"{len(scored_companions)} scored and ranked")
             
-            return filtered_companions[:count]
+            if scored_companions:
+                # Log top candidates for debugging
+                top_candidates = scored_companions[:min(5, len(scored_companions))]
+                candidate_info = [f"{c['name']} (score={c['purge_score']:.1f}, inactive={c['days_inactive']}d)" 
+                                for c in top_candidates]
+                self.logger.debug(f"Top purge candidates: {', '.join(candidate_info)}")
+            
+            return scored_companions[:count]
             
         except Exception as e:
             self.logger.error(f"Error getting companions for purging: {e}")
@@ -1992,90 +2036,70 @@ class RepeaterManager:
                 self.logger.info(f"✅ Contact '{contact_name}' not found in device contacts (already removed) - treating as success")
                 device_removal_successful = True
             else:
-                # Remove the contact using the proper MeshCore API
+                # Remove the contact using the documented MeshCore API: meshcore.remove_contact(key)
                 try:
-                    self.logger.info(f"Removing companion '{contact_name}' from device using MeshCore API...")
+                    self.logger.info(f"Removing companion '{contact_name}' from device using meshcore.remove_contact()...")
                     self.logger.debug(f"Contact details: public_key={public_key}, contact_key={contact_key}, name='{contact_name}'")
                     
-                    # Try removal methods in order of preference
-                    # Method 1: Try with contact object (if supported)
-                    if contact_to_remove:
+                    # Check if the method exists
+                    if not hasattr(self.bot.meshcore, 'remove_contact'):
+                        self.logger.error(f"❌ meshcore.remove_contact() method not found on meshcore object")
+                        device_removal_successful = False
+                    else:
+                        # Use the documented API: meshcore.remove_contact(key)
+                        # Try with public_key first (most reliable identifier)
                         try:
-                            self.logger.debug(f"Trying removal with contact object...")
+                            self.logger.debug(f"Calling meshcore.remove_contact(public_key='{public_key[:16]}...')")
                             result = await asyncio.wait_for(
-                                self.bot.meshcore.commands.remove_contact(contact_to_remove),
+                                self.bot.meshcore.remove_contact(public_key),
                                 timeout=30.0
                             )
-                            if result.type == EventType.OK:
+                            
+                            # Check if result indicates success
+                            # Result could be: True, EventType.OK, or an event object with .type
+                            if result is True:
                                 device_removal_successful = True
-                                self.logger.info(f"✅ Successfully removed companion '{contact_name}' using contact object")
-                        except Exception as e:
-                            self.logger.debug(f"Contact object removal failed: {e}")
-                        # Small delay between method attempts
-                        if not device_removal_successful:
-                            await asyncio.sleep(0.5)
-                    
-                    # Method 2: Try with public_key (string)
-                    if not device_removal_successful:
-                        try:
-                            self.logger.debug(f"Trying removal with public_key string: {public_key[:16]}...")
-                            result = await asyncio.wait_for(
-                                self.bot.meshcore.commands.remove_contact(public_key),
-                                timeout=30.0
-                            )
-                            if result.type == EventType.OK:
+                                self.logger.info(f"✅ remove_contact returned True - removal successful")
+                            elif hasattr(result, 'type') and result.type == EventType.OK:
                                 device_removal_successful = True
-                                self.logger.info(f"✅ Successfully removed companion '{contact_name}' using public_key")
+                                self.logger.info(f"✅ remove_contact returned EventType.OK - removal successful")
                             else:
-                                error_code = result.payload.get('error_code', 'unknown') if hasattr(result, 'payload') else 'unknown'
-                                self.logger.debug(f"Removal with public_key failed: error_code={error_code}")
+                                self.logger.warning(f"⚠️ remove_contact returned unexpected result: {result}")
+                                device_removal_successful = False
+                                
                         except Exception as e:
-                            self.logger.debug(f"Public key removal failed: {e}")
-                        # Small delay between method attempts
-                        if not device_removal_successful:
-                            await asyncio.sleep(0.5)
-                    
-                    # Method 3: Try with contact_key (dictionary key)
-                    if not device_removal_successful and contact_key and contact_key != public_key:
-                        try:
-                            self.logger.debug(f"Trying removal with contact_key: {contact_key[:16]}...")
-                            result = await asyncio.wait_for(
-                                self.bot.meshcore.commands.remove_contact(contact_key),
-                                timeout=30.0
-                            )
-                            if result.type == EventType.OK:
-                                device_removal_successful = True
-                                self.logger.info(f"✅ Successfully removed companion '{contact_name}' using contact_key")
-                        except Exception as e:
-                            self.logger.debug(f"Contact key removal failed: {e}")
-                        # Small delay between method attempts
-                        if not device_removal_successful:
-                            await asyncio.sleep(0.5)
-                    
-                    # Method 4: Try with public_key as bytes
-                    if not device_removal_successful:
-                        try:
-                            if len(public_key) == 64:  # 32 bytes in hex
-                                public_key_bytes = bytes.fromhex(public_key)
-                                self.logger.debug(f"Trying removal with public_key as bytes...")
-                                result = await asyncio.wait_for(
-                                    self.bot.meshcore.commands.remove_contact(public_key_bytes),
-                                    timeout=30.0
-                                )
-                                if result.type == EventType.OK:
-                                    device_removal_successful = True
-                                    self.logger.info(f"✅ Successfully removed companion '{contact_name}' using public_key bytes")
-                        except Exception as e:
-                            self.logger.debug(f"Public key bytes removal failed: {e}")
-                    
-                    # If all methods failed, try fallback methods
-                    if not device_removal_successful:
-                        self.logger.warning(f"All removal methods failed for '{contact_name}' - trying fallback methods...")
-                        device_removal_successful = await self._try_fallback_removal_methods(public_key, contact_name, reason)
+                            self.logger.error(f"❌ meshcore.remove_contact() failed: {type(e).__name__}: {e}")
+                            device_removal_successful = False
                     
                 except Exception as e:
-                    self.logger.error(f"Failed to remove companion '{contact_name}' from device: {e}")
-                    device_removal_successful = await self._try_fallback_removal_methods(public_key, contact_name, reason)
+                    self.logger.error(f"❌ Exception during contact removal: {type(e).__name__}: {e}")
+                    device_removal_successful = False
+                
+                # Verify the contact was actually removed by checking contacts list
+                if device_removal_successful:
+                    # Wait a moment for the device to process the removal
+                    await asyncio.sleep(1.0)
+                    
+                    # Refresh contacts to get latest state
+                    try:
+                        if hasattr(self.bot.meshcore, 'refresh_contacts'):
+                            await self.bot.meshcore.refresh_contacts()
+                        elif hasattr(self.bot.meshcore, 'update_contacts'):
+                            await self.bot.meshcore.update_contacts()
+                    except Exception as e:
+                        self.logger.debug(f"Could not refresh contacts: {e}")
+                    
+                    # Check if contact still exists
+                    contact_still_exists = any(
+                        contact_data.get('public_key', key) == public_key 
+                        for key, contact_data in self.bot.meshcore.contacts.items()
+                    )
+                    
+                    if contact_still_exists:
+                        self.logger.warning(f"⚠️ Removal reported success but contact '{contact_name}' still exists in contacts list")
+                        device_removal_successful = False
+                    else:
+                        self.logger.debug(f"✅ Verified: contact '{contact_name}' successfully removed from device")
             
             # Update tracking database if device removal was successful
             if device_removal_successful:
