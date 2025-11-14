@@ -169,6 +169,7 @@ class PathCommand(BaseCommand):
                                     'device_type': row['device_type'],
                                     'last_seen': row['last_heard'],
                                     'last_heard': row['last_heard'],  # Include last_heard for recency calculation
+                                    'last_advert_timestamp': row.get('last_advert_timestamp'),  # Include last_advert_timestamp for recency calculation
                                     'is_active': row['is_currently_tracked'],
                                     'latitude': row['latitude'],
                                     'longitude': row['longitude'],
@@ -188,24 +189,28 @@ class PathCommand(BaseCommand):
                 if not results:
                     try:
                         # Build query with age filtering if configured
+                        # Use last_advert_timestamp if available, otherwise fall back to last_heard
                         if self.max_repeater_age_days > 0:
                             query = '''
                                 SELECT name, public_key, device_type, last_heard, last_heard as last_seen, 
-                                       latitude, longitude, city, state, country,
+                                       last_advert_timestamp, latitude, longitude, city, state, country,
                                        advert_count, signal_strength, hop_count, role
                                 FROM complete_contact_tracking 
                                 WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
-                                AND last_heard >= datetime('now', '-{} days')
-                                ORDER BY last_heard DESC
-                            '''.format(self.max_repeater_age_days)
+                                AND (
+                                    (last_advert_timestamp IS NOT NULL AND last_advert_timestamp >= datetime('now', '-{} days'))
+                                    OR (last_advert_timestamp IS NULL AND last_heard >= datetime('now', '-{} days'))
+                                )
+                                ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
+                            '''.format(self.max_repeater_age_days, self.max_repeater_age_days)
                         else:
                             query = '''
                                 SELECT name, public_key, device_type, last_heard, last_heard as last_seen, 
-                                       latitude, longitude, city, state, country,
+                                       last_advert_timestamp, latitude, longitude, city, state, country,
                                        advert_count, signal_strength, hop_count, role
                                 FROM complete_contact_tracking 
                                 WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
-                                ORDER BY last_heard DESC
+                                ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
                             '''
                         
                         prefix_pattern = f"{node_id}%"
@@ -220,6 +225,7 @@ class PathCommand(BaseCommand):
                                     'device_type': row['device_type'],
                                     'last_seen': row['last_seen'],
                                     'last_heard': row.get('last_heard', row['last_seen']),  # Include last_heard for recency calculation
+                                    'last_advert_timestamp': row.get('last_advert_timestamp'),  # Include last_advert_timestamp for recency calculation
                                     'is_active': True,  # Assume active for path purposes
                                     'latitude': row['latitude'],
                                     'longitude': row['longitude'],
@@ -237,29 +243,36 @@ class PathCommand(BaseCommand):
                         results = []
                 
                 if results:
-                    # Check for ID collisions (multiple repeaters with same prefix)
-                    if len(results) > 1:
-                        # Multiple matches - try geographic proximity selection
-                        repeaters_data = [
-                            {
-                                'name': row['name'],
-                                'public_key': row['public_key'],
-                                'device_type': row['device_type'],
-                                'last_seen': row['last_seen'],
-                                'last_heard': row.get('last_heard', row['last_seen']),  # Include last_heard for recency calculation
-                                'is_active': row['is_active'],
-                                'latitude': row['latitude'],
-                                'longitude': row['longitude'],
-                                'city': row['city'],
-                                'state': row['state'],
-                                'country': row['country']
-                            } for row in results
-                        ]
-                        
-                        # Try to select the most likely repeater using geographic proximity
+                    # Build repeaters_data with all necessary fields
+                    repeaters_data = [
+                        {
+                            'name': row['name'],
+                            'public_key': row['public_key'],
+                            'device_type': row['device_type'],
+                            'last_seen': row['last_seen'],
+                            'last_heard': row.get('last_heard', row['last_seen']),  # Include last_heard for recency calculation
+                            'last_advert_timestamp': row.get('last_advert_timestamp'),  # Include last_advert_timestamp for recency calculation
+                            'is_active': row['is_active'],
+                            'latitude': row['latitude'],
+                            'longitude': row['longitude'],
+                            'city': row['city'],
+                            'state': row['state'],
+                            'country': row['country']
+                        } for row in results
+                    ]
+                    
+                    # Filter out repeaters with very low recency scores BEFORE collision detection
+                    # This prevents old repeaters from causing false collisions
+                    scored_repeaters = self._calculate_recency_weighted_scores(repeaters_data)
+                    min_recency_threshold = 0.01  # Approximately 55 hours ago or less
+                    recent_repeaters = [r for r, score in scored_repeaters if score >= min_recency_threshold]
+                    
+                    # Check for ID collisions (multiple repeaters with same prefix) AFTER filtering
+                    if len(recent_repeaters) > 1:
+                        # Multiple recent matches - try geographic proximity selection
                         # Only attempt if geographic guessing is enabled
                         if self.geographic_guessing_enabled:
-                            selected_repeater, confidence = self._select_repeater_by_proximity(repeaters_data, node_id, node_ids)
+                            selected_repeater, confidence = self._select_repeater_by_proximity(recent_repeaters, node_id, node_ids)
                             
                             if selected_repeater and confidence >= 0.5:
                                 # High confidence geographic selection
@@ -279,30 +292,36 @@ class PathCommand(BaseCommand):
                                 repeater_info[node_id] = {
                                     'found': True,
                                     'collision': True,
-                                    'matches': len(results),
+                                    'matches': len(recent_repeaters),
                                     'node_id': node_id,
-                                    'repeaters': repeaters_data
+                                    'repeaters': recent_repeaters
                                 }
                         else:
                             # Geographic guessing disabled - show collision warning
                             repeater_info[node_id] = {
                                 'found': True,
                                 'collision': True,
-                                'matches': len(results),
+                                'matches': len(recent_repeaters),
                                 'node_id': node_id,
-                                'repeaters': repeaters_data
+                                'repeaters': recent_repeaters
                             }
-                    else:
-                        # Single match
-                        row = results[0]
+                    elif len(recent_repeaters) == 1:
+                        # Single recent match after filtering - no choice made, so no confidence indicator
+                        repeater = recent_repeaters[0]
                         repeater_info[node_id] = {
-                            'name': row['name'],
-                            'public_key': row['public_key'],
-                            'device_type': row['device_type'],
-                            'last_seen': row['last_seen'],
-                            'is_active': row['is_active'],
+                            'name': repeater['name'],
+                            'public_key': repeater['public_key'],
+                            'device_type': repeater['device_type'],
+                            'last_seen': repeater['last_seen'],
+                            'is_active': repeater['is_active'],
                             'found': True,
                             'collision': False
+                        }
+                    else:
+                        # All repeaters filtered out (too old) - show as not found
+                        repeater_info[node_id] = {
+                            'found': False,
+                            'node_id': node_id
                         }
                 else:
                     # Also check device contacts for active repeaters
@@ -449,6 +468,15 @@ class PathCommand(BaseCommand):
         """Select repeater based on proximity to bot location with strong recency bias"""
         # Calculate recency-weighted scores for all repeaters
         scored_repeaters = self._calculate_recency_weighted_scores(repeaters_with_location)
+        
+        # Filter out repeaters with very low recency scores (too old to be considered)
+        # Minimum recency score threshold: 0.01 (approximately 55 hours ago or less)
+        # This prevents selecting repeaters that haven't advertised in several days
+        min_recency_threshold = 0.01
+        scored_repeaters = [(r, score) for r, score in scored_repeaters if score >= min_recency_threshold]
+        
+        if not scored_repeaters:
+            return None, 0.0  # No recent repeaters found
         
         # If only one repeater, check if it's within range
         if len(scored_repeaters) == 1:
@@ -731,6 +759,14 @@ class PathCommand(BaseCommand):
     def _select_by_path_proximity(self, repeaters_with_location: List[Dict[str, Any]], node_id: str, path_context: List[str]) -> Tuple[Optional[Dict[str, Any]], float]:
         """Select repeater based on proximity to previous/next nodes in path"""
         try:
+            # Filter out repeaters with very low recency scores first
+            scored_repeaters = self._calculate_recency_weighted_scores(repeaters_with_location)
+            min_recency_threshold = 0.01  # Approximately 55 hours ago or less
+            recent_repeaters = [r for r, score in scored_repeaters if score >= min_recency_threshold]
+            
+            if not recent_repeaters:
+                return None, 0.0  # No recent repeaters found
+            
             # Find current node position in path
             current_index = path_context.index(node_id) if node_id in path_context else -1
             if current_index == -1:
@@ -752,11 +788,11 @@ class PathCommand(BaseCommand):
             
             # If we have both previous and next locations, use both for proximity
             if prev_location and next_location:
-                return self._select_by_dual_proximity(repeaters_with_location, prev_location, next_location)
+                return self._select_by_dual_proximity(recent_repeaters, prev_location, next_location)
             elif prev_location:
-                return self._select_by_single_proximity(repeaters_with_location, prev_location, "previous")
+                return self._select_by_single_proximity(recent_repeaters, prev_location, "previous")
             elif next_location:
-                return self._select_by_single_proximity(repeaters_with_location, next_location, "next")
+                return self._select_by_single_proximity(recent_repeaters, next_location, "next")
             else:
                 return None, 0.0
                 
@@ -768,21 +804,25 @@ class PathCommand(BaseCommand):
         """Get location for a node ID from the complete_contact_tracking database"""
         try:
             # Build query with age filtering if configured
+            # Use last_advert_timestamp if available, otherwise fall back to last_heard
             if self.max_repeater_age_days > 0:
                 query = '''
                     SELECT latitude, longitude FROM complete_contact_tracking 
                     WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
                     AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
-                    AND last_heard >= datetime('now', '-{} days')
-                    ORDER BY last_heard DESC
+                    AND (
+                        (last_advert_timestamp IS NOT NULL AND last_advert_timestamp >= datetime('now', '-{} days'))
+                        OR (last_advert_timestamp IS NULL AND last_heard >= datetime('now', '-{} days'))
+                    )
+                    ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
                     LIMIT 1
-                '''.format(self.max_repeater_age_days)
+                '''.format(self.max_repeater_age_days, self.max_repeater_age_days)
             else:
                 query = '''
                     SELECT latitude, longitude FROM complete_contact_tracking 
                     WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
                     AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
-                    ORDER BY last_heard DESC
+                    ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
                     LIMIT 1
                 '''
             
@@ -801,6 +841,13 @@ class PathCommand(BaseCommand):
         """Select repeater based on proximity to both previous and next nodes with strong recency bias"""
         # Calculate recency-weighted scores for all repeaters
         scored_repeaters = self._calculate_recency_weighted_scores(repeaters)
+        
+        # Filter out repeaters with very low recency scores
+        min_recency_threshold = 0.01  # Approximately 55 hours ago or less
+        scored_repeaters = [(r, score) for r, score in scored_repeaters if score >= min_recency_threshold]
+        
+        if not scored_repeaters:
+            return None, 0.0  # No recent repeaters found
         
         best_repeater = None
         best_combined_score = 0.0
@@ -855,6 +902,13 @@ class PathCommand(BaseCommand):
         """Select repeater based on proximity to single reference node with strong recency bias"""
         # Calculate recency-weighted scores for all repeaters
         scored_repeaters = self._calculate_recency_weighted_scores(repeaters)
+        
+        # Filter out repeaters with very low recency scores
+        min_recency_threshold = 0.01  # Approximately 55 hours ago or less
+        scored_repeaters = [(r, score) for r, score in scored_repeaters if score >= min_recency_threshold]
+        
+        if not scored_repeaters:
+            return None, 0.0  # No recent repeaters found
         
         best_repeater = None
         best_combined_score = 0.0

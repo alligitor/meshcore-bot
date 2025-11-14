@@ -1183,8 +1183,46 @@ class RepeaterManager:
         
         return should_geocode, updated_location_info
 
+    def _get_existing_geocoded_data(self, latitude: float, longitude: float) -> Optional[Dict[str, Optional[str]]]:
+        """Check database for existing geocoded data for the same coordinates"""
+        try:
+            # Use a small tolerance for coordinate matching (0.001 degrees ≈ 111 meters)
+            # This handles minor GPS variations while still matching the same location
+            tolerance = 0.001
+            
+            result = self.db_manager.execute_query('''
+                SELECT city, state, country 
+                FROM complete_contact_tracking 
+                WHERE latitude IS NOT NULL 
+                  AND longitude IS NOT NULL
+                  AND ABS(latitude - ?) < ?
+                  AND ABS(longitude - ?) < ?
+                  AND (city IS NOT NULL OR state IS NOT NULL OR country IS NOT NULL)
+                LIMIT 1
+            ''', (latitude, tolerance, longitude, tolerance))
+            
+            if result and len(result) > 0:
+                row = result[0]
+                # Only return if we have at least some location data
+                if row.get('city') or row.get('state') or row.get('country'):
+                    self.logger.debug(f"📍 Found existing geocoded data in database for coordinates {latitude}, {longitude}")
+                    return {
+                        'city': row.get('city'),
+                        'state': row.get('state'),
+                        'country': row.get('country')
+                    }
+        except Exception as e:
+            self.logger.debug(f"Error checking database for geocoded data: {e}")
+        
+        return None
+
     def _get_state_country_from_coordinates(self, latitude: float, longitude: float) -> tuple[Optional[str], Optional[str]]:
         """Get state and country from coordinates using reverse geocoding"""
+        # Check database first to avoid duplicate API calls
+        existing_data = self._get_existing_geocoded_data(latitude, longitude)
+        if existing_data:
+            return existing_data.get('state'), existing_data.get('country')
+        
         try:
             from geopy.geocoders import Nominatim
             
@@ -1213,6 +1251,11 @@ class RepeaterManager:
 
     def _get_city_from_coordinates(self, latitude: float, longitude: float) -> Optional[str]:
         """Get city name from coordinates using reverse geocoding, with neighborhood for large cities"""
+        # Check database first to avoid duplicate API calls
+        existing_data = self._get_existing_geocoded_data(latitude, longitude)
+        if existing_data and existing_data.get('city'):
+            return existing_data.get('city')
+        
         try:
             from geopy.geocoders import Nominatim
             
@@ -1265,7 +1308,12 @@ class RepeaterManager:
                 self.logger.debug(f"Skipping geocoding for invalid coordinates: {latitude}, {longitude}")
                 return location_info
             
-            # Check cache first to avoid duplicate API calls
+            # Check database first for existing geocoded data
+            existing_data = self._get_existing_geocoded_data(latitude, longitude)
+            if existing_data:
+                return existing_data
+            
+            # Check cache second to avoid duplicate API calls
             cache_key = f"location_{latitude:.6f}_{longitude:.6f}"
             cached_result = self.db_manager.get_cached_json(cache_key, "geolocation")
             
