@@ -447,6 +447,11 @@ medium_confidence_symbol = 📍
 # Low confidence (< 0.8): Shows when path decoding has uncertainty
 low_confidence_symbol = ❓
 
+# Enable "p" shortcut for path command (similar to "t" for test command)
+# true: Respond to just "p" or "p <path_data>" as a shortcut for "path"
+# false: Only respond to "path", "decode", or "route" keywords (default)
+enable_p_shortcut = false
+
 [Hacker]
 # Enable or disable the hacker command
 # true: Hacker command is available (responds to Linux commands with supervillain mainframe errors)

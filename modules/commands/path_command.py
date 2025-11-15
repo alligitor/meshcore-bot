@@ -49,6 +49,13 @@ class PathCommand(BaseCommand):
         self.medium_confidence_symbol = bot.config.get('Path_Command', 'medium_confidence_symbol', fallback='📍')
         self.low_confidence_symbol = bot.config.get('Path_Command', 'low_confidence_symbol', fallback='❓')
         
+        # Check if "p" shortcut is enabled (off by default)
+        self.enable_p_shortcut = bot.config.getboolean('Path_Command', 'enable_p_shortcut', fallback=False)
+        if self.enable_p_shortcut:
+            # Add "p" to keywords if enabled
+            if "p" not in self.keywords:
+                self.keywords.append("p")
+        
         try:
             # Try to get location from Bot section
             if bot.config.has_section('Bot'):
@@ -74,15 +81,23 @@ class PathCommand(BaseCommand):
             self.logger.warning(f"Error reading bot location from config: {e} - geographic proximity guessing disabled")
     
     def matches_keyword(self, message: MeshMessage) -> bool:
-        """Check if message starts with 'path' keyword"""
+        """Check if message starts with 'path' keyword or 'p' shortcut (if enabled)"""
         content = message.content.strip()
         
         # Handle exclamation prefix
         if content.startswith('!'):
             content = content[1:].strip()
         
-        # Check if message starts with any of our keywords
         content_lower = content.lower()
+        
+        # Handle "p" shortcut if enabled
+        if self.enable_p_shortcut:
+            if content_lower == "p":
+                return True  # Just "p" by itself
+            elif (content.startswith('p ') or content.startswith('P ')) and len(content) > 2:
+                return True  # "p " followed by path data
+        
+        # Check if message starts with any of our keywords
         for keyword in self.keywords:
             # Check for exact match or keyword followed by space
             if content_lower == keyword or content_lower.startswith(keyword + ' '):
