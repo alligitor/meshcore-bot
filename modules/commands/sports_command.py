@@ -414,17 +414,17 @@ class SportsCommand(BaseCommand):
         
     def load_default_teams(self) -> List[str]:
         """Load default teams from config"""
-        teams_str = self.bot.config.get('Sports', 'teams', fallback='seahawks,mariners,sounders,kraken')
+        teams_str = self.get_config_value('Sports_Command', 'teams', fallback='seahawks,mariners,sounders,kraken', value_type='str')
         return [team.strip().lower() for team in teams_str.split(',') if team.strip()]
     
     def load_sports_channels(self) -> List[str]:
         """Load sports channels from config"""
-        channels_str = self.bot.config.get('Sports', 'channels', fallback='')
+        channels_str = self.get_config_value('Sports_Command', 'channels', fallback='', value_type='str')
         return [channel.strip() for channel in channels_str.split(',') if channel.strip()]
     
     def load_channel_overrides(self) -> Dict[str, str]:
         """Load channel overrides from config"""
-        overrides_str = self.bot.config.get('Sports', 'channel_override', fallback='')
+        overrides_str = self.get_config_value('Sports_Command', 'channel_override', fallback='', value_type='str')
         overrides = {}
         if overrides_str:
             for override in overrides_str.split(','):
@@ -498,7 +498,7 @@ class SportsCommand(BaseCommand):
     def can_execute(self, message: MeshMessage) -> bool:
         """Check if this command can execute with the given message"""
         # Check if sports command is enabled
-        sports_enabled = self.bot.config.getboolean('Sports', 'sports_enabled', fallback=True)
+        sports_enabled = self.get_config_value('Sports_Command', 'sports_enabled', fallback=True, value_type='bool')
         if not sports_enabled:
             return False
         

@@ -20,7 +20,7 @@ class HackerCommand(BaseCommand):
     
     def __init__(self, bot):
         super().__init__(bot)
-        self.enabled = self.bot.config.getboolean('Hacker', 'hacker_enabled', fallback=False)
+        self.enabled = self.get_config_value('Hacker_Command', 'hacker_enabled', fallback=False, value_type='bool')
     
     def get_help_text(self) -> str:
         return self.description

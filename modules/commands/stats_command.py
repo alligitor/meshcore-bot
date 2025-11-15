@@ -28,12 +28,12 @@ class StatsCommand(BaseCommand):
     
     def _load_config(self):
         """Load configuration settings for stats command"""
-        self.stats_enabled = self.bot.config.getboolean('Stats', 'stats_enabled', fallback=True)
-        self.data_retention_days = self.bot.config.getint('Stats', 'data_retention_days', fallback=7)
-        self.auto_cleanup = self.bot.config.getboolean('Stats', 'auto_cleanup', fallback=True)
-        self.track_all_messages = self.bot.config.getboolean('Stats', 'track_all_messages', fallback=True)
-        self.track_command_details = self.bot.config.getboolean('Stats', 'track_command_details', fallback=True)
-        self.anonymize_users = self.bot.config.getboolean('Stats', 'anonymize_users', fallback=False)
+        self.stats_enabled = self.get_config_value('Stats_Command', 'stats_enabled', fallback=True, value_type='bool')
+        self.data_retention_days = self.get_config_value('Stats_Command', 'data_retention_days', fallback=7, value_type='int')
+        self.auto_cleanup = self.get_config_value('Stats_Command', 'auto_cleanup', fallback=True, value_type='bool')
+        self.track_all_messages = self.get_config_value('Stats_Command', 'track_all_messages', fallback=True, value_type='bool')
+        self.track_command_details = self.get_config_value('Stats_Command', 'track_command_details', fallback=True, value_type='bool')
+        self.anonymize_users = self.get_config_value('Stats_Command', 'anonymize_users', fallback=False, value_type='bool')
     
     def _init_stats_tables(self):
         """Initialize database tables for stats tracking"""

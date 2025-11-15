@@ -350,7 +350,7 @@ emergency.weather = Weather updates and conditions
 emergency.traffic = Traffic updates and road conditions
 emergency.hamradio = Amateur radio emergency net
 
-[Sports]
+[Sports_Command]
 # Enable or disable the sports command
 # true: Sports command is available
 # false: Sports command is disabled
@@ -373,7 +373,7 @@ channel_override = #sounders=sounders,#seahawks=seahawks,#kraken=kraken,#mariner
 # ESPN API timeout in seconds
 api_timeout = 10
 
-[Stats]
+[Stats_Command]
 # Enable or disable the stats command
 # true: Stats command is available
 # false: Stats command is disabled
@@ -452,7 +452,7 @@ low_confidence_symbol = ❓
 # false: Only respond to "path", "decode", or "route" keywords (default)
 enable_p_shortcut = false
 
-[Hacker]
+[Hacker_Command]
 # Enable or disable the hacker command
 # true: Hacker command is available (responds to Linux commands with supervillain mainframe errors)
 # false: Hacker command is disabled

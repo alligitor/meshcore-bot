@@ -27,6 +27,67 @@ class BaseCommand(ABC):
         self.logger = bot.logger
         self._last_execution_time = 0
     
+    def get_config_value(self, section: str, key: str, fallback=None, value_type: str = 'str'):
+        """
+        Get config value with backward compatibility for section name changes.
+        
+        For command configs, checks both old format (e.g., 'Hacker') and new format (e.g., 'Hacker_Command').
+        This allows smooth migration from old config format to new standardized format.
+        
+        Args:
+            section: Config section name (new format preferred)
+            key: Config key name
+            fallback: Default value if not found
+            value_type: Type of value ('str', 'bool', 'int', 'float')
+        
+        Returns:
+            Config value of appropriate type, or fallback if not found
+        """
+        # Map of old section names to new standardized names
+        section_migration = {
+            'Hacker': 'Hacker_Command',
+            'Sports': 'Sports_Command',
+            'Stats': 'Stats_Command',
+        }
+        
+        # Determine old and new section names
+        new_section = section
+        old_section = None
+        for old, new in section_migration.items():
+            if new == section:
+                old_section = old
+                break
+        
+        # Try new section first, then old section for backward compatibility
+        sections_to_try = [new_section]
+        if old_section:
+            sections_to_try.append(old_section)
+        
+        for sec in sections_to_try:
+            if self.bot.config.has_section(sec):
+                try:
+                    if value_type == 'bool':
+                        value = self.bot.config.getboolean(sec, key, fallback=fallback)
+                    elif value_type == 'int':
+                        value = self.bot.config.getint(sec, key, fallback=fallback)
+                    elif value_type == 'float':
+                        value = self.bot.config.getfloat(sec, key, fallback=fallback)
+                    else:
+                        value = self.bot.config.get(sec, key, fallback=fallback)
+                    
+                    # If we got a value (not fallback), return it
+                    if value != fallback or self.bot.config.has_option(sec, key):
+                        # Log migration notice on first use of old section
+                        if sec == old_section:
+                            self.logger.info(f"Config migration: Using old section '[{old_section}]' for '{key}'. "
+                                           f"Please update to '[{new_section}]' in config.ini")
+                        return value
+                except Exception as e:
+                    self.logger.debug(f"Error reading config {sec}.{key}: {e}")
+                    continue
+        
+        return fallback
+    
     @abstractmethod
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the command with the given message"""
