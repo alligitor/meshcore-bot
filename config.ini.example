@@ -264,6 +264,12 @@ n2yo_api_key =
 # Get free key at: https://docs.airnowapi.org/
 airnow_api_key = 
 
+# Forecast.Solar API key for solar forecast data
+# Get key at: https://forecast.solar/ (free tier works without key, paid tier for 3+ day forecasts)
+# Free tier: 2-day forecast, 1-hour resolution
+# Paid tier (14 EUR/year): 3-6 day forecast, 15-30 minute resolution
+forecast_solar_api_key = 
+
 # Repeater prefix API URL for prefix command
 # Leave empty to disable prefix command functionality
 # Example: https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
