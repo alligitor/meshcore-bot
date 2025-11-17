@@ -360,6 +360,9 @@ class CommandManager:
             except TypeError:
                 # Fallback for commands that don't accept message parameter
                 help_text = command.get_help_text()
+            # Use translator if available
+            if hasattr(self.bot, 'translator'):
+                return self.bot.translator.translate('commands.help.specific', command=command_name, help_text=help_text)
             return f"Help {command_name}: {help_text}"
         
         # If not found, search through all commands and their keywords
@@ -372,6 +375,9 @@ class CommandManager:
                 except TypeError:
                     # Fallback for commands that don't accept message parameter
                     help_text = cmd_instance.get_help_text()
+                # Use translator if available
+                if hasattr(self.bot, 'translator'):
+                    return self.bot.translator.translate('commands.help.specific', command=command_name, help_text=help_text)
                 return f"Help {command_name}: {help_text}"
         
         # If still not found, return unknown command message with helpful suggestion
@@ -381,7 +387,10 @@ class CommandManager:
             if hasattr(cmd_instance, 'keywords'):
                 available_commands.extend(cmd_instance.keywords)
         
-        return f"Unknown: {command_name}. Available: {', '.join(sorted(set(available_commands)))}. Try 'help' for command list."
+        available_str = ', '.join(sorted(set(available_commands)))
+        if hasattr(self.bot, 'translator'):
+            return self.bot.translator.translate('commands.help.unknown', command=command_name, available=available_str)
+        return f"Unknown: {command_name}. Available: {available_str}. Try 'help' for command list."
     
     def get_general_help(self) -> str:
         """Get general help text from config (LoRa-friendly compact format)"""
@@ -481,9 +490,11 @@ class CommandManager:
                 # Check if command can execute (cooldown, DM requirements, etc.)
                 if not command.can_execute_now(message):
                     if command.requires_dm and not message.is_dm:
-                        await self.send_response(message, f"Command '{command_name}' can only be used in DMs")
+                        error_msg = command.translate('errors.dm_only', command=command_name)
+                        await self.send_response(message, error_msg)
                     elif command.requires_admin_access():
-                        await self.send_response(message, f"❌ Access denied: Command '{command_name}' requires admin privileges")
+                        error_msg = command.translate('errors.access_denied', command=command_name)
+                        await self.send_response(message, error_msg)
                     elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
                         # Check if it's the per-user version (takes user_id parameter)
                         import inspect
@@ -494,7 +505,8 @@ class CommandManager:
                             remaining = command.get_remaining_cooldown()
                         
                         if remaining > 0:
-                            await self.send_response(message, f"Command '{command_name}' is on cooldown. Wait {remaining} seconds.")
+                            error_msg = command.translate('errors.cooldown', command=command_name, seconds=remaining)
+                            await self.send_response(message, error_msg)
                     return
                 
                 try:
@@ -536,7 +548,8 @@ class CommandManager:
                 except Exception as e:
                     self.logger.error(f"Error executing command '{command_name}': {e}")
                     # Send error message to user
-                    await self.send_response(message, f"Error executing {command_name}: {e}")
+                    error_msg = command.translate('errors.execution_error', command=command_name, error=str(e))
+                    await self.send_response(message, error_msg)
                     
                     # Capture failed command for web viewer
                     if (hasattr(self.bot, 'web_viewer_integration') and 

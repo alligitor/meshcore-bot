@@ -107,6 +107,21 @@ class MeshCoreBot:
         from .solar_conditions import set_config
         set_config(self.config)
         
+        # Initialize translator for localization
+        try:
+            from .i18n import Translator
+            language = self.config.get('Localization', 'language', fallback='en')
+            translation_path = self.config.get('Localization', 'translation_path', fallback='translations/')
+            self.translator = Translator(language, translation_path)
+            self.logger.info(f"Localization initialized: {language}")
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize translator: {e}")
+            # Create a dummy translator that just returns keys
+            class DummyTranslator:
+                def translate(self, key, **kwargs):
+                    return key
+            self.translator = DummyTranslator()
+        
         # Advert tracking
         self.last_advert_time = None
         

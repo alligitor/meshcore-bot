@@ -85,6 +85,21 @@ bot_latitude = 40.7128
 # Example: -74.0060 for New York City, -123.00 for Victoria BC
 bot_longitude = -74.0060
 
+[Localization]
+# Language code for bot responses (en, es, es-MX, es-ES, fr, de, ja, etc.)
+# Default: en (English)
+# The bot will use translations from translations/{language}.json
+# Supports locale codes:
+#   - Simple codes: en, es, fr, de, ja
+#   - Locale codes: es-MX (Mexican Spanish), es-ES (Spain Spanish), fr-CA (Canadian French)
+# If locale-specific file not found, falls back to base language (e.g., es.json)
+# If translation file is missing or key not found, falls back to English
+language = en
+
+# Path to translation files directory (relative to bot root)
+# Default: translations/
+translation_path = translations/
+
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands
 # Only users with public keys listed here can execute admin commands

@@ -59,12 +59,10 @@ class PrefixCommand(BaseCommand):
         )
     
     def get_help_text(self) -> str:
+        location_note = self.translate('commands.prefix.location_note') if self.show_repeater_locations else ""
         if not self.api_url or self.api_url.strip() == "":
-            location_note = " (with city names)" if self.show_repeater_locations else ""
-            return f"Look up repeaters by two-character prefix using local database{location_note}. Usage: 'prefix 1A' (shows recent), 'prefix 1A all' (shows all), 'prefix free' (list available prefixes). Note: API disabled - using local data only."
-        
-        location_note = " (with city names)" if self.show_repeater_locations else ""
-        return f"Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A' (shows recent), 'prefix 1A all' (shows all), 'prefix free' (list available prefixes), or 'prefix refresh'."
+            return self.translate('commands.prefix.help_no_api', location_note=location_note)
+        return self.translate('commands.prefix.help_api', location_note=location_note)
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with 'prefix' keyword"""
@@ -97,17 +95,17 @@ class PrefixCommand(BaseCommand):
         # Handle refresh command
         if command == "REFRESH":
             if not self.api_url or self.api_url.strip() == "":
-                response = "❌ Refresh not available - no API URL configured. Using local database only."
+                response = self.translate('commands.prefix.refresh_not_available')
                 return await self.send_response(message, response)
             await self.refresh_cache()
-            response = "🔄 Repeater prefix cache refreshed!"
+            response = self.translate('commands.prefix.cache_refreshed')
             return await self.send_response(message, response)
         
         # Handle free/available command
         if command == "FREE" or command == "AVAILABLE":
             free_prefixes, total_free, has_data = await self.get_free_prefixes()
             if not has_data:
-                response = "❌ Unable to determine free prefixes. Try 'prefix refresh' first."
+                response = self.translate('commands.prefix.unable_determine_free')
             else:
                 response = self.format_free_prefixes_response(free_prefixes, total_free)
             return await self.send_response(message, response)
@@ -119,14 +117,14 @@ class PrefixCommand(BaseCommand):
         
         # Validate prefix format
         if len(command) != 2 or not command.isalnum():
-            response = "❌ Invalid prefix format. Use two characters (e.g., prefix 1A)"
+            response = self.translate('commands.prefix.invalid_format')
             return await self.send_response(message, response)
         
         # Get prefix data
         prefix_data = await self.get_prefix_data(command, include_all=include_all)
         
         if prefix_data is None:
-            response = f"❌ No repeaters found with prefix '{command}'"
+            response = self.translate('commands.prefix.no_repeaters_found', prefix=command)
             return await self.send_response(message, response)
         
         # Add include_all flag to data for formatting
@@ -365,9 +363,9 @@ class PrefixCommand(BaseCommand):
                 
                 # Add device type indicator for clarity
                 if device_type == 2:
-                    name += " (Repeater)"
+                    name += self.translate('commands.prefix.device_repeater')
                 elif device_type == 3:
-                    name += " (Room Server)"
+                    name += self.translate('commands.prefix.device_roomserver')
                 
                 # Add location information if enabled and available
                 if self.show_repeater_locations:
@@ -558,9 +556,9 @@ class PrefixCommand(BaseCommand):
     def format_free_prefixes_response(self, free_prefixes: List[str], total_free: int) -> str:
         """Format the free prefixes response"""
         if not free_prefixes:
-            return "❌ No free prefixes found (all 254 valid prefixes are in use)"
+            return self.translate('commands.prefix.no_free_prefixes')
         
-        response = f"Available Prefixes ({len(free_prefixes)} of {total_free} free):\n"
+        response = self.translate('commands.prefix.available_prefixes', shown=len(free_prefixes), total=total_free) + "\n"
         
         # Format as a grid for better readability
         for i, prefix in enumerate(free_prefixes, 1):
@@ -574,7 +572,7 @@ class PrefixCommand(BaseCommand):
         if len(free_prefixes) % 5 != 0:
             response += "\n"
         
-        response += f"\n💡 Generate a custom key: https://gessaman.com/mc-keygen"
+        response += "\n" + self.translate('commands.prefix.generate_key')
         
         return response
     
@@ -588,20 +586,23 @@ class PrefixCommand(BaseCommand):
         # Get bot name for database responses
         bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
         
+        # Handle pluralization
+        plural = 's' if node_count != 1 else ''
+        
         if source == 'database':
             # Database response format - keep brief for character limit
             if include_all:
-                response = f"Prefix {prefix}: {node_count} repeater{'s' if node_count != 1 else ''}\n"
+                response = self.translate('commands.prefix.prefix_db_all', prefix=prefix, count=node_count, plural=plural) + "\n"
             else:
                 # Show time period for default behavior - use abbreviated form
                 days_str = f"{self.prefix_heard_days}d" if self.prefix_heard_days != 7 else "7d"
-                response = f"Prefix {prefix}: {node_count} repeater{'s' if node_count != 1 else ''} ({days_str})\n"
+                response = self.translate('commands.prefix.prefix_db_recent', prefix=prefix, count=node_count, plural=plural, days=days_str) + "\n"
         else:
             # API response format
-            response = f"📡 Prefix {prefix} ({node_count} repeater{'s' if node_count != 1 else ''}):\n"
+            response = self.translate('commands.prefix.prefix_api', prefix=prefix, count=node_count, plural=plural) + "\n"
         
         for i, name in enumerate(node_names, 1):
-            response += f"{i}. {name}\n"
+            response += self.translate('commands.prefix.item_format', index=i, name=name) + "\n"
         
         # Add source info (unless hidden by config)
         if not self.hide_source:
@@ -614,10 +615,10 @@ class PrefixCommand(BaseCommand):
                     from urllib.parse import urlparse
                     parsed_url = urlparse(self.api_url)
                     domain = parsed_url.netloc
-                    response += f"\nSource: {domain}"
+                    response += "\n" + self.translate('commands.prefix.source_domain', domain=domain)
                 except Exception:
                     # Fallback if URL parsing fails
-                    response += f"\nSource: API"
+                    response += "\n" + self.translate('commands.prefix.source_api')
         else:
             # Remove trailing newline when source is hidden
             response = response.rstrip('\n')

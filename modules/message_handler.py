@@ -1538,7 +1538,12 @@ class MessageHandler:
         plugin_command_with_response_matched = False
         if keyword_matches:
             for keyword, response in keyword_matches:
-                self.logger.info(f"Keyword '{keyword}' matched, responding")
+                # Use translator if available for logging
+                if hasattr(self.bot, 'translator'):
+                    log_msg = self.bot.translator.translate('messages.keyword_matched', keyword=keyword)
+                    self.logger.info(log_msg)
+                else:
+                    self.logger.info(f"Keyword '{keyword}' matched, responding")
                 
                 # Record command execution in stats database
                 if 'stats' in self.bot.command_manager.commands:

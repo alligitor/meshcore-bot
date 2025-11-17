@@ -19,7 +19,7 @@ class TestCommand(BaseCommand):
     category = "basic"
     
     def get_help_text(self) -> str:
-        return self.description
+        return self.translate('commands.test.help')
     
     def clean_content(self, content: str) -> str:
         """Clean content by removing control characters and normalizing whitespace"""
@@ -91,13 +91,13 @@ class TestCommand(BaseCommand):
             phrase_part = f": {phrase}" if phrase else ""
             
             return response_format.format(
-                sender=message.sender_id or "Unknown",
+                sender=message.sender_id or self.translate('common.unknown_sender'),
                 phrase=phrase,
                 phrase_part=phrase_part,
                 connection_info=connection_info,
-                path=message.path or "Unknown",
+                path=message.path or self.translate('common.unknown_path'),
                 timestamp=timestamp,
-                snr=message.snr or "Unknown"
+                snr=message.snr or self.translate('common.unknown')
             )
         except (KeyError, ValueError) as e:
             self.logger.warning(f"Error formatting test response: {e}")

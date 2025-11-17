@@ -22,8 +22,8 @@ class GlobalWxCommand(BaseCommand):
     category = "weather"
     cooldown_seconds = 5  # 5 second cooldown per user to prevent API abuse
     
-    # Error constants
-    ERROR_FETCHING_DATA = "Error fetching weather data"
+    # Error constants - will use translations instead
+    ERROR_FETCHING_DATA = "ERROR_FETCHING_DATA"  # Placeholder, will use translate()
     NO_ALERTS = "No weather alerts available"
     
     def __init__(self, bot):
@@ -60,7 +60,7 @@ class GlobalWxCommand(BaseCommand):
         self.db_manager = bot.db_manager
     
     def get_help_text(self) -> str:
-        return "Usage: gwx <location> - Get weather for any global location (city, country, or coordinates)"
+        return self.translate('commands.gwx.help')
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with a weather keyword"""
@@ -118,7 +118,7 @@ class GlobalWxCommand(BaseCommand):
         # Parse the command to extract location
         parts = content.split(maxsplit=1)
         if len(parts) < 2:
-            await self.send_response(message, "Usage: gwx <location> - Example: gwx Tokyo or gwx Paris, France")
+            await self.send_response(message, self.translate('commands.gwx.usage'))
             return True
         
         location = parts[1].strip()
@@ -150,7 +150,7 @@ class GlobalWxCommand(BaseCommand):
             
         except Exception as e:
             self.logger.error(f"Error in global weather command: {e}")
-            await self.send_response(message, f"Error getting weather data: {e}")
+            await self.send_response(message, self.translate('commands.gwx.error', error=str(e)))
             return True
     
     async def get_weather_for_location(self, location: str) -> str:
@@ -159,7 +159,7 @@ class GlobalWxCommand(BaseCommand):
             # Convert location to lat/lon with address details
             result = self.geocode_location(location)
             if not result or result[0] is None or result[1] is None:
-                return f"Could not find location '{location}'"
+                return self.translate('commands.gwx.no_location', location=location)
             
             lat, lon, address_info, geocode_result = result
             
@@ -168,8 +168,10 @@ class GlobalWxCommand(BaseCommand):
             
             # Get weather forecast from Open-Meteo
             weather_text = self.get_open_meteo_weather(lat, lon)
-            if weather_text == self.ERROR_FETCHING_DATA:
-                return "Error fetching weather data from Open-Meteo"
+            # Check if it's an error (translated error message)
+            error_fetching = self.translate('commands.gwx.error_fetching')
+            if weather_text == error_fetching or weather_text == self.ERROR_FETCHING_DATA:
+                return self.translate('commands.gwx.error_fetching_api')
             
             # Check for severe weather warnings (Open-Meteo doesn't provide detailed alerts,
             # but we can infer from extreme conditions)
@@ -183,7 +185,7 @@ class GlobalWxCommand(BaseCommand):
             
         except Exception as e:
             self.logger.error(f"Error getting weather for {location}: {e}")
-            return f"Error getting weather data: {e}"
+            return self.translate('commands.gwx.error', error=str(e))
     
     def geocode_location(self, location: str) -> tuple:
         """Convert location string to lat/lon with address details"""
@@ -363,7 +365,7 @@ class GlobalWxCommand(BaseCommand):
             
             if not response.ok:
                 self.logger.warning(f"Error fetching weather from Open-Meteo: {response.status_code}")
-                return self.ERROR_FETCHING_DATA
+                return self.translate('commands.gwx.error_fetching')
             
             data = response.json()
             
@@ -420,9 +422,9 @@ class GlobalWxCommand(BaseCommand):
             now = datetime.now()
             hour = now.hour
             if 6 <= hour < 18:
-                period_name = "Today"
+                period_name = self.translate('commands.gwx.periods.today')
             else:
-                period_name = "Tonight"
+                period_name = self.translate('commands.gwx.periods.tonight')
             
             # Build current weather string
             weather = f"{period_name}: {weather_emoji}{weather_desc} {temp}{temp_symbol}"
@@ -482,7 +484,7 @@ class GlobalWxCommand(BaseCommand):
                     tomorrow_emoji = self._get_weather_emoji(tomorrow_code)
                     
                     # Get tomorrow's period name
-                    tomorrow_period = "Tomorrow"
+                    tomorrow_period = self.translate('commands.gwx.periods.tomorrow')
                     tomorrow_str = f" | {tomorrow_period}: {tomorrow_emoji}{tomorrow_high}{temp_symbol}/{tomorrow_low}{temp_symbol}"
                     
                     # Only add if we have space (leave room for potential precipitation)
@@ -501,7 +503,7 @@ class GlobalWxCommand(BaseCommand):
             
         except Exception as e:
             self.logger.error(f"Error fetching Open-Meteo weather: {e}")
-            return self.ERROR_FETCHING_DATA
+            return self.translate('commands.gwx.error_fetching')
     
     def _degrees_to_direction(self, degrees: float) -> str:
         """Convert wind direction in degrees to compass direction with emoji"""
@@ -525,7 +527,13 @@ class GlobalWxCommand(BaseCommand):
     
     def _get_weather_description(self, code: int) -> str:
         """Convert WMO weather code to description"""
-        # WMO Weather interpretation codes
+        # Try to get from translations first
+        key = f"commands.gwx.weather_descriptions.{code}"
+        description = self.translate(key)
+        
+        # If translation returned the key (not found), try fallback
+        if description == key:
+            # Fallback to hardcoded descriptions
         weather_codes = {
             0: "Clear",
             1: "Mostly Clear",
@@ -556,8 +564,9 @@ class GlobalWxCommand(BaseCommand):
             96: "T-Storm w/Hail",
             99: "Severe T-Storm"
         }
+            return weather_codes.get(code, self.translate('commands.gwx.weather_descriptions.unknown'))
         
-        return weather_codes.get(code, "Unknown")
+        return description
     
     def _get_weather_emoji(self, code: int) -> str:
         """Convert WMO weather code to emoji"""
@@ -603,25 +612,45 @@ class GlobalWxCommand(BaseCommand):
         if temp_match:
             temp = int(temp_match.group(1))
             if temp >= 95:
-                warnings.append("⚠️ Extreme heat")
+                warnings.append(self.translate('commands.gwx.warnings.extreme_heat'))
             elif temp <= 20:
-                warnings.append("⚠️ Extreme cold")
+                warnings.append(self.translate('commands.gwx.warnings.extreme_cold'))
         
         # Check for severe weather indicators
-        if "Heavy Rain" in weather_text or "Heavy Showers" in weather_text:
-            warnings.append("⚠️ Heavy rain")
+        # Note: We check for English strings here since weather descriptions might be in English
+        # In a fully localized version, we'd need to check translated strings too
+        heavy_rain_en = "Heavy Rain"
+        heavy_showers_en = "Heavy Showers"
+        thunderstorm_en = "Thunderstorm"
+        t_storm_en = "T-Storm"
+        heavy_snow_en = "Heavy Snow"
+        snow_showers_en = "Snow Showers"
         
-        if "Thunderstorm" in weather_text or "T-Storm" in weather_text:
-            warnings.append("⚠️ Thunderstorms")
+        # Also get translated versions for checking
+        heavy_rain_trans = self.translate('commands.gwx.weather_descriptions.65')
+        heavy_showers_trans = self.translate('commands.gwx.weather_descriptions.82')
+        thunderstorm_trans = self.translate('commands.gwx.weather_descriptions.95')
+        t_storm_trans = self.translate('commands.gwx.weather_descriptions.96')
+        heavy_snow_trans = self.translate('commands.gwx.weather_descriptions.75')
+        snow_showers_trans = self.translate('commands.gwx.weather_descriptions.86')
         
-        if "Heavy Snow" in weather_text or "Snow Showers" in weather_text:
-            warnings.append("⚠️ Heavy snow")
+        if (heavy_rain_en in weather_text or heavy_showers_en in weather_text or
+            heavy_rain_trans in weather_text or heavy_showers_trans in weather_text):
+            warnings.append(self.translate('commands.gwx.warnings.heavy_rain'))
+        
+        if (thunderstorm_en in weather_text or t_storm_en in weather_text or
+            thunderstorm_trans in weather_text or t_storm_trans in weather_text):
+            warnings.append(self.translate('commands.gwx.warnings.thunderstorms'))
+        
+        if (heavy_snow_en in weather_text or snow_showers_en in weather_text or
+            heavy_snow_trans in weather_text or snow_showers_trans in weather_text):
+            warnings.append(self.translate('commands.gwx.warnings.heavy_snow'))
         
         # Check for high winds
         wind_match = re.search(r'[NESW]{1,2}(\d+)', weather_text)
         if wind_match:
             wind_speed = int(wind_match.group(1))
             if wind_speed >= 30:
-                warnings.append(f"⚠️ High winds ({wind_speed} mph)")
+                warnings.append(self.translate('commands.gwx.warnings.high_winds', wind_speed=wind_speed))
         
         return " | ".join(warnings) if warnings else None

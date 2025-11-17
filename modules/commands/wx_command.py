@@ -51,7 +51,7 @@ class WxCommand(BaseCommand):
         self.db_manager = bot.db_manager
     
     def get_help_text(self) -> str:
-        return f"Usage: wx <zipcode|city> - Get weather for US zipcode or city in {self.default_state}"
+        return self.translate('commands.wx.description')
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with a weather keyword"""
@@ -111,7 +111,7 @@ class WxCommand(BaseCommand):
         # Support formats: "wx 12345", "wx seattle", "wx paris, tx", "weather everett", "wxa bellingham"
         parts = content.split()
         if len(parts) < 2:
-            await self.send_response(message, f"Usage: wx <zipcode|city> - Example: wx 12345 or wx seattle or wx paris, tx")
+            await self.send_response(message, self.translate('commands.wx.usage'))
             return True
         
         # Join all parts after the command to handle "city, state" format
@@ -156,7 +156,7 @@ class WxCommand(BaseCommand):
             
         except Exception as e:
             self.logger.error(f"Error in weather command: {e}")
-            await self.send_response(message, f"Error getting weather data: {e}")
+            await self.send_response(message, self.translate('commands.wx.error', error=str(e)))
             return True
     
     async def get_weather_for_location(self, location: str, location_type: str) -> str:
@@ -166,7 +166,7 @@ class WxCommand(BaseCommand):
             if location_type == "zipcode":
                 lat, lon = self.zipcode_to_lat_lon(location)
                 if lat is None or lon is None:
-                    return f"Could not find location for zipcode {location}"
+                    return self.translate('commands.wx.no_location_zipcode', location=location)
             else:  # city
                 result = self.city_to_lat_lon(location)
                 if len(result) == 3:
@@ -176,7 +176,7 @@ class WxCommand(BaseCommand):
                     address_info = None
                 
                 if lat is None or lon is None:
-                    return f"Could not find city '{location}' in {self.default_state}"
+                    return self.translate('commands.wx.no_location_city', location=location, state=self.default_state)
                 
                 # Check if the found city is in a different state than default
                 actual_city = location
@@ -219,7 +219,7 @@ class WxCommand(BaseCommand):
             # Get weather forecast
             weather, points_data = self.get_noaa_weather(lat, lon)
             if weather == self.ERROR_FETCHING_DATA:
-                return "Error fetching weather data from NOAA"
+                return self.translate('commands.wx.error_fetching')
             
             # Add location info if city is in a different state than default
             location_prefix = ""
@@ -252,7 +252,7 @@ class WxCommand(BaseCommand):
             
         except Exception as e:
             self.logger.error(f"Error getting weather for {location_type} {location}: {e}")
-            return f"Error getting weather data: {e}"
+            return self.translate('commands.wx.error', error=str(e))
     
     async def get_weather_for_zipcode(self, zipcode: str) -> str:
         """Get weather data for a specific zipcode (legacy method)"""
