@@ -27,7 +27,8 @@
     "hello": ["hello", "hi", "hey", "howdy", "greetings", "salutations", "good morning", "good afternoon", "good evening", "good night", "yo", "sup", "whats up", "what's up", "morning", "afternoon", "evening", "night", "gday", "g'day", "hola", "bonjour", "ciao", "namaste", "aloha", "shalom", "konnichiwa", "guten tag", "buenos dias", "buenas tardes", "buenas noches"],
     "webviewer": ["webviewer", "web", "viewer", "wv"],
     "cmd": ["cmd", "commands"],
-    "advert": ["advert"]
+    "advert": ["advert"],
+    "multitest": ["multitest", "mt"]
   },
   "commands": {
     "help": {
@@ -213,6 +214,10 @@
       "continuation_end": "\n...",
       "truncation": "...",
       "unknown_name": "Unknown"
+    },
+    "multitest": {
+      "description": "Listens for 6 seconds and collects all unique paths from incoming messages with the same packet hash",
+      "help": "Listens for 6 seconds and collects all unique paths from incoming messages with the same packet hash"
     },
     "prefix": {
       "description": "Look up repeaters by two-character prefix (e.g., 'prefix 1A')",
