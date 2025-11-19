@@ -178,7 +178,11 @@
             "no_location_zipcode": "Localisation introuvable pour code postal {location}",
             "no_location_city": "Ville '{location}' introuvable dans {state}",
             "error": "Erreur données météo: {error}",
-            "alerts": "{count} alertes: {text}"
+            "alerts": "{count} alertes: {text}",
+            "tomorrow_not_available": "Tomorrow's forecast not available",
+            "tomorrow_error": "Error formatting tomorrow's forecast",
+            "multiday_not_available": "{num_days}-day forecast not available",
+            "multiday_error": "Error formatting {num_days}-day forecast"
         },
         "gwx": {
             "description": "Météo mondiale pour tout lieu (usage: gwx Tokyo)",
@@ -188,6 +192,10 @@
             "error_fetching_api": "Erreur récupération données Open-Meteo",
             "no_location": "Lieu '{location}' introuvable",
             "error": "Erreur données météo: {error}",
+            "tomorrow_not_available": "Tomorrow's forecast not available",
+            "tomorrow_error": "Error formatting tomorrow's forecast",
+            "multiday_not_available": "{num_days}-day forecast not available",
+            "multiday_error": "Error formatting {num_days}-day forecast",
             "periods": {
                 "today": "Aujourd'hui",
                 "tonight": "Ce soir",
@@ -332,8 +340,8 @@
         },
         "prefix": {
             "description": "Recherche répéteurs par préfixe 2 caractères (ex: 'prefix 1A')",
-            "help_api": "Recherche répéteurs par préfixe 2 caractères{location_note}. Usage: 'prefix 1A' (récents), 'prefix 1A all' (tous), 'prefix free' (préfixes dispo), ou 'prefix refresh'.",
-            "help_no_api": "Recherche répéteurs par préfixe 2 caractères via base locale{location_note}. Usage: 'prefix 1A' (récents), 'prefix 1A all' (tous), 'prefix free' (préfixes dispo). Note: API désactivée - données locales uniquement.",
+            "help_api": "Recherche répéteurs par préfixe{location_note}. Usage: 'prefix 1A', 'prefix 1A all', 'prefix free'.",
+            "help_no_api": "Recherche répéteurs par préfixe{location_note}. Usage: 'prefix 1A', 'prefix 1A all', 'prefix free'. (DB locale uniquement)",
             "location_note": " (avec noms villes)",
             "refresh_not_available": "❌ Actualisation indisponible - aucune URL API configurée. Base locale uniquement.",
             "cache_refreshed": "🔄 Cache préfixe répéteur actualisé!",

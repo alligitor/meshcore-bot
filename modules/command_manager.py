@@ -145,19 +145,28 @@ class CommandManager:
         content_lower = content.lower()
         
         # Check for help requests first (special handling)
-        if content_lower.startswith('help '):
-            command_name = content_lower[5:].strip()  # Remove "help " prefix
-            help_text = self.get_help_for_command(command_name, message)
-            # Format the help response with message data (same as other keywords)
-            help_text = self.format_keyword_response(help_text, message)
-            matches.append(('help', help_text))
-            return matches
-        elif content_lower == 'help':
-            help_text = self.get_general_help()
-            # Format the help response with message data (same as other keywords)
-            help_text = self.format_keyword_response(help_text, message)
-            matches.append(('help', help_text))
-            return matches
+        # Check both English "help" and translated help keywords
+        help_keywords = ['help']
+        if 'help' in self.commands:
+            help_command = self.commands['help']
+            if hasattr(help_command, 'keywords'):
+                help_keywords = [k.lower() for k in help_command.keywords]
+        
+        # Check if message starts with any help keyword
+        for help_keyword in help_keywords:
+            if content_lower.startswith(help_keyword + ' '):
+                command_name = content_lower[len(help_keyword):].strip()  # Remove help keyword prefix
+                help_text = self.get_help_for_command(command_name, message)
+                # Format the help response with message data (same as other keywords)
+                help_text = self.format_keyword_response(help_text, message)
+                matches.append(('help', help_text))
+                return matches
+            elif content_lower == help_keyword:
+                help_text = self.get_general_help()
+                # Format the help response with message data (same as other keywords)
+                help_text = self.format_keyword_response(help_text, message)
+                matches.append(('help', help_text))
+                return matches
         
         # Check all loaded plugins for matches
         for command_name, command in self.commands.items():

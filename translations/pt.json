@@ -174,7 +174,11 @@
             "no_location_zipcode": "Não foi possível encontrar localização para CEP {location}",
             "no_location_city": "Não foi possível encontrar cidade '{location}' em {state}",
             "error": "Erro ao obter dados meteorológicos: {error}",
-            "alerts": "{count} alertas: {text}"
+            "alerts": "{count} alertas: {text}",
+            "tomorrow_not_available": "Tomorrow's forecast not available",
+            "tomorrow_error": "Error formatting tomorrow's forecast",
+            "multiday_not_available": "{num_days}-day forecast not available",
+            "multiday_error": "Error formatting {num_days}-day forecast"
         },
         "gwx": {
             "description": "Obter informações meteorológicas para qualquer localização global (uso: gwx Tokyo)",
@@ -184,6 +188,10 @@
             "error_fetching_api": "Erro ao buscar dados meteorológicos do Open-Meteo",
             "no_location": "Não foi possível encontrar localização '{location}'",
             "error": "Erro ao obter dados meteorológicos: {error}",
+            "tomorrow_not_available": "Tomorrow's forecast not available",
+            "tomorrow_error": "Error formatting tomorrow's forecast",
+            "multiday_not_available": "{num_days}-day forecast not available",
+            "multiday_error": "Error formatting {num_days}-day forecast",
             "periods": {
                 "today": "Hoje",
                 "tonight": "Esta Noite",
@@ -328,8 +336,8 @@
         },
         "prefix": {
             "description": "Pesquisar repetidores por prefixo de dois caracteres (ex: 'prefixo 1A')",
-            "help_api": "Pesquisar repetidores por prefixo de dois caracteres{location_note}. Uso: 'prefixo 1A' (recentes), 'prefixo 1A all', 'prefixo free' ou 'prefixo refresh'.",
-            "help_no_api": "Pesquisar repetidores por prefixo usando banco local{location_note}. Uso: 'prefixo 1A' (recentes), 'prefixo 1A all', 'prefixo free'. Nota: API desabilitada.",
+            "help_api": "Pesquisar repetidores por prefixo{location_note}. Uso: 'prefixo 1A', 'prefixo 1A all', 'prefixo free'.",
+            "help_no_api": "Pesquisar repetidores por prefixo{location_note}. Uso: 'prefixo 1A', 'prefixo 1A all', 'prefixo free'. (Apenas DB local)",
             "location_note": " (com nomes de cidades)",
             "refresh_not_available": "❌ Atualização indisponível - sem URL de API configurada. Usando banco de dados local apenas.",
             "cache_refreshed": "🔄 Cache de prefixo de repetidor atualizado!",

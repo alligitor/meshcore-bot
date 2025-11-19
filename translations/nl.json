@@ -178,7 +178,11 @@
             "no_location_zipcode": "Locatie voor postcode {location} niet gevonden",
             "no_location_city": "Plaats '{location}' niet gevonden in {state}",
             "error": "Fout bij ophalen weerdata: {error}",
-            "alerts": "{count} waarschuwingen: {text}"
+            "alerts": "{count} waarschuwingen: {text}",
+            "tomorrow_not_available": "Tomorrow's forecast not available",
+            "tomorrow_error": "Error formatting tomorrow's forecast",
+            "multiday_not_available": "{num_days}-day forecast not available",
+            "multiday_error": "Error formatting {num_days}-day forecast"
         },
         "gwx": {
             "description": "Weerinfo voor elke locatie wereldwijd (gebruik: gwx Tokyo)",
@@ -188,6 +192,10 @@
             "error_fetching_api": "Fout bij ophalen weerdata van Open-Meteo",
             "no_location": "Locatie '{location}' niet gevonden",
             "error": "Fout bij ophalen weerdata: {error}",
+            "tomorrow_not_available": "Tomorrow's forecast not available",
+            "tomorrow_error": "Error formatting tomorrow's forecast",
+            "multiday_not_available": "{num_days}-day forecast not available",
+            "multiday_error": "Error formatting {num_days}-day forecast",
             "periods": {
                 "today": "Vandaag",
                 "tonight": "Vanavond",
@@ -332,8 +340,8 @@
         },
         "prefix": {
             "description": "Zoek repeaters op twee-karakter prefix (bijv. 'prefix 1A')",
-            "help_api": "Zoek repeaters op twee-karakter prefix{location_note}. Gebruik: 'prefix 1A' (toont recente), 'prefix 1A all' (toont alle), 'prefix free' (lijst beschikbare prefixen), of 'prefix refresh'.",
-            "help_no_api": "Zoek repeaters op twee-karakter prefix met lokale database{location_note}. Gebruik: 'prefix 1A' (toont recente), 'prefix 1A all' (toont alle), 'prefix free' (lijst beschikbare prefixen). Let op: API uitgeschakeld - alleen lokale data.",
+            "help_api": "Zoek repeaters op prefix{location_note}. Gebruik: 'prefix 1A', 'prefix 1A all', 'prefix free'.",
+            "help_no_api": "Zoek repeaters op prefix{location_note}. Gebruik: 'prefix 1A', 'prefix 1A all', 'prefix free'. (Alleen lokale DB)",
             "location_note": " (met plaatsnamen)",
             "refresh_not_available": "❌ Refresh niet beschikbaar - geen API URL geconfigureerd. Alleen lokale database.",
             "cache_refreshed": "🔄 Repeater prefix cache ververst!",

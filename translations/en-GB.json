@@ -178,7 +178,11 @@
       "no_location_zipcode": "Could not find location for postcode {location}",
       "no_location_city": "Could not find city '{location}' in {state}",
       "error": "Error getting weather data: {error}",
-      "alerts": "{count} alerts: {text}"
+      "alerts": "{count} alerts: {text}",
+      "tomorrow_not_available": "Tomorrow's forecast not available",
+      "tomorrow_error": "Error formatting tomorrow's forecast",
+      "multiday_not_available": "{num_days}-day forecast not available",
+      "multiday_error": "Error formatting {num_days}-day forecast"
     },
     "gwx": {
       "description": "Get weather information for any global location (usage: gwx Tokyo)",
@@ -188,6 +192,10 @@
       "error_fetching_api": "Error fetching weather data from Open-Meteo",
       "no_location": "Could not find location '{location}'",
       "error": "Error getting weather data: {error}",
+      "tomorrow_not_available": "Tomorrow's forecast not available",
+      "tomorrow_error": "Error formatting tomorrow's forecast",
+      "multiday_not_available": "{num_days}-day forecast not available",
+      "multiday_error": "Error formatting {num_days}-day forecast",
       "periods": {
         "today": "Today",
         "tonight": "Tonight",
@@ -332,8 +340,8 @@
     },
     "prefix": {
       "description": "Look up repeaters by two-character prefix (e.g., 'prefix 1A')",
-      "help_api": "Look up repeaters by two-character prefix{location_note}. Usage: 'prefix 1A' (shows recent), 'prefix 1A all' (shows all), 'prefix free' (list available prefixes), or 'prefix refresh'.",
-      "help_no_api": "Look up repeaters by two-character prefix using local database{location_note}. Usage: 'prefix 1A' (shows recent), 'prefix 1A all' (shows all), 'prefix free' (list available prefixes). Note: API disabled - using local data only.",
+      "help_api": "Look up repeaters by prefix{location_note}. Usage: 'prefix 1A', 'prefix 1A all', 'prefix free'.",
+      "help_no_api": "Look up repeaters by prefix{location_note}. Usage: 'prefix 1A', 'prefix 1A all', 'prefix free'. (Local DB only)",
       "location_note": " (with city names)",
       "refresh_not_available": "❌ Refresh not available - no API URL configured. Using local database only.",
       "cache_refreshed": "🔄 Repeater prefix cache refreshed!",

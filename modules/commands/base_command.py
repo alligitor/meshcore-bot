@@ -191,6 +191,7 @@ class BaseCommand(ABC):
     def _load_translated_keywords(self):
         """Load translated keywords from translation files"""
         if not hasattr(self.bot, 'translator'):
+            self.logger.debug(f"Translator not available for {self.name}, skipping keyword loading")
             return
         
         try:
@@ -200,13 +201,19 @@ class BaseCommand(ABC):
             
             if translated_keywords and isinstance(translated_keywords, list):
                 # Merge translated keywords with original keywords (avoid duplicates)
+                original_count = len(self.keywords)
                 all_keywords = list(self.keywords)  # Start with original
                 for translated_keyword in translated_keywords:
                     if translated_keyword not in all_keywords:
                         all_keywords.append(translated_keyword)
                 self.keywords = all_keywords
+                added_count = len(self.keywords) - original_count
+                if added_count > 0:
+                    self.logger.debug(f"Loaded {added_count} translated keyword(s) for {self.name}: {self.keywords}")
+            else:
+                self.logger.debug(f"No translated keywords found for {self.name} (key: {key})")
         except Exception as e:
-            # Silently fail - if translations aren't available, use original keywords
+            # Log the error for debugging
             self.logger.debug(f"Could not load translated keywords for {self.name}: {e}")
     
     def matches_keyword(self, message: MeshMessage) -> bool:
