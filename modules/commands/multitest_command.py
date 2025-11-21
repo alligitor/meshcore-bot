@@ -28,6 +28,7 @@ class MultitestCommand(BaseCommand):
         self.listening_start_time = 0
         self.listening_duration = 6.0  # 6 seconds listening window
         self.target_packet_hash: Optional[str] = None  # Hash of the message we're tracking
+        self.triggering_timestamp: float = 0.0  # Timestamp of the triggering message
     
     def get_help_text(self) -> str:
         return self.translate('commands.multitest.help', fallback="Listens for 6 seconds and collects all unique paths from incoming messages")
@@ -179,19 +180,30 @@ class MultitestCommand(BaseCommand):
         rf_data = self.get_rf_data_for_message(message)
         if not rf_data:
             # Can't get RF data, skip this message
+            self.logger.debug(f"Skipping message - no RF data found (sender: {message.sender_id})")
             return
         
         # Use pre-calculated packet hash if available, otherwise calculate it
         message_hash = rf_data.get('packet_hash')
         if not message_hash and rf_data.get('raw_hex'):
             # Fallback: calculate hash if not stored (for older RF data)
-            message_hash = calculate_packet_hash(rf_data['raw_hex'])
+            try:
+                payload_type = None
+                routing_info = rf_data.get('routing_info', {})
+                if routing_info:
+                    # Try to get payload type from routing_info if available
+                    payload_type = routing_info.get('payload_type')
+                message_hash = calculate_packet_hash(rf_data['raw_hex'], payload_type)
+            except Exception as e:
+                self.logger.debug(f"Error calculating packet hash: {e}")
+                message_hash = None
         
         if not message_hash:
             # Can't determine hash, skip this message
+            self.logger.debug(f"Skipping message - could not determine packet hash (sender: {message.sender_id})")
             return
         
-        # Only collect paths if this message has the same hash as the target
+        # CRITICAL: Only collect paths if this message has the same hash as the target
         # This ensures we only track variations of the same original message
         if message_hash == self.target_packet_hash:
             # Try to extract path from RF data first (more reliable)
@@ -203,16 +215,18 @@ class MultitestCommand(BaseCommand):
             
             if path:
                 self.collected_paths.add(path)
-                self.logger.debug(f"Collected path during listening: {path} (hash: {message_hash})")
+                self.logger.info(f"✓ Collected path: {path} (hash: {message_hash[:8]}...)")
             else:
                 # Log when we have a matching hash but can't extract path
                 routing_info = rf_data.get('routing_info', {})
                 path_length = routing_info.get('path_length', 0)
                 if path_length == 0:
-                    self.logger.debug(f"Matched hash {message_hash} but path is direct (0 hops)")
+                    self.logger.debug(f"Matched hash {message_hash[:8]}... but path is direct (0 hops)")
                 else:
-                    self.logger.debug(f"Matched hash {message_hash} but couldn't extract path from routing_info: {routing_info}")
-        # Note: We don't log hash mismatches to avoid spam - only matching hashes are logged
+                    self.logger.debug(f"Matched hash {message_hash[:8]}... but couldn't extract path from routing_info: {routing_info}")
+        else:
+            # Log hash mismatches for debugging (but limit to avoid spam)
+            self.logger.debug(f"✗ Hash mismatch - target: {self.target_packet_hash[:8]}..., received: {message_hash[:8]}... (sender: {message.sender_id})")
     
     def _scan_recent_rf_data(self):
         """Scan recent RF data for packets with matching hash (for messages that haven't been processed yet)"""
@@ -221,21 +235,39 @@ class MultitestCommand(BaseCommand):
         
         try:
             current_time = time.time()
+            matching_count = 0
+            mismatching_count = 0
+            
             # Look at RF data from the last few seconds (before listening started, in case packets arrived just before)
             for rf_data in self.bot.message_handler.recent_rf_data:
                 # Check if this RF data is recent enough
                 rf_timestamp = rf_data.get('timestamp', 0)
                 time_diff = current_time - rf_timestamp
                 
-                # Include RF data from slightly before listening started (up to 2 seconds) and during listening
-                if -2.0 <= time_diff <= self.listening_duration:
+                # Only include RF data from the triggering message timestamp onwards
+                # This prevents collecting packets from earlier messages that happen to have the same hash
+                rf_timestamp = rf_data.get('timestamp', 0)
+                if rf_timestamp >= self.triggering_timestamp and time_diff <= self.listening_duration:
                     packet_hash = rf_data.get('packet_hash')
-                    if packet_hash == self.target_packet_hash:
+                    
+                    # CRITICAL: Only process if hash matches exactly and is not None/empty
+                    if packet_hash and packet_hash == self.target_packet_hash:
+                        matching_count += 1
                         # Extract path from this RF data
                         path = self.extract_path_from_rf_data(rf_data)
                         if path:
                             self.collected_paths.add(path)
-                            self.logger.debug(f"Collected path from RF data scan: {path} (hash: {packet_hash}, time: {time_diff:.2f}s)")
+                            self.logger.info(f"✓ Collected path from RF scan: {path} (hash: {packet_hash[:8]}..., time: {time_diff:.2f}s)")
+                        else:
+                            self.logger.debug(f"Matched hash {packet_hash[:8]}... in RF scan but couldn't extract path")
+                    elif packet_hash:
+                        mismatching_count += 1
+                        # Only log first few mismatches to avoid spam
+                        if mismatching_count <= 3:
+                            self.logger.debug(f"✗ RF scan hash mismatch - target: {self.target_packet_hash[:8]}..., found: {packet_hash[:8]}... (time: {time_diff:.2f}s)")
+            
+            if matching_count > 0 or mismatching_count > 0:
+                self.logger.debug(f"RF scan complete: {matching_count} matching, {mismatching_count} mismatching packets")
         except Exception as e:
             self.logger.debug(f"Error scanning recent RF data: {e}")
     
@@ -254,7 +286,12 @@ class MultitestCommand(BaseCommand):
         packet_hash = rf_data.get('packet_hash')
         if not packet_hash and rf_data.get('raw_hex'):
             # Fallback: calculate hash if not stored (for older RF data)
-            packet_hash = calculate_packet_hash(rf_data['raw_hex'])
+            # IMPORTANT: Must use same payload_type that was used during ingestion
+            payload_type = None
+            routing_info = rf_data.get('routing_info', {})
+            if routing_info:
+                payload_type = routing_info.get('payload_type')
+            packet_hash = calculate_packet_hash(rf_data['raw_hex'], payload_type)
         
         if not packet_hash:
             response = "Error: Could not calculate packet hash for this message. Please try again."
@@ -263,7 +300,13 @@ class MultitestCommand(BaseCommand):
         
         # Store the packet hash to track
         self.target_packet_hash = packet_hash
-        self.logger.info(f"Tracking packet hash: {self.target_packet_hash}")
+        
+        # Store the timestamp of the triggering message to avoid collecting older packets
+        triggering_rf_timestamp = rf_data.get('timestamp', time.time())
+        self.triggering_timestamp = triggering_rf_timestamp
+        
+        self.logger.info(f"Tracking packet hash: {self.target_packet_hash[:16]}... (full: {self.target_packet_hash})")
+        self.logger.debug(f"Triggering message timestamp: {triggering_rf_timestamp}")
         
         # Also extract path from the triggering message itself
         initial_path = self.extract_path_from_message(message)
@@ -286,6 +329,7 @@ class MultitestCommand(BaseCommand):
         self.listening_start_time = time.time()
         
         # Also scan recent RF data for matching hashes (in case messages haven't been processed yet)
+        # But only include packets that arrived at or after the triggering message
         self._scan_recent_rf_data()
         
         try:

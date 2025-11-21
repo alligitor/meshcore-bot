@@ -7,10 +7,10 @@ Decodes hex path data to show which repeaters were involved in message routing
 import re
 import time
 import asyncio
-import math
 from typing import List, Optional, Dict, Any, Tuple
 from .base_command import BaseCommand
 from ..models import MeshMessage
+from ..utils import calculate_distance
 
 
 class PathCommand(BaseCommand):
@@ -414,23 +414,6 @@ class PathCommand(BaseCommand):
             self.logger.warning(f"Could not get API cache data: {e}")
         return None
     
-    def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Calculate haversine distance between two points in kilometers"""
-        # Convert latitude and longitude from degrees to radians
-        lat1_rad = math.radians(lat1)
-        lon1_rad = math.radians(lon1)
-        lat2_rad = math.radians(lat2)
-        lon2_rad = math.radians(lon2)
-        
-        # Haversine formula
-        dlat = lat2_rad - lat1_rad
-        dlon = lon2_rad - lon1_rad
-        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
-        c = 2 * math.asin(math.sqrt(a))
-        
-        # Earth's radius in kilometers
-        earth_radius = 6371.0
-        return earth_radius * c
     
     def _select_repeater_by_proximity(self, repeaters: List[Dict[str, Any]], node_id: str = None, path_context: List[str] = None) -> Tuple[Optional[Dict[str, Any]], float]:
         """
@@ -496,7 +479,7 @@ class PathCommand(BaseCommand):
         # If only one repeater, check if it's within range
         if len(scored_repeaters) == 1:
             repeater, recency_score = scored_repeaters[0]
-            distance = self._calculate_distance(
+            distance = calculate_distance(
                 self.bot_latitude, self.bot_longitude,
                 repeater['latitude'], repeater['longitude']
             )
@@ -511,7 +494,7 @@ class PathCommand(BaseCommand):
         # Calculate combined proximity + recency scores
         combined_scores = []
         for repeater, recency_score in scored_repeaters:
-            distance = self._calculate_distance(
+            distance = calculate_distance(
                 self.bot_latitude, self.bot_longitude,
                 repeater['latitude'], repeater['longitude']
             )
@@ -869,13 +852,13 @@ class PathCommand(BaseCommand):
         
         for repeater, recency_score in scored_repeaters:
             # Calculate distance to previous node
-            prev_distance = self._calculate_distance(
+            prev_distance = calculate_distance(
                 prev_location[0], prev_location[1],
                 repeater['latitude'], repeater['longitude']
             )
             
             # Calculate distance to next node
-            next_distance = self._calculate_distance(
+            next_distance = calculate_distance(
                 next_location[0], next_location[1],
                 repeater['latitude'], repeater['longitude']
             )
@@ -896,11 +879,11 @@ class PathCommand(BaseCommand):
             # Apply maximum range threshold
             if self.max_proximity_range > 0:
                 # Check if any distance is beyond range
-                prev_dist = self._calculate_distance(
+                prev_dist = calculate_distance(
                     prev_location[0], prev_location[1],
                     best_repeater['latitude'], best_repeater['longitude']
                 )
-                next_dist = self._calculate_distance(
+                next_dist = calculate_distance(
                     next_location[0], next_location[1],
                     best_repeater['latitude'], best_repeater['longitude']
                 )
@@ -929,7 +912,7 @@ class PathCommand(BaseCommand):
         best_combined_score = 0.0
         
         for repeater, recency_score in scored_repeaters:
-            distance = self._calculate_distance(
+            distance = calculate_distance(
                 reference_location[0], reference_location[1],
                 repeater['latitude'], repeater['longitude']
             )

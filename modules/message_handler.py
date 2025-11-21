@@ -479,7 +479,13 @@ class MessageHandler:
                         decoded_packet = self.decode_meshcore_packet(raw_hex, extracted_payload)
                         if decoded_packet:
                             # Calculate packet hash for this packet (useful for tracking same message via different paths)
+                            # Ensure we use the numeric payload_type value (not enum or string)
                             payload_type_value = decoded_packet.get('payload_type', None)
+                            if payload_type_value is not None:
+                                # Handle enum.value if it's an enum
+                                if hasattr(payload_type_value, 'value'):
+                                    payload_type_value = payload_type_value.value
+                                payload_type_value = int(payload_type_value)
                             packet_hash = calculate_packet_hash(raw_hex, payload_type_value)
                             
                             routing_info = {

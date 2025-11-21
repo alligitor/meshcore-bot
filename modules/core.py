@@ -281,14 +281,16 @@ admin_commands = repeater
 
 [Keywords]
 # Keyword-response pairs (keyword = response format)
-# Available fields: {sender}, {connection_info}, {snr}, {rssi}, {timestamp}, {path}
+# Available fields: {sender}, {connection_info}, {snr}, {rssi}, {timestamp}, {path}, {path_distance}, {firstlast_distance}
 # {sender}: Name/ID of message sender
 # {connection_info}: Path info, SNR, and RSSI combined (e.g., "01,5f (2 hops) | SNR: 15 dB | RSSI: -120 dBm")
 # {snr}: Signal-to-noise ratio in dB
 # {rssi}: Received signal strength indicator in dBm
 # {timestamp}: Message timestamp in HH:MM:SS format
 # {path}: Message routing path (e.g., "01,5f (2 hops)")
-test = "ack {sender}{phrase_part} | {connection_info} | Received at: {timestamp}"
+# {path_distance}: Total distance between all hops in path with locations (e.g., "123.4km (3 segs, 1 no-loc)")
+# {firstlast_distance}: Distance between first and last repeater in path (e.g., "45.6km" or empty if locations missing)
+test = "ack [@{sender}]{phrase_part} | {connection_info} | Received at: {timestamp}"
 ping = "Pong!"
 pong = "Ping!"
 help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass | Use 'help <command>' for details"

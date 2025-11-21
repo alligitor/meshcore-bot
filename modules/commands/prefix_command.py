@@ -9,11 +9,10 @@ import aiohttp
 import time
 import json
 import random
-import math
 from typing import Dict, List, Optional, Any, Tuple
 from .base_command import BaseCommand
 from ..models import MeshMessage
-from ..utils import abbreviate_location, format_location_for_display
+from ..utils import abbreviate_location, format_location_for_display, calculate_distance
 
 
 class PrefixCommand(BaseCommand):
@@ -349,7 +348,7 @@ class PrefixCommand(BaseCommand):
                     if (row['latitude'] is not None and 
                         row['longitude'] is not None and
                         not (row['latitude'] == 0.0 and row['longitude'] == 0.0)):
-                        distance = self._calculate_distance(
+                        distance = calculate_distance(
                             self.bot_latitude, self.bot_longitude,
                             row['latitude'], row['longitude']
                         )
@@ -430,23 +429,6 @@ class PrefixCommand(BaseCommand):
             self.logger.error(f"Error querying database for prefix '{prefix}': {e}")
             return None
     
-    def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Calculate haversine distance between two points in kilometers"""
-        # Convert latitude and longitude from degrees to radians
-        lat1_rad = math.radians(lat1)
-        lon1_rad = math.radians(lon1)
-        lat2_rad = math.radians(lat2)
-        lon2_rad = math.radians(lon2)
-        
-        # Haversine formula
-        dlat = lat2_rad - lat1_rad
-        dlon = lon2_rad - lon1_rad
-        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
-        c = 2 * math.asin(math.sqrt(a))
-        
-        # Earth's radius in kilometers
-        earth_radius = 6371.0
-        return earth_radius * c
     
     async def get_free_prefixes(self) -> Tuple[List[str], int, bool]:
         """Get list of available (unused) prefixes and total count
@@ -505,7 +487,7 @@ class PrefixCommand(BaseCommand):
                             if (row.get('latitude') is not None and 
                                 row.get('longitude') is not None and
                                 not (row.get('latitude') == 0.0 and row.get('longitude') == 0.0)):
-                                distance = self._calculate_distance(
+                                distance = calculate_distance(
                                     self.bot_latitude, self.bot_longitude,
                                     row['latitude'], row['longitude']
                                 )
