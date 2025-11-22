@@ -488,8 +488,7 @@ class BotDataViewer:
                 'subscribed_packets': False
             }
             
-            # Send welcome message
-            emit('status', {'message': 'Connected to MeshCore Bot Data Viewer'})
+            # Connection status is shown via the green indicator in the navbar, no toast needed
             self.logger.info(f"Client {client_id} connected. Total clients: {len(self.connected_clients)}")
         
         @self.socketio.on('disconnect')
