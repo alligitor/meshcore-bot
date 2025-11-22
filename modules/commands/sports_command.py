@@ -3,6 +3,20 @@
 Sports command for the MeshCore Bot
 Provides sports scores and schedules using ESPN API
 API description via https://github.com/zuplo/espn-openapi/
+
+Team ID Stability:
+ESPN team IDs are generally stable but can change in certain circumstances:
+- Team relocation or renaming
+- Expansion teams (new teams added to leagues)
+- ESPN data system updates
+
+If a team returns "No games found", verify the team_id using:
+  python3 test_scripts/find_espn_team_id.py <sport> <league> <team_name>
+
+Team IDs should be periodically verified, especially after:
+- League expansion announcements
+- Team relocations or rebranding
+- When users report "no games found" for known active teams
 """
 
 import re
@@ -71,6 +85,8 @@ class SportsCommand(BaseCommand):
     }
     
     # Team mappings for common searches
+    # NOTE: Team IDs can change over time (see module docstring).
+    # Use test_scripts/find_espn_team_id.py to verify/update team IDs.
     TEAM_MAPPINGS = {
         # NFL Teams
         'seahawks': {'sport': 'football', 'league': 'nfl', 'team_id': '26'},
@@ -294,8 +310,8 @@ class SportsCommand(BaseCommand):
         'washington mystics': {'sport': 'basketball', 'league': 'wnba', 'team_id': '16'},
         
         # NHL Teams (limited data available from API)
-        'kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '58'},
-        'seattle kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '58'},
+        'kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '124292'},
+        'seattle kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '124292'},
         'blues': {'sport': 'hockey', 'league': 'nhl', 'team_id': '19'},
         'stars': {'sport': 'hockey', 'league': 'nhl', 'team_id': '9'},
         
