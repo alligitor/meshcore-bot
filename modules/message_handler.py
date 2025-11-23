@@ -398,11 +398,18 @@ class MessageHandler:
                 if 'hops' in packet_info:
                     signal_info['hops'] = packet_info['hops']
                 
+                # Extract packet_hash if available (from routing_info or packet_info)
+                packet_hash = None
+                if 'routing_info' in packet_info and packet_info['routing_info']:
+                    packet_hash = packet_info['routing_info'].get('packet_hash')
+                elif 'packet_hash' in packet_info:
+                    packet_hash = packet_info['packet_hash']
+                
                 # Track this advertisement in the complete database
                 if hasattr(self.bot, 'repeater_manager'):
                     # Track all advertisements regardless of type
                     success = await self.bot.repeater_manager.track_contact_advertisement(
-                        advert_data, signal_info
+                        advert_data, signal_info, packet_hash=packet_hash
                     )
                     if success:
                         # Log rich advert information
@@ -517,6 +524,8 @@ class MessageHandler:
                             
                             # Process ADVERT packets for contact tracking (regardless of path length)
                             if routing_info['payload_type'] == 'ADVERT':
+                                # Add routing_info to decoded_packet so it's available in _process_advertisement_packet
+                                decoded_packet['routing_info'] = routing_info
                                 # Create signal info from available data
                                 signal_info = {
                                     'snr': snr_value,
@@ -1650,8 +1659,9 @@ class MessageHandler:
             if metadata:
                 signal_info.update(metadata)
             
-            # Try to get signal data from recent RF data correlation
+            # Try to get signal data and packet_hash from recent RF data correlation
             # Only collect RSSI/SNR for zero-hop (direct) advertisements
+            packet_hash = None
             try:
                 # Look for recent RF data that might correlate with this contact
                 recent_rf_data = self.bot.message_handler.recent_rf_data
@@ -1660,6 +1670,9 @@ class MessageHandler:
                     for rf_entry in recent_rf_data[-10:]:  # Check last 10 RF entries
                         if 'routing_info' in rf_entry:
                             routing_info = rf_entry['routing_info']
+                            
+                            # Extract packet_hash if available
+                            packet_hash = routing_info.get('packet_hash') or rf_entry.get('packet_hash')
                             
                             # Only collect signal data for direct (zero-hop) advertisements
                             path_length = routing_info.get('path_length', 0)
@@ -1694,7 +1707,7 @@ class MessageHandler:
                     self.logger.info(f"📡 New repeater discovered: {contact_name} - tracking in database only")
                     
                     # Track repeater in complete database with signal info
-                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info)
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info, packet_hash=packet_hash)
                     
                     # Check if auto-purge is needed (run after tracking to ensure data is captured)
                     await self.bot.repeater_manager.check_and_auto_purge()
@@ -1706,7 +1719,7 @@ class MessageHandler:
                     self.logger.info(f"👤 New companion discovered: {contact_name} - will be added to device contacts")
                     
                     # Track companion in complete database with signal info
-                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info)
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info, packet_hash=packet_hash)
                     
                     # Add companion to device contact list
                     try:
@@ -1724,7 +1737,7 @@ class MessageHandler:
             
             # Fallback: Track in database for unknown contact types
             if hasattr(self.bot, 'repeater_manager'):
-                await self.bot.repeater_manager.track_contact_advertisement(contact_data)
+                await self.bot.repeater_manager.track_contact_advertisement(contact_data, packet_hash=packet_hash)
                 await self.bot.repeater_manager.check_and_auto_purge()
             
             # For unknown contact types, handle based on auto_manage_contacts setting
