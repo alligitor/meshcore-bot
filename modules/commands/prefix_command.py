@@ -393,9 +393,10 @@ class PrefixCommand(BaseCommand):
                                     location_str = abbreviate_location(city, 20)
                             else:
                                 # Fallback to basic geocoding
-                                from geopy.geocoders import Nominatim
-                                geolocator = Nominatim(user_agent="meshcore-bot")
-                                location = geolocator.reverse(f"{row['latitude']}, {row['longitude']}")
+                                from ..utils import rate_limited_nominatim_reverse_sync
+                                location = rate_limited_nominatim_reverse_sync(
+                                    self.bot, f"{row['latitude']}, {row['longitude']}", timeout=10
+                                )
                                 if location:
                                     address = location.raw.get('address', {})
                                     # Try neighborhood first, then city, then town, etc.

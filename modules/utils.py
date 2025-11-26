@@ -363,3 +363,138 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     # Earth's radius in kilometers
     earth_radius = 6371.0
     return earth_radius * c
+
+
+def get_nominatim_geocoder(user_agent: str = "meshcore-bot", timeout: int = 10):
+    """
+    Get a Nominatim geocoder instance with proper User-Agent.
+    
+    Args:
+        user_agent: User-Agent string for Nominatim (required by their policy)
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Nominatim geocoder instance
+    """
+    from geopy.geocoders import Nominatim
+    return Nominatim(user_agent=user_agent, timeout=timeout)
+
+
+async def rate_limited_nominatim_geocode(bot, query: str, timeout: int = 10):
+    """
+    Perform rate-limited Nominatim geocoding (forward geocoding).
+    
+    Args:
+        bot: Bot instance (must have nominatim_rate_limiter attribute)
+        query: Location query string
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Geocoding result or None
+    """
+    if not hasattr(bot, 'nominatim_rate_limiter'):
+        # Fallback if rate limiter not initialized
+        geolocator = get_nominatim_geocoder(timeout=timeout)
+        return geolocator.geocode(query, timeout=timeout)
+    
+    # Wait for rate limiter
+    await bot.nominatim_rate_limiter.wait_for_request()
+    
+    # Make the request
+    geolocator = get_nominatim_geocoder(timeout=timeout)
+    result = geolocator.geocode(query, timeout=timeout)
+    
+    # Record the request
+    bot.nominatim_rate_limiter.record_request()
+    
+    return result
+
+
+async def rate_limited_nominatim_reverse(bot, coordinates: str, timeout: int = 10):
+    """
+    Perform rate-limited Nominatim reverse geocoding.
+    
+    Args:
+        bot: Bot instance (must have nominatim_rate_limiter attribute)
+        coordinates: Coordinates string in format "lat, lon"
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Reverse geocoding result or None
+    """
+    if not hasattr(bot, 'nominatim_rate_limiter'):
+        # Fallback if rate limiter not initialized
+        geolocator = get_nominatim_geocoder(timeout=timeout)
+        return geolocator.reverse(coordinates, timeout=timeout)
+    
+    # Wait for rate limiter
+    await bot.nominatim_rate_limiter.wait_for_request()
+    
+    # Make the request
+    geolocator = get_nominatim_geocoder(timeout=timeout)
+    result = geolocator.reverse(coordinates, timeout=timeout)
+    
+    # Record the request
+    bot.nominatim_rate_limiter.record_request()
+    
+    return result
+
+
+def rate_limited_nominatim_geocode_sync(bot, query: str, timeout: int = 10):
+    """
+    Perform rate-limited Nominatim geocoding (synchronous version).
+    
+    Args:
+        bot: Bot instance (must have nominatim_rate_limiter attribute)
+        query: Location query string
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Geocoding result or None
+    """
+    if not hasattr(bot, 'nominatim_rate_limiter'):
+        # Fallback if rate limiter not initialized
+        geolocator = get_nominatim_geocoder(timeout=timeout)
+        return geolocator.geocode(query, timeout=timeout)
+    
+    # Wait for rate limiter
+    bot.nominatim_rate_limiter.wait_for_request_sync()
+    
+    # Make the request
+    geolocator = get_nominatim_geocoder(timeout=timeout)
+    result = geolocator.geocode(query, timeout=timeout)
+    
+    # Record the request
+    bot.nominatim_rate_limiter.record_request()
+    
+    return result
+
+
+def rate_limited_nominatim_reverse_sync(bot, coordinates: str, timeout: int = 10):
+    """
+    Perform rate-limited Nominatim reverse geocoding (synchronous version).
+    
+    Args:
+        bot: Bot instance (must have nominatim_rate_limiter attribute)
+        coordinates: Coordinates string in format "lat, lon"
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Reverse geocoding result or None
+    """
+    if not hasattr(bot, 'nominatim_rate_limiter'):
+        # Fallback if rate limiter not initialized
+        geolocator = get_nominatim_geocoder(timeout=timeout)
+        return geolocator.reverse(coordinates, timeout=timeout)
+    
+    # Wait for rate limiter
+    bot.nominatim_rate_limiter.wait_for_request_sync()
+    
+    # Make the request
+    geolocator = get_nominatim_geocoder(timeout=timeout)
+    result = geolocator.reverse(coordinates, timeout=timeout)
+    
+    # Record the request
+    bot.nominatim_rate_limiter.record_request()
+    
+    return result

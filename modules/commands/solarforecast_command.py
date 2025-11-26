@@ -10,6 +10,7 @@ import time
 import hashlib
 import pytz
 from geopy.geocoders import Nominatim
+from ..utils import rate_limited_nominatim_geocode, rate_limited_nominatim_reverse, get_nominatim_geocoder
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, Dict
 from .base_command import BaseCommand
@@ -50,8 +51,8 @@ class SolarforecastCommand(BaseCommand):
         # Get default state from config for city disambiguation
         self.default_state = self.bot.config.get('Weather', 'default_state', fallback='WA')
         
-        # Initialize geocoder
-        self.geolocator = Nominatim(user_agent="meshcore-bot")
+        # Initialize geocoder (will use rate-limited helpers for actual calls)
+        self.geolocator = get_nominatim_geocoder()
         
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
@@ -352,10 +353,8 @@ class SolarforecastCommand(BaseCommand):
             if cached_lat and cached_lon:
                 return cached_lat, cached_lon
             
-            loop = asyncio.get_event_loop()
-            location = await loop.run_in_executor(
-                None,
-                lambda: self.geolocator.geocode(f"{zipcode}, USA", timeout=self.url_timeout)
+            location = await rate_limited_nominatim_geocode(
+                self.bot, f"{zipcode}, USA", timeout=self.url_timeout
             )
             if location:
                 self.db_manager.cache_geocoding(cache_query, location.latitude, location.longitude)
@@ -391,9 +390,8 @@ class SolarforecastCommand(BaseCommand):
                     if cached_lat and cached_lon:
                         return cached_lat, cached_lon
                     
-                    location = await loop.run_in_executor(
-                        None,
-                        lambda q=major_city_query: self.geolocator.geocode(q, timeout=self.url_timeout)
+                    location = await rate_limited_nominatim_geocode(
+                        self.bot, major_city_query, timeout=self.url_timeout
                     )
                     if location:
                         self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
@@ -406,9 +404,8 @@ class SolarforecastCommand(BaseCommand):
                 if cached_lat and cached_lon:
                     return cached_lat, cached_lon
                 
-                location = await loop.run_in_executor(
-                    None,
-                    lambda: self.geolocator.geocode(state_query, timeout=self.url_timeout)
+                location = await rate_limited_nominatim_geocode(
+                    self.bot, state_query, timeout=self.url_timeout
                 )
                 if location:
                     self.db_manager.cache_geocoding(state_query, location.latitude, location.longitude)
@@ -420,27 +417,24 @@ class SolarforecastCommand(BaseCommand):
             if cached_lat and cached_lon:
                 return cached_lat, cached_lon
             
-            location = await loop.run_in_executor(
-                None, 
-                lambda: self.geolocator.geocode(cache_query, timeout=self.url_timeout)
+            location = await rate_limited_nominatim_geocode(
+                self.bot, cache_query, timeout=self.url_timeout
             )
             if location:
                 self.db_manager.cache_geocoding(cache_query, location.latitude, location.longitude)
                 return location.latitude, location.longitude
             
             # Try without state
-            location = await loop.run_in_executor(
-                None,
-                lambda: self.geolocator.geocode(f"{city_clean}, USA", timeout=self.url_timeout)
+            location = await rate_limited_nominatim_geocode(
+                self.bot, f"{city_clean}, USA", timeout=self.url_timeout
             )
             if location:
                 self.db_manager.cache_geocoding(f"{city_clean}, USA", location.latitude, location.longitude)
                 return location.latitude, location.longitude
             
             # Try international
-            location = await loop.run_in_executor(
-                None,
-                lambda: self.geolocator.geocode(city_clean, timeout=self.url_timeout)
+            location = await rate_limited_nominatim_geocode(
+                self.bot, city_clean, timeout=self.url_timeout
             )
             if location:
                 self.db_manager.cache_geocoding(city_clean, location.latitude, location.longitude)
@@ -480,9 +474,8 @@ class SolarforecastCommand(BaseCommand):
             
             # For coordinates, always do reverse geocoding
             if location_type == "coordinates":
-                location = await loop.run_in_executor(
-                    None,
-                    lambda: self.geolocator.reverse(f"{lat}, {lon}", timeout=self.url_timeout)
+                location = await rate_limited_nominatim_reverse(
+                    self.bot, f"{lat}, {lon}", timeout=self.url_timeout
                 )
                 if location and location.raw:
                     address = location.raw.get('address', {})
@@ -499,9 +492,8 @@ class SolarforecastCommand(BaseCommand):
             # For city/zipcode, use original if it worked, or reverse geocode
             if location_type in ["city", "zipcode"]:
                 # Try reverse geocoding to get confirmed city name
-                location = await loop.run_in_executor(
-                    None,
-                    lambda: self.geolocator.reverse(f"{lat}, {lon}", timeout=self.url_timeout)
+                location = await rate_limited_nominatim_reverse(
+                    self.bot, f"{lat}, {lon}", timeout=self.url_timeout
                 )
                 if location and location.raw:
                     address = location.raw.get('address', {})

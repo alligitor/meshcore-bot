@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from meshcore import EventType
+from .utils import rate_limited_nominatim_reverse_sync
 
 
 
@@ -1276,13 +1277,10 @@ class RepeaterManager:
             return existing_data.get('state'), existing_data.get('country')
         
         try:
-            from geopy.geocoders import Nominatim
-            
-            # Initialize geocoder with proper timeout
-            geolocator = Nominatim(user_agent="meshcore-bot", timeout=10)
-            
-            # Perform reverse geocoding
-            location = geolocator.reverse(f"{latitude}, {longitude}")
+            # Use rate-limited Nominatim reverse geocoding
+            location = rate_limited_nominatim_reverse_sync(
+                self.bot, f"{latitude}, {longitude}", timeout=10
+            )
             if location:
                 address = location.raw.get('address', {})
                 
@@ -1322,13 +1320,10 @@ class RepeaterManager:
             return existing_data.get('city')
         
         try:
-            from geopy.geocoders import Nominatim
-            
-            # Initialize geocoder with proper timeout
-            geolocator = Nominatim(user_agent="meshcore-bot", timeout=10)
-            
-            # Perform reverse geocoding
-            location = geolocator.reverse(f"{latitude}, {longitude}")
+            # Use rate-limited Nominatim reverse geocoding
+            location = rate_limited_nominatim_reverse_sync(
+                self.bot, f"{latitude}, {longitude}", timeout=10
+            )
             if location:
                 address = location.raw.get('address', {})
                 
@@ -1400,17 +1395,11 @@ class RepeaterManager:
                 self.logger.debug(f"Using cached location data for {latitude}, {longitude}")
                 return cached_result
             
-            from geopy.geocoders import Nominatim
-            
-            # Initialize geocoder with proper user agent and timeout
-            geolocator = Nominatim(
-                user_agent="meshcore-bot-geolocation-update",
-                timeout=10  # 10 second timeout
-            )
-            
-            # Perform reverse geocoding
+            # Use rate-limited Nominatim reverse geocoding
             self.logger.debug(f"Calling Nominatim reverse geocoding for {latitude}, {longitude}")
-            location = geolocator.reverse(f"{latitude}, {longitude}")
+            location = rate_limited_nominatim_reverse_sync(
+                self.bot, f"{latitude}, {longitude}", timeout=10
+            )
             
             if location:
                 address = location.raw.get('address', {})
@@ -1451,8 +1440,8 @@ class RepeaterManager:
             else:
                 self.logger.warning(f"Geocoding API returned no location for {latitude}, {longitude}")
             
-            # Cache the result for 24 hours to avoid duplicate API calls
-            self.db_manager.cache_json(cache_key, location_info, "geolocation", cache_hours=24)
+            # Cache the result for 30 days - geolocation data is very stable
+            self.db_manager.cache_json(cache_key, location_info, "geolocation", cache_hours=720)
             
             return location_info
             
@@ -3473,8 +3462,8 @@ class RepeaterManager:
         """Get cached geocoding result for a query"""
         return self.db_manager.get_cached_geocoding(query)
     
-    def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 24):
-        """Cache geocoding result for future use"""
+    def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 720):
+        """Cache geocoding result for future use (default: 30 days)"""
         self.db_manager.cache_geocoding(query, latitude, longitude, cache_hours)
     
     def cleanup_geocoding_cache(self):

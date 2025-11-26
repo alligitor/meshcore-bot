@@ -25,7 +25,7 @@ from meshcore import EventType
 from meshcore_cli.meshcore_cli import send_cmd, send_chan_msg
 
 # Import our modules
-from .rate_limiter import RateLimiter, BotTxRateLimiter
+from .rate_limiter import RateLimiter, BotTxRateLimiter, NominatimRateLimiter
 from .message_handler import MessageHandler
 from .command_manager import CommandManager
 from .channel_manager import ChannelManager
@@ -89,6 +89,10 @@ class MeshCoreBot:
         )
         self.bot_tx_rate_limiter = BotTxRateLimiter(
             self.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+        )
+        # Nominatim rate limiter: 1.1 seconds between requests (Nominatim policy: max 1 req/sec)
+        self.nominatim_rate_limiter = NominatimRateLimiter(
+            self.config.getfloat('Bot', 'nominatim_rate_limit_seconds', fallback=1.1)
         )
         self.tx_delay_ms = self.config.getint('Bot', 'tx_delay_ms', fallback=250)
         

@@ -10,6 +10,7 @@ import requests
 import xml.dom.minidom
 from datetime import datetime, timedelta
 from geopy.geocoders import Nominatim
+from ..utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder
 import maidenhead as mh
 from .base_command import BaseCommand
 from ..models import MeshMessage
@@ -44,8 +45,9 @@ class WxCommand(BaseCommand):
         # Get default state from config for city disambiguation
         self.default_state = self.bot.config.get('Weather', 'default_state', fallback='WA')
         
-        # Initialize geocoder
-        self.geolocator = Nominatim(user_agent="meshcore-bot")
+        # Initialize geocoder (will use rate-limited helpers for actual calls)
+        # Keep geolocator for backwards compatibility, but prefer rate-limited helpers
+        self.geolocator = get_nominatim_geocoder()
         
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
@@ -318,8 +320,10 @@ class WxCommand(BaseCommand):
     def zipcode_to_lat_lon(self, zipcode: str) -> tuple:
         """Convert zipcode to latitude and longitude"""
         try:
-            # Use Nominatim to geocode the zipcode
-            location = self.geolocator.geocode(f"{zipcode}, USA")
+            # Use rate-limited Nominatim to geocode the zipcode
+            location = rate_limited_nominatim_geocode_sync(
+                self.bot, f"{zipcode}, USA", timeout=10
+            )
             if location:
                 return location.latitude, location.longitude
             else:
@@ -338,7 +342,9 @@ class WxCommand(BaseCommand):
                 self.logger.debug(f"Using cached geocoding for {city}")
                 # Still need to do reverse geocoding for address details
                 try:
-                    reverse_location = self.geolocator.reverse(f"{cached_lat}, {cached_lon}")
+                    reverse_location = rate_limited_nominatim_reverse_sync(
+                        self.bot, f"{cached_lat}, {cached_lon}", timeout=10
+                    )
                     if reverse_location:
                         return cached_lat, cached_lon, reverse_location.raw.get('address', {})
                 except:
@@ -354,14 +360,18 @@ class WxCommand(BaseCommand):
                     state = city_parts[1]
                     
                     # Try the specific city, state combination first
-                    location = self.geolocator.geocode(f"{city_name}, {state}, USA")
+                    location = rate_limited_nominatim_geocode_sync(
+                        self.bot, f"{city_name}, {state}, USA", timeout=10
+                    )
                     if location:
                         # Cache the result
                         self.db_manager.cache_geocoding(f"{city_name}, {state}, USA", location.latitude, location.longitude)
                         
                         # Use reverse geocoding to get detailed address info
                         try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            reverse_location = rate_limited_nominatim_reverse_sync(
+                                self.bot, f"{location.latitude}, {location.longitude}", timeout=10
+                            )
                             if reverse_location:
                                 return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                         except:
@@ -386,14 +396,18 @@ class WxCommand(BaseCommand):
             # If it's a major city with multiple locations, try the major ones first
             if city.lower() in major_city_mappings:
                 for major_city_query in major_city_mappings[city.lower()]:
-                    location = self.geolocator.geocode(major_city_query)
+                    location = rate_limited_nominatim_geocode_sync(
+                        self.bot, major_city_query, timeout=10
+                    )
                     if location:
                         # Cache the result
                         self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
                         
                         # Use reverse geocoding to get detailed address info
                         try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            reverse_location = rate_limited_nominatim_reverse_sync(
+                                self.bot, f"{location.latitude}, {location.longitude}", timeout=10
+                            )
                             if reverse_location:
                                 return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                         except:
@@ -401,14 +415,18 @@ class WxCommand(BaseCommand):
                         return location.latitude, location.longitude, location.raw.get('address', {})
             
             # First try with default state
-            location = self.geolocator.geocode(f"{city}, {self.default_state}, USA")
+            location = rate_limited_nominatim_geocode_sync(
+                self.bot, f"{city}, {self.default_state}, USA", timeout=10
+            )
             if location:
                 # Cache the result
                 self.db_manager.cache_geocoding(f"{city}, {self.default_state}, USA", location.latitude, location.longitude)
                 
                 # Use reverse geocoding to get detailed address info
                 try:
-                    reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                    reverse_location = rate_limited_nominatim_reverse_sync(
+                        self.bot, f"{location.latitude}, {location.longitude}", timeout=10
+                    )
                     if reverse_location:
                         return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                 except:
@@ -416,14 +434,18 @@ class WxCommand(BaseCommand):
                 return location.latitude, location.longitude, location.raw.get('address', {})
             else:
                 # Try without state as fallback
-                location = self.geolocator.geocode(f"{city}, USA")
+                location = rate_limited_nominatim_geocode_sync(
+                    self.bot, f"{city}, USA", timeout=10
+                )
                 if location:
                     # Cache the result
                     self.db_manager.cache_geocoding(f"{city}, USA", location.latitude, location.longitude)
                     
                     # Use reverse geocoding to get detailed address info
                     try:
-                        reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                        reverse_location = rate_limited_nominatim_reverse_sync(
+                            self.bot, f"{location.latitude}, {location.longitude}", timeout=10
+                        )
                         if reverse_location:
                             return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                     except:

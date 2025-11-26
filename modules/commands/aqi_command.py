@@ -10,6 +10,7 @@ import requests_cache
 from retry_requests import retry
 from datetime import datetime
 from geopy.geocoders import Nominatim
+from ..utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder
 from .base_command import BaseCommand
 from ..models import MeshMessage
 
@@ -41,8 +42,8 @@ class AqiCommand(BaseCommand):
         # Get timezone from config
         self.timezone = self.bot.config.get('Bot', 'timezone', fallback='America/Los_Angeles')
         
-        # Initialize geocoder
-        self.geolocator = Nominatim(user_agent="meshcore-bot")
+        # Initialize geocoder (will use rate-limited helpers for actual calls)
+        self.geolocator = get_nominatim_geocoder()
         
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
@@ -384,7 +385,7 @@ class AqiCommand(BaseCommand):
                         mapped_location = zip_code_mappings[zip_code]
                         self.logger.debug(f"Using specific mapping for ZIP {zip_code}: {mapped_location}")
                         try:
-                            result = self.geolocator.geocode(mapped_location)
+                            result = rate_limited_nominatim_geocode_sync(self.bot, mapped_location, timeout=10)
                             if result and result.address:
                                 location_result = result
                                 self.logger.debug(f"Found mapped location for ZIP {zip_code}: {result.address}")
@@ -397,10 +398,10 @@ class AqiCommand(BaseCommand):
                             try:
                                 if isinstance(query, dict):
                                     # Use structured query
-                                    result = self.geolocator.geocode(query=query)
+                                    result = rate_limited_nominatim_geocode_sync(self.bot, query, timeout=10)
                                 else:
                                     # Use text-based query
-                                    result = self.geolocator.geocode(query)
+                                    result = rate_limited_nominatim_geocode_sync(self.bot, query, timeout=10)
                                 
                                 if result and result.address:
                                     # Check if it's a US location
@@ -425,7 +426,7 @@ class AqiCommand(BaseCommand):
                         
                         # Get detailed address info via reverse geocoding
                         try:
-                            reverse_location = self.geolocator.reverse(f"{lat}, {lon}")
+                            reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{lat}, {lon}", timeout=10)
                             if reverse_location:
                                 address_info = reverse_location.raw.get('address', {})
                             else:
@@ -608,7 +609,7 @@ class AqiCommand(BaseCommand):
                 self.logger.debug(f"Using cached geocoding for {city}")
                 # Still need to do reverse geocoding for address details
                 try:
-                    reverse_location = self.geolocator.reverse(f"{cached_lat}, {cached_lon}")
+                    reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{cached_lat}, {cached_lon}", timeout=10)
                     if reverse_location:
                         return cached_lat, cached_lon, reverse_location.raw.get('address', {})
                 except:
@@ -629,14 +630,14 @@ class AqiCommand(BaseCommand):
                     
                     if is_country:
                         # Handle international cities
-                        location = self.geolocator.geocode(f"{city_name}, {state_or_country}")
+                        location = rate_limited_nominatim_geocode_sync(self.bot, f"{city_name}, {state_or_country}", timeout=10)
                         if location:
                             # Cache the result
                             self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}", location.latitude, location.longitude)
                             
                             # Use reverse geocoding to get detailed address info
                             try:
-                                reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                                reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
                                 if reverse_location:
                                     return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                             except:
@@ -644,14 +645,14 @@ class AqiCommand(BaseCommand):
                             return location.latitude, location.longitude, location.raw.get('address', {})
                     else:
                         # Handle US city, state format
-                        location = self.geolocator.geocode(f"{city_name}, {state_or_country}, USA")
+                        location = rate_limited_nominatim_geocode_sync(self.bot, f"{city_name}, {state_or_country}, USA", timeout=10)
                     if location:
                         # Cache the result
                         self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}, USA", location.latitude, location.longitude)
                         
                         # Use reverse geocoding to get detailed address info
                         try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
                             if reverse_location:
                                 return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                         except:
@@ -676,14 +677,14 @@ class AqiCommand(BaseCommand):
             # If it's a major city with multiple locations, try the major ones first
             if city.lower() in major_city_mappings:
                 for major_city_query in major_city_mappings[city.lower()]:
-                    location = self.geolocator.geocode(major_city_query)
+                    location = rate_limited_nominatim_geocode_sync(self.bot, major_city_query, timeout=10)
                     if location:
                         # Cache the result
                         self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
                         
                         # Use reverse geocoding to get detailed address info
                         try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
                             if reverse_location:
                                 return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                         except:
@@ -691,14 +692,14 @@ class AqiCommand(BaseCommand):
                         return location.latitude, location.longitude, location.raw.get('address', {})
             
             # First try with default state
-            location = self.geolocator.geocode(f"{city}, {self.default_state}, USA")
+            location = rate_limited_nominatim_geocode_sync(self.bot, f"{city}, {self.default_state}, USA", timeout=10)
             if location:
                 # Cache the result
                 self.db_manager.cache_geocoding(f"{city}, {self.default_state}, USA", location.latitude, location.longitude)
                 
                 # Use reverse geocoding to get detailed address info
                 try:
-                    reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                    reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
                     if reverse_location:
                         return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                 except:
@@ -708,14 +709,14 @@ class AqiCommand(BaseCommand):
                 # Try neighborhood-specific queries for major cities
                 neighborhood_queries = self.get_neighborhood_queries(city)
                 for query in neighborhood_queries:
-                    location = self.geolocator.geocode(query)
+                    location = rate_limited_nominatim_geocode_sync(self.bot, query, timeout=10)
                     if location:
                         # Cache the result
                         self.db_manager.cache_geocoding(query, location.latitude, location.longitude)
                         
                         # Use reverse geocoding to get detailed address info
                         try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                            reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
                             if reverse_location:
                                 return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                         except:
@@ -723,14 +724,14 @@ class AqiCommand(BaseCommand):
                         return location.latitude, location.longitude, location.raw.get('address', {})
                 
                 # Try without state as final fallback
-                location = self.geolocator.geocode(f"{city}, USA")
+                location = rate_limited_nominatim_geocode_sync(self.bot, f"{city}, USA", timeout=10)
                 if location:
                     # Cache the result
                     self.db_manager.cache_geocoding(f"{city}, USA", location.latitude, location.longitude)
                     
                     # Use reverse geocoding to get detailed address info
                     try:
-                        reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
+                        reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
                         if reverse_location:
                             return location.latitude, location.longitude, reverse_location.raw.get('address', {})
                     except:

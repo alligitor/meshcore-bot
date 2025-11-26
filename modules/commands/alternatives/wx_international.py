@@ -8,6 +8,7 @@ import re
 import requests
 from datetime import datetime, timedelta
 from geopy.geocoders import Nominatim
+from ...utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder
 from ..base_command import BaseCommand
 from ...models import MeshMessage
 
@@ -53,8 +54,8 @@ class GlobalWxCommand(BaseCommand):
             self.logger.warning(f"Invalid precipitation_unit '{self.precipitation_unit}', using 'inch'")
             self.precipitation_unit = 'inch'
         
-        # Initialize geocoder
-        self.geolocator = Nominatim(user_agent="meshcore-bot")
+        # Initialize geocoder (will use rate-limited helpers for actual calls)
+        self.geolocator = get_nominatim_geocoder()
         
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
@@ -241,7 +242,9 @@ class GlobalWxCommand(BaseCommand):
                 self.logger.debug(f"Using cached geocoding for {location}")
                 # Get address details with reverse geocoding
                 try:
-                    reverse_location = self.geolocator.reverse(f"{cached_lat}, {cached_lon}")
+                    reverse_location = rate_limited_nominatim_reverse_sync(
+                        self.bot, f"{cached_lat}, {cached_lon}", timeout=10
+                    )
                     if reverse_location:
                         address_info = reverse_location.raw.get('address', {})
                         # Store the full geocode result for display name
@@ -254,11 +257,15 @@ class GlobalWxCommand(BaseCommand):
             geocode_result = None
             
             # Strategy 1: Try as-is
-            geocode_result = self.geolocator.geocode(location)
+            geocode_result = rate_limited_nominatim_geocode_sync(
+                self.bot, location, timeout=10
+            )
             
             # Strategy 2: If no result and no country specified, try with default country
             if not geocode_result and ',' not in location:
-                geocode_result = self.geolocator.geocode(f"{location}, {self.default_country}")
+                geocode_result = rate_limited_nominatim_geocode_sync(
+                    self.bot, f"{location}, {self.default_country}", timeout=10
+                )
             
             if not geocode_result:
                 return None, None, None, None
