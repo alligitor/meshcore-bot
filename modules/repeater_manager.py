@@ -180,6 +180,12 @@ class RepeaterManager:
                         cursor.execute(f"ALTER TABLE complete_contact_tracking ADD COLUMN {column_name} {column_type}")
                         conn.commit()
                 
+                # Add is_starred column for path command bias
+                if 'is_starred' not in tracking_columns:
+                    self.logger.info("Adding is_starred column to complete_contact_tracking")
+                    cursor.execute("ALTER TABLE complete_contact_tracking ADD COLUMN is_starred BOOLEAN DEFAULT 0")
+                    conn.commit()
+                
                 self.logger.info("Database schema migration completed")
                 
         except Exception as e:
@@ -454,7 +460,7 @@ class RepeaterManager:
                     query = '''
                         SELECT public_key, name, role, device_type, first_heard, last_heard, 
                                advert_count, latitude, longitude, city, state, country,
-                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp, is_starred
                         FROM complete_contact_tracking
                         WHERE role = ?
                         ORDER BY last_heard DESC
@@ -465,7 +471,7 @@ class RepeaterManager:
                     query = '''
                         SELECT public_key, name, role, device_type, first_heard, last_heard, 
                                advert_count, latitude, longitude, city, state, country,
-                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp, is_starred
                         FROM complete_contact_tracking
                         ORDER BY last_heard DESC
                     '''

@@ -1,0 +1,849 @@
+#!/usr/bin/env python3
+"""
+Greeter command for the MeshCore Bot
+Greets users on their first public channel message with mesh information
+"""
+
+import sqlite3
+import time
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
+from .base_command import BaseCommand
+from ..models import MeshMessage
+
+
+class GreeterCommand(BaseCommand):
+    """Handles greeting new users on public channels"""
+    
+    # Plugin metadata
+    name = "greeter"
+    keywords = []  # No keywords - this command is triggered automatically
+    description = "Greets users on their first public channel message (once globally by default, or per-channel if configured)"
+    category = "system"
+    
+    def __init__(self, bot):
+        super().__init__(bot)
+        self._init_greeter_tables()
+        self._load_config()
+        
+        # Auto-backfill if enabled
+        if self.enabled and self.auto_backfill:
+            self.logger.info("Auto-backfill enabled - backfilling greeted users from historical data")
+            result = self.backfill_greeted_users(lookback_days=self.backfill_lookback_days)
+            if result['success']:
+                self.logger.info(f"Auto-backfill completed: {result['marked_count']} users marked")
+            else:
+                self.logger.warning(f"Auto-backfill failed: {result.get('error', 'Unknown error')}")
+        
+        # Check for existing rollout and mark active users if needed
+        self._check_rollout_period()
+        
+        # Auto-start rollout if enabled, rollout_days > 0, and no active rollout exists
+        if self.enabled and self.rollout_days > 0:
+            try:
+                with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        SELECT id FROM greeter_rollout
+                        WHERE rollout_completed = 0
+                    ''')
+                    if not cursor.fetchone():
+                        # No active rollout - start one automatically
+                        self.logger.info(f"Auto-starting greeter rollout for {self.rollout_days} days")
+                        self.start_rollout(backfill_first=self.auto_backfill)
+            except Exception as e:
+                self.logger.error(f"Error checking for existing rollout: {e}")
+    
+    def _load_config(self):
+        """Load configuration for greeter command"""
+        self.enabled = self.get_config_value('Greeter_Command', 'enabled', fallback=False, value_type='bool')
+        self.greeting_message = self.get_config_value('Greeter_Command', 'greeting_message', 
+                                                      fallback='Welcome to the mesh, {sender}!')
+        self.rollout_days = self.get_config_value('Greeter_Command', 'rollout_days', fallback=7, value_type='int')
+        self.include_mesh_info = self.get_config_value('Greeter_Command', 'include_mesh_info', 
+                                                       fallback=True, value_type='bool')
+        self.mesh_info_format = self.get_config_value('Greeter_Command', 'mesh_info_format',
+                                                      fallback='\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters')
+        self.per_channel_greetings = self.get_config_value('Greeter_Command', 'per_channel_greetings',
+                                                           fallback=False, value_type='bool')
+        self.auto_backfill = self.get_config_value('Greeter_Command', 'auto_backfill', 
+                                                   fallback=False, value_type='bool')
+        self.backfill_lookback_days = self.get_config_value('Greeter_Command', 'backfill_lookback_days',
+                                                            fallback=None, value_type='int')
+        # Convert 0 to None (all time)
+        if self.backfill_lookback_days == 0:
+            self.backfill_lookback_days = None
+        
+        # Load greeter-specific channels (if not set, uses monitor_channels from [Channels] section)
+        channels_str = self.get_config_value('Greeter_Command', 'channels', fallback='')
+        if channels_str:
+            # Store both original and lowercase versions for case-insensitive matching
+            self.greeter_channels = [ch.strip() for ch in channels_str.split(',') if ch.strip()]
+            self.greeter_channels_lower = [ch.lower() for ch in self.greeter_channels]
+        else:
+            # Fall back to monitor_channels if not specified
+            self.greeter_channels = None
+            self.greeter_channels_lower = None
+        
+        # Load channel-specific greeting messages
+        # Format: channel_name:greeting_message,channel_name2:greeting_message2
+        # Example: Public:Welcome to Public, {sender}!|general:Welcome to general, {sender}!
+        channel_greetings_str = self.get_config_value('Greeter_Command', 'channel_greetings', fallback='')
+        self.channel_greetings = {}
+        if channel_greetings_str:
+            for entry in channel_greetings_str.split(','):
+                entry = entry.strip()
+                if ':' in entry:
+                    channel_name, greeting = entry.split(':', 1)
+                    channel_name = channel_name.strip()
+                    greeting = greeting.strip()
+                    # Store both original and lowercase channel name for case-insensitive matching
+                    self.channel_greetings[channel_name.lower()] = {
+                        'channel': channel_name,
+                        'greeting': greeting
+                    }
+        
+        # Parse multi-part greetings (pipe-separated)
+        # If greeting_message contains '|', split it into multiple parts
+        if '|' in self.greeting_message:
+            self.greeting_parts = [part.strip() for part in self.greeting_message.split('|') if part.strip()]
+        else:
+            self.greeting_parts = [self.greeting_message]
+    
+    def _init_greeter_tables(self):
+        """Initialize database tables for greeter tracking"""
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Create greeted_users table for tracking who has been greeted
+                # channel can be NULL for global greetings (default behavior)
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS greeted_users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        sender_id TEXT NOT NULL,
+                        channel TEXT,
+                        greeted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        rollout_marked BOOLEAN DEFAULT 0,
+                        UNIQUE(sender_id, channel)
+                    )
+                ''')
+                
+                # Create indexes for better performance
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_greeted_sender ON greeted_users(sender_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_greeted_channel ON greeted_users(channel)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_greeted_at ON greeted_users(greeted_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_greeted_sender_channel ON greeted_users(sender_id, channel)')
+                
+                # Create greeter_rollout table to track rollout period
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS greeter_rollout (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        rollout_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        rollout_days INTEGER NOT NULL,
+                        rollout_completed BOOLEAN DEFAULT 0,
+                        active_users_marked INTEGER DEFAULT 0
+                    )
+                ''')
+                
+                conn.commit()
+                self.logger.info("Greeter tables initialized successfully")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to initialize greeter tables: {e}")
+            raise
+    
+    def _check_rollout_period(self):
+        """Check if we're in a rollout period and mark active users if needed"""
+        if not self.enabled:
+            return
+        
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if there's an active rollout
+                cursor.execute('''
+                    SELECT id, rollout_started_at, rollout_days, rollout_completed
+                    FROM greeter_rollout
+                    WHERE rollout_completed = 0
+                    ORDER BY rollout_started_at DESC
+                    LIMIT 1
+                ''')
+                
+                rollout = cursor.fetchone()
+                
+                if rollout:
+                    rollout_id, started_at_str, rollout_days, completed = rollout
+                    # Use SQLite's datetime functions to handle timezone correctly
+                    cursor.execute('''
+                        SELECT datetime(rollout_started_at, '+' || rollout_days || ' days') as end_date,
+                               datetime('now') as current_time
+                        FROM greeter_rollout
+                        WHERE id = ?
+                    ''', (rollout_id,))
+                    time_result = cursor.fetchone()
+                    
+                    if time_result:
+                        end_date_str, current_time_str = time_result
+                        end_date = datetime.fromisoformat(end_date_str)
+                        current_time = datetime.fromisoformat(current_time_str)
+                        
+                        if current_time < end_date:
+                            # Still in rollout period - mark active users
+                            self.logger.info(f"Greeter rollout active: marking active users (ends {end_date})")
+                            self._mark_active_users_as_greeted(rollout_id)
+                        else:
+                            # Rollout period ended - mark as completed
+                            cursor.execute('''
+                                UPDATE greeter_rollout
+                                SET rollout_completed = 1
+                                WHERE id = ?
+                            ''', (rollout_id,))
+                            conn.commit()
+                            self.logger.info(f"Greeter rollout period completed (ended {end_date})")
+                        
+        except Exception as e:
+            self.logger.error(f"Error checking rollout period: {e}")
+    
+    def _mark_active_users_as_greeted(self, rollout_id: int):
+        """Mark all users who have posted on public channels during rollout period as greeted"""
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get rollout start date
+                cursor.execute('''
+                    SELECT rollout_started_at FROM greeter_rollout WHERE id = ?
+                ''', (rollout_id,))
+                result = cursor.fetchone()
+                if not result:
+                    return
+                
+                rollout_start = datetime.fromisoformat(result[0])
+                
+                # Find all users who posted on public channels since rollout started
+                # Only get messages that are NOT DMs (is_dm = 0) and have a channel
+                cursor.execute('''
+                    SELECT DISTINCT sender_id, channel
+                    FROM message_stats
+                    WHERE is_dm = 0
+                      AND channel IS NOT NULL
+                      AND channel != ''
+                      AND timestamp >= ?
+                ''', (int(rollout_start.timestamp()),))
+                
+                active_users = cursor.fetchall()
+                marked_count = 0
+                
+                for sender_id, channel in active_users:
+                    # Mark based on per_channel_greetings setting
+                    # If per_channel_greetings is False, mark globally (channel = NULL)
+                    # If per_channel_greetings is True, mark per channel
+                    if self.per_channel_greetings:
+                        mark_channel = channel
+                        # Check if already greeted on this channel
+                        cursor.execute('''
+                            SELECT id FROM greeted_users
+                            WHERE sender_id = ? AND channel = ?
+                        ''', (sender_id, mark_channel))
+                    else:
+                        mark_channel = None
+                        # Check if already greeted globally
+                        cursor.execute('''
+                            SELECT id FROM greeted_users
+                            WHERE sender_id = ? AND channel IS NULL
+                        ''', (sender_id,))
+                    
+                    if not cursor.fetchone():
+                        # Mark as greeted with rollout flag
+                        cursor.execute('''
+                            INSERT OR IGNORE INTO greeted_users
+                            (sender_id, channel, rollout_marked, greeted_at)
+                            VALUES (?, ?, 1, ?)
+                        ''', (sender_id, mark_channel, rollout_start.isoformat()))
+                        marked_count += 1
+                
+                # Update rollout record
+                cursor.execute('''
+                    UPDATE greeter_rollout
+                    SET active_users_marked = active_users_marked + ?
+                    WHERE id = ?
+                ''', (marked_count, rollout_id))
+                
+                conn.commit()
+                
+                if marked_count > 0:
+                    self.logger.info(f"Marked {marked_count} active users as greeted during rollout")
+                    
+        except Exception as e:
+            self.logger.error(f"Error marking active users as greeted: {e}")
+    
+    def backfill_greeted_users(self, lookback_days: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Backfill greeted_users table from historical message_stats data
+        
+        This allows marking all users who have posted on public channels in the past,
+        which can shorten or eliminate the rollout period.
+        
+        Args:
+            lookback_days: Number of days to look back (None = all time)
+            
+        Returns:
+            Dictionary with backfill results (marked_count, total_users, etc.)
+        """
+        if not self.enabled:
+            self.logger.warning("Greeter is disabled - cannot backfill")
+            return {'success': False, 'error': 'Greeter is disabled'}
+        
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if message_stats table exists
+                cursor.execute('''
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='message_stats'
+                ''')
+                if not cursor.fetchone():
+                    return {
+                        'success': False,
+                        'error': 'message_stats table does not exist',
+                        'marked_count': 0
+                    }
+                
+                # Build query to find all users who posted on public channels
+                if lookback_days:
+                    cutoff_timestamp = int(time.time()) - (lookback_days * 24 * 60 * 60)
+                    cursor.execute('''
+                        SELECT DISTINCT sender_id, channel
+                        FROM message_stats
+                        WHERE is_dm = 0
+                          AND channel IS NOT NULL
+                          AND channel != ''
+                          AND timestamp >= ?
+                    ''', (cutoff_timestamp,))
+                else:
+                    # All time
+                    cursor.execute('''
+                        SELECT DISTINCT sender_id, channel
+                        FROM message_stats
+                        WHERE is_dm = 0
+                          AND channel IS NOT NULL
+                          AND channel != ''
+                    ''')
+                
+                historical_users = cursor.fetchall()
+                marked_count = 0
+                skipped_count = 0
+                
+                for sender_id, channel in historical_users:
+                    # Mark based on per_channel_greetings setting
+                    if self.per_channel_greetings:
+                        mark_channel = channel
+                        # Check if already greeted on this channel
+                        cursor.execute('''
+                            SELECT id FROM greeted_users
+                            WHERE sender_id = ? AND channel = ?
+                        ''', (sender_id, mark_channel))
+                    else:
+                        mark_channel = None
+                        # Check if already greeted globally
+                        cursor.execute('''
+                            SELECT id FROM greeted_users
+                            WHERE sender_id = ? AND channel IS NULL
+                        ''', (sender_id,))
+                    
+                    if not cursor.fetchone():
+                        # Mark as greeted with backfill flag (use current time as greeted_at)
+                        cursor.execute('''
+                            INSERT OR IGNORE INTO greeted_users
+                            (sender_id, channel, rollout_marked, greeted_at)
+                            VALUES (?, ?, 1, datetime('now'))
+                        ''', (sender_id, mark_channel))
+                        marked_count += 1
+                    else:
+                        skipped_count += 1
+                
+                conn.commit()
+                
+                result = {
+                    'success': True,
+                    'marked_count': marked_count,
+                    'skipped_count': skipped_count,
+                    'total_users_found': len(historical_users),
+                    'lookback_days': lookback_days
+                }
+                
+                self.logger.info(f"Backfilled {marked_count} users from historical message_stats data "
+                               f"({skipped_count} already marked, {len(historical_users)} total found)")
+                
+                return result
+                
+        except Exception as e:
+            self.logger.error(f"Error backfilling greeted users: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'marked_count': 0
+            }
+    
+    def start_rollout(self, days: Optional[int] = None, backfill_first: bool = True) -> bool:
+        """
+        Start a rollout period where all active users are marked as greeted
+        
+        Args:
+            days: Number of days for rollout period (uses config default if None)
+            backfill_first: If True, backfill from historical data before starting rollout
+            
+        Returns:
+            True if rollout started successfully
+        """
+        if not self.enabled:
+            self.logger.warning("Greeter is disabled - cannot start rollout")
+            return False
+        
+        try:
+            # Backfill from historical data first if requested
+            if backfill_first:
+                self.logger.info("Backfilling from historical data before starting rollout...")
+                backfill_result = self.backfill_greeted_users(lookback_days=None)  # All time
+                if backfill_result['success']:
+                    self.logger.info(f"Backfilled {backfill_result['marked_count']} users from history")
+            
+            rollout_days = days or self.rollout_days
+            
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if there's already an active rollout
+                cursor.execute('''
+                    SELECT id FROM greeter_rollout
+                    WHERE rollout_completed = 0
+                ''')
+                
+                if cursor.fetchone():
+                    self.logger.warning("Rollout already in progress")
+                    return False
+                
+                # Start new rollout
+                cursor.execute('''
+                    INSERT INTO greeter_rollout (rollout_days)
+                    VALUES (?)
+                ''', (rollout_days,))
+                
+                rollout_id = cursor.lastrowid
+                conn.commit()
+                
+                # Mark active users immediately
+                self._mark_active_users_as_greeted(rollout_id)
+                
+                self.logger.info(f"Started greeter rollout for {rollout_days} days (ID: {rollout_id})")
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"Error starting rollout: {e}")
+            return False
+    
+    def has_been_greeted(self, sender_id: str, channel: str) -> bool:
+        """
+        Check if a user has been greeted
+        
+        Args:
+            sender_id: The user's ID
+            channel: The channel name (used only if per_channel_greetings is True)
+            
+        Returns:
+            True if user has been greeted (globally or on this channel, depending on config)
+        """
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                if self.per_channel_greetings:
+                    # Per-channel mode: check if greeted on this specific channel
+                    cursor.execute('''
+                        SELECT id FROM greeted_users
+                        WHERE sender_id = ? AND channel = ?
+                    ''', (sender_id, channel))
+                else:
+                    # Global mode: check if greeted at all (channel = NULL)
+                    cursor.execute('''
+                        SELECT id FROM greeted_users
+                        WHERE sender_id = ? AND channel IS NULL
+                    ''', (sender_id,))
+                
+                return cursor.fetchone() is not None
+        except Exception as e:
+            self.logger.error(f"Error checking if user has been greeted: {e}")
+            return False
+    
+    def mark_as_greeted(self, sender_id: str, channel: str) -> bool:
+        """
+        Mark a user as greeted
+        
+        Args:
+            sender_id: The user's ID
+            channel: The channel name (stored only if per_channel_greetings is True)
+            
+        Returns:
+            True if user was marked (or already marked), False on error
+        """
+        try:
+            db_path = self.bot.db_manager.db_path
+            self.logger.debug(f"Marking {sender_id} as greeted (channel: {channel}, db: {db_path})")
+            
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if already exists first
+                if self.per_channel_greetings:
+                    cursor.execute('''
+                        SELECT id FROM greeted_users
+                        WHERE sender_id = ? AND channel = ?
+                    ''', (sender_id, channel))
+                    exists = cursor.fetchone() is not None
+                    
+                    if not exists:
+                        cursor.execute('''
+                            INSERT INTO greeted_users (sender_id, channel)
+                            VALUES (?, ?)
+                        ''', (sender_id, channel))
+                        conn.commit()
+                        self.logger.info(f"✅ Saved: Marked {sender_id} as greeted on channel {channel}")
+                        return True
+                    else:
+                        self.logger.debug(f"User {sender_id} already marked as greeted on channel {channel}")
+                        return True
+                else:
+                    # Global mode: store NULL for channel (greeted once globally)
+                    cursor.execute('''
+                        SELECT id FROM greeted_users
+                        WHERE sender_id = ? AND channel IS NULL
+                    ''', (sender_id,))
+                    exists = cursor.fetchone() is not None
+                    
+                    if not exists:
+                        cursor.execute('''
+                            INSERT INTO greeted_users (sender_id, channel)
+                            VALUES (?, NULL)
+                        ''', (sender_id,))
+                        conn.commit()
+                        self.logger.info(f"✅ Saved: Marked {sender_id} as greeted globally (all channels)")
+                        return True
+                    else:
+                        self.logger.debug(f"User {sender_id} already marked as greeted globally")
+                        return True
+                        
+        except Exception as e:
+            self.logger.error(f"❌ Error marking user as greeted: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return False
+    
+    def get_greeted_users_count(self) -> int:
+        """Get count of users who have been greeted (for verification)"""
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM greeted_users')
+                count = cursor.fetchone()[0]
+                return count
+        except Exception as e:
+            self.logger.error(f"Error getting greeted users count: {e}")
+            return 0
+    
+    def get_recent_greeted_users(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent greeted users (for verification)"""
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT sender_id, channel, greeted_at, rollout_marked
+                    FROM greeted_users
+                    ORDER BY greeted_at DESC
+                    LIMIT ?
+                ''', (limit,))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error getting recent greeted users: {e}")
+            return []
+    
+    async def _get_mesh_info(self) -> Dict[str, Any]:
+        """Get mesh network information for greeting"""
+        info = {
+            'total_contacts': 0,
+            'repeaters': 0,
+            'companions': 0,
+            'recent_activity_24h': 0
+        }
+        
+        try:
+            # Get contact statistics from repeater manager if available
+            if hasattr(self.bot, 'repeater_manager'):
+                try:
+                    stats = await self.bot.repeater_manager.get_contact_statistics()
+                    if stats:
+                        info['total_contacts'] = stats.get('total_heard', 0)
+                        info['repeaters'] = stats.get('by_role', {}).get('repeater', 0)
+                        info['companions'] = stats.get('by_role', {}).get('companion', 0)
+                        info['recent_activity_24h'] = stats.get('recent_activity', 0)
+                except Exception as e:
+                    self.logger.debug(f"Error getting stats from repeater_manager: {e}")
+            
+            # Fallback to device contacts if repeater manager stats not available
+            if info['total_contacts'] == 0 and hasattr(self.bot, 'meshcore') and hasattr(self.bot.meshcore, 'contacts'):
+                info['total_contacts'] = len(self.bot.meshcore.contacts)
+                
+                # Count repeaters and companions
+                if hasattr(self.bot, 'repeater_manager'):
+                    for contact_data in self.bot.meshcore.contacts.values():
+                        if self.bot.repeater_manager._is_repeater_device(contact_data):
+                            info['repeaters'] += 1
+                        else:
+                            info['companions'] += 1
+            
+            # Get recent activity from message_stats if available
+            if info['recent_activity_24h'] == 0:
+                try:
+                    with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                        cursor = conn.cursor()
+                        # Check if message_stats table exists
+                        cursor.execute('''
+                            SELECT name FROM sqlite_master 
+                            WHERE type='table' AND name='message_stats'
+                        ''')
+                        if cursor.fetchone():
+                            cutoff_time = int(time.time()) - (24 * 60 * 60)
+                            cursor.execute('''
+                                SELECT COUNT(DISTINCT sender_id)
+                                FROM message_stats
+                                WHERE timestamp >= ? AND is_dm = 0
+                            ''', (cutoff_time,))
+                            result = cursor.fetchone()
+                            if result:
+                                info['recent_activity_24h'] = result[0]
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            self.logger.debug(f"Error getting mesh info: {e}")
+        
+        return info
+    
+    def _get_greeting_for_channel(self, channel: str) -> str:
+        """
+        Get greeting message for a specific channel
+        
+        Args:
+            channel: Channel name
+            
+        Returns:
+            Greeting message template for the channel, or default if not specified
+        """
+        if channel and channel.lower() in self.channel_greetings:
+            return self.channel_greetings[channel.lower()]['greeting']
+        return self.greeting_message
+    
+    async def _format_greeting_parts(self, sender_id: str, channel: str = None, mesh_info: Optional[Dict[str, Any]] = None) -> list:
+        """
+        Format greeting message parts with mesh information
+        
+        Args:
+            sender_id: The user's ID
+            channel: Channel name (for channel-specific greetings)
+            mesh_info: Optional mesh info dict (will be fetched if None)
+        
+        Returns:
+            List of greeting message strings (for multi-part greetings)
+        """
+        if mesh_info is None:
+            mesh_info = await self._get_mesh_info()
+        
+        # Get channel-specific greeting if available, otherwise use default
+        greeting_template = self._get_greeting_for_channel(channel) if channel else self.greeting_message
+        
+        # Parse multi-part greetings (pipe-separated)
+        if '|' in greeting_template:
+            greeting_parts = [part.strip() for part in greeting_template.split('|') if part.strip()]
+        else:
+            greeting_parts = [greeting_template]
+        
+        # Format each greeting part
+        formatted_parts = []
+        for part in greeting_parts:
+            formatted_part = part.format(sender=sender_id)
+            formatted_parts.append(formatted_part)
+        
+        # Add mesh info to the last part if enabled
+        if self.include_mesh_info:
+            mesh_info_text = self.mesh_info_format.format(
+                total_contacts=mesh_info.get('total_contacts', 0),
+                repeaters=mesh_info.get('repeaters', 0),
+                companions=mesh_info.get('companions', 0),
+                recent_activity_24h=mesh_info.get('recent_activity_24h', 0)
+            )
+            # Append mesh info to the last greeting part
+            if formatted_parts:
+                formatted_parts[-1] += mesh_info_text
+            else:
+                formatted_parts.append(mesh_info_text)
+        
+        return formatted_parts
+    
+    def matches_keyword(self, message: MeshMessage) -> bool:
+        """Greeter doesn't match keywords - it's triggered automatically"""
+        return False
+    
+    def matches_custom_syntax(self, message: MeshMessage) -> bool:
+        """Greeter doesn't match custom syntax"""
+        return False
+    
+    def _is_rollout_active(self) -> bool:
+        """Check if there's an active rollout period"""
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                # Use SQLite's datetime functions to calculate end date and compare with current time
+                # This handles timezone issues automatically since both are in UTC
+                cursor.execute('''
+                    SELECT id, rollout_started_at, rollout_days,
+                           datetime(rollout_started_at, '+' || rollout_days || ' days') as end_date,
+                           datetime('now') as current_time
+                    FROM greeter_rollout
+                    WHERE rollout_completed = 0
+                    ORDER BY rollout_started_at DESC
+                    LIMIT 1
+                ''')
+                rollout = cursor.fetchone()
+                
+                if rollout:
+                    rollout_id, started_at_str, rollout_days, end_date_str, current_time_str = rollout
+                    
+                    # Parse for logging (both are in UTC from SQLite)
+                    started_at = datetime.fromisoformat(started_at_str)
+                    end_date = datetime.fromisoformat(end_date_str)
+                    current_time = datetime.fromisoformat(current_time_str)
+                    
+                    if current_time < end_date:
+                        remaining = (end_date - current_time).total_seconds() / 86400  # days
+                        self.logger.debug(f"Rollout active: {remaining:.1f} days remaining (started {started_at}, ends {end_date})")
+                        return True
+                    else:
+                        # Rollout period ended - mark as completed
+                        cursor.execute('''
+                            UPDATE greeter_rollout
+                            SET rollout_completed = 1
+                            WHERE id = ?
+                        ''', (rollout_id,))
+                        conn.commit()
+                        self.logger.info(f"Greeter rollout period completed (ended {end_date})")
+                        return False
+                
+                self.logger.debug("No active rollout found")
+                return False
+        except Exception as e:
+            self.logger.error(f"Error checking rollout status: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return False
+    
+    def should_execute(self, message: MeshMessage) -> bool:
+        """
+        Check if greeter should execute for this message
+        Only executes for public channel messages (not DMs) on monitored channels
+        """
+        if not self.enabled:
+            return False
+        
+        # Only greet on public channels
+        if message.is_dm:
+            return False
+        
+        # Must have a channel name
+        if not message.channel:
+            return False
+        
+        # Check if channel is in greeter-specific channels or fall back to monitor_channels
+        if self.greeter_channels is not None:
+            # Use greeter-specific channels if configured (case-insensitive matching)
+            if message.channel and message.channel.lower() not in self.greeter_channels_lower:
+                return False
+        else:
+            # Fall back to general monitor_channels setting (case-insensitive matching)
+            monitor_channels_lower = [ch.lower() for ch in self.bot.command_manager.monitor_channels]
+            if message.channel and message.channel.lower() not in monitor_channels_lower:
+                return False
+        
+        # Check if we're in an active rollout period
+        rollout_active = self._is_rollout_active()
+        if rollout_active:
+            # During rollout, mark user as greeted but don't actually greet them
+            self.logger.info(f"🔄 Rollout active: Marking {message.sender_id} as greeted on {message.channel} (no greeting sent)")
+            self.mark_as_greeted(message.sender_id, message.channel)
+            return False
+        else:
+            self.logger.debug(f"Rollout not active - proceeding with greeting check for {message.sender_id}")
+        
+        # Check if user has already been greeted (globally or per-channel, depending on config)
+        if self.has_been_greeted(message.sender_id, message.channel):
+            return False
+        
+        return True
+    
+    async def execute(self, message: MeshMessage) -> bool:
+        """Execute the greeter command - greet the user on their first public message"""
+        try:
+            # Double-check we should greet (race condition protection)
+            if not self.should_execute(message):
+                return False
+            
+            # Mark as greeted BEFORE getting mesh info (to prevent duplicate greetings)
+            # This ensures we don't greet the same user twice even if there's a delay
+            marked = self.mark_as_greeted(message.sender_id, message.channel)
+            if not marked:
+                self.logger.warning(f"Failed to mark {message.sender_id} as greeted - aborting greeting")
+                return False
+            
+            # Format greeting parts (may be single or multi-part)
+            # Pass channel name for channel-specific greetings
+            greeting_parts = await self._format_greeting_parts(message.sender_id, message.channel)
+            
+            # Send greeting(s)
+            mode_str = "per-channel" if self.per_channel_greetings else "global"
+            self.logger.info(f"Greeting {message.sender_id} on channel {message.channel} ({mode_str} mode, {len(greeting_parts)} part(s))")
+            
+            # Log database verification
+            total_greeted = self.get_greeted_users_count()
+            self.logger.debug(f"Database verification: {total_greeted} total user(s) marked as greeted")
+            
+            # Send all greeting parts
+            success = True
+            for i, greeting_part in enumerate(greeting_parts):
+                if i > 0:
+                    # Wait for bot TX rate limiter between multi-part messages
+                    # This ensures we respect the bot's rate limiting configuration
+                    await self.bot.bot_tx_rate_limiter.wait_for_tx()
+                    # Additional delay to ensure proper spacing (use configured rate limit)
+                    import asyncio
+                    rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+                    # Use a conservative sleep time to avoid rate limiting
+                    sleep_time = max(rate_limit + 0.5, 1.0)  # At least 1 second, or rate_limit + 0.5 seconds
+                    await asyncio.sleep(sleep_time)
+                
+                result = await self.send_response(message, greeting_part)
+                if not result:
+                    success = False
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"Error executing greeter command: {e}")
+            return False
+    
+    def get_help_text(self) -> str:
+        mode = "per-channel" if self.per_channel_greetings else "global (once total)"
+        return f"Greeter automatically welcomes new users on public channels ({mode} mode). Configure in [Greeter_Command] section."
+

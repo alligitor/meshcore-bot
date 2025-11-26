@@ -464,6 +464,64 @@ class BotDataViewer:
             except Exception as e:
                 self.logger.error(f"Error geocoding contact: {e}", exc_info=True)
                 return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/toggle-star-contact', methods=['POST'])
+        def api_toggle_star_contact():
+            """Toggle star status for a contact by public_key (only for repeaters and roomservers)"""
+            try:
+                data = request.get_json()
+                if not data or 'public_key' not in data:
+                    return jsonify({'error': 'public_key is required'}), 400
+                
+                public_key = data['public_key']
+                
+                # Get contact data from database
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                
+                # Check if contact exists and is a repeater or roomserver
+                cursor.execute('''
+                    SELECT name, is_starred, role FROM complete_contact_tracking
+                    WHERE public_key = ?
+                ''', (public_key,))
+                
+                contact = cursor.fetchone()
+                if not contact:
+                    conn.close()
+                    return jsonify({'error': 'Contact not found'}), 404
+                
+                # Only allow starring repeaters and roomservers
+                # sqlite3.Row objects use dictionary-style access with []
+                role = contact['role']
+                if role and role.lower() not in ('repeater', 'roomserver'):
+                    conn.close()
+                    return jsonify({'error': 'Only repeaters and roomservers can be starred'}), 400
+                
+                # Toggle star status
+                # sqlite3.Row objects use dictionary-style access with []
+                current_starred = contact['is_starred']
+                new_star_status = 1 if not current_starred else 0
+                cursor.execute('''
+                    UPDATE complete_contact_tracking
+                    SET is_starred = ?
+                    WHERE public_key = ?
+                ''', (new_star_status, public_key))
+                
+                conn.commit()
+                conn.close()
+                
+                action = 'starred' if new_star_status else 'unstarred'
+                self.logger.info(f"Contact {contact['name']} ({public_key[:16]}...) {action}")
+                
+                return jsonify({
+                    'success': True,
+                    'is_starred': bool(new_star_status),
+                    'message': f'Contact {action} successfully'
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error toggling star status: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
     
     def _setup_socketio_handlers(self):
         """Setup SocketIO event handlers using modern patterns"""
@@ -1169,6 +1227,7 @@ class BotDataViewer:
                        snr, hop_count, first_heard, last_heard,
                        advert_count, is_currently_tracked,
                        raw_advert_data, signal_strength,
+                       is_starred,
                        COUNT(*) as total_messages,
                        MAX(last_advert_timestamp) as last_message
                 FROM complete_contact_tracking 
@@ -1176,7 +1235,7 @@ class BotDataViewer:
                          latitude, longitude, city, state, country,
                          snr, hop_count, first_heard, last_heard,
                          advert_count, is_currently_tracked,
-                         raw_advert_data, signal_strength
+                         raw_advert_data, signal_strength, is_starred
                 ORDER BY last_heard DESC
             """)
             
@@ -1218,7 +1277,8 @@ class BotDataViewer:
                     'signal_strength': row['signal_strength'],
                     'total_messages': row['total_messages'],
                     'last_message': row['last_message'],
-                    'distance': distance
+                    'distance': distance,
+                    'is_starred': bool(row['is_starred'] if row['is_starred'] is not None else 0)
                 })
             
             # Get server statistics for daily tracking using direct database queries

@@ -419,6 +419,12 @@ class ModernContactsManager {
                 <td><span class="badge bg-success">${contact.advert_count || 0}</span></td>
                 <td>
                     <div class="btn-group" role="group">
+                        ${contact.role && (contact.role.toLowerCase() === 'repeater' || contact.role.toLowerCase() === 'roomserver') ? 
+                            `<button class="btn btn-sm ${contact.is_starred ? 'btn-warning' : 'btn-outline-warning'}" onclick="contactsManager.toggleStar('${contact.user_id.replace(/'/g, "\\'")}', this)" title="${contact.is_starred ? 'Unstar contact (removes path bias)' : 'Star contact (adds strong path bias)'}">
+                                <i class="fas ${contact.is_starred ? 'fa-star' : 'fa-star'}"></i>
+                            </button>` : 
+                            ''
+                        }
                         <button class="btn btn-sm btn-outline-info" onclick="contactsManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
                             <i class="fas fa-info-circle"></i>
                         </button>
@@ -879,6 +885,73 @@ class ModernContactsManager {
             button.innerHTML = originalHTML;
             button.classList.remove('btn-secondary');
             button.classList.add('btn-outline-primary');
+        }
+    }
+    
+    async toggleStar(userId, buttonElement = null) {
+        // Find the contact data
+        const contact = this.filteredData.find(c => c.user_id === userId);
+        if (!contact) {
+            this.showError('Contact data not found');
+            return;
+        }
+        
+        // Get the button element - use passed element or find it
+        const button = buttonElement || document.querySelector(`button[onclick*="toggleStar('${userId.substring(0, 16)}"]`);
+        if (!button) {
+            this.showError('Button not found');
+            return;
+        }
+        
+        // Disable button and show loading state
+        const originalHTML = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        
+        try {
+            // Call the toggle star API
+            const response = await fetch('/api/toggle-star-contact', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    public_key: userId
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'Failed to toggle star status');
+            }
+            
+            // Update the contact data in our local array
+            const contactIndex = this.filteredData.findIndex(c => c.user_id === userId);
+            if (contactIndex !== -1) {
+                this.filteredData[contactIndex].is_starred = data.is_starred;
+            }
+            
+            // Also update in the main contacts data
+            const mainContactIndex = this.contactsData.tracking_data.findIndex(c => c.user_id === userId);
+            if (mainContactIndex !== -1) {
+                this.contactsData.tracking_data[mainContactIndex].is_starred = data.is_starred;
+            }
+            
+            // Re-render the table to show updated star status
+            this.renderContactsData();
+            
+            // Show success message
+            const action = data.is_starred ? 'starred' : 'unstarred';
+            this.showSuccess(`Contact ${action} successfully. Path command will ${data.is_starred ? 'strongly prefer' : 'no longer prefer'} this repeater.`);
+            
+        } catch (error) {
+            console.error('Error toggling star status:', error);
+            this.showError('Failed to toggle star status: ' + error.message);
+        } finally {
+            // Restore button state
+            button.disabled = false;
+            button.innerHTML = originalHTML;
         }
     }
     

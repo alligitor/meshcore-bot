@@ -486,6 +486,11 @@ class MessageHandler:
                         decoded_packet = self.decode_meshcore_packet(raw_hex, extracted_payload)
                         if decoded_packet:
                             # Calculate packet hash for this packet (useful for tracking same message via different paths)
+                            # Use extracted_payload if available (actual MeshCore packet), otherwise use raw_hex
+                            # This matches the logic in decode_meshcore_packet which prefers extracted_payload
+                            # extracted_payload is the actual MeshCore packet without RF wrapper, so use it if available
+                            packet_hex_for_hash = extracted_payload if (extracted_payload and len(extracted_payload) > 0) else raw_hex
+                            
                             # Ensure we use the numeric payload_type value (not enum or string)
                             payload_type_value = decoded_packet.get('payload_type', None)
                             if payload_type_value is not None:
@@ -493,7 +498,7 @@ class MessageHandler:
                                 if hasattr(payload_type_value, 'value'):
                                     payload_type_value = payload_type_value.value
                                 payload_type_value = int(payload_type_value)
-                            packet_hash = calculate_packet_hash(raw_hex, payload_type_value)
+                            packet_hash = calculate_packet_hash(packet_hex_for_hash, payload_type_value)
                             
                             routing_info = {
                                 'path_length': decoded_packet.get('path_len', 0),
@@ -1552,6 +1557,16 @@ class MessageHandler:
             if stats_command:
                 stats_command.record_message(message)
                 stats_command.record_path_stats(message)
+        
+        # Check greeter command for public channel messages (BEFORE general message filtering)
+        # This allows greeter to work on its own configured channels even if not in monitor_channels
+        if 'greeter' in self.bot.command_manager.commands:
+            greeter_command = self.bot.command_manager.commands['greeter']
+            if greeter_command and greeter_command.should_execute(message):
+                try:
+                    await greeter_command.execute(message)
+                except Exception as e:
+                    self.logger.error(f"Error executing greeter command: {e}")
         
         # Now check if we should process this message for bot responses
         if not self.should_process_message(message):
