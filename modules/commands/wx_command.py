@@ -10,7 +10,7 @@ import requests
 import xml.dom.minidom
 from datetime import datetime, timedelta
 from geopy.geocoders import Nominatim
-from ..utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder
+from ..utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder, geocode_zipcode_sync, geocode_city_sync
 import maidenhead as mh
 from .base_command import BaseCommand
 from ..models import MeshMessage
@@ -320,14 +320,8 @@ class WxCommand(BaseCommand):
     def zipcode_to_lat_lon(self, zipcode: str) -> tuple:
         """Convert zipcode to latitude and longitude"""
         try:
-            # Use rate-limited Nominatim to geocode the zipcode
-            location = rate_limited_nominatim_geocode_sync(
-                self.bot, f"{zipcode}, USA", timeout=10
-            )
-            if location:
-                return location.latitude, location.longitude
-            else:
-                return None, None
+            lat, lon = geocode_zipcode_sync(self.bot, zipcode, timeout=10)
+            return lat, lon
         except Exception as e:
             self.logger.error(f"Error geocoding zipcode {zipcode}: {e}")
             return None, None
@@ -335,124 +329,18 @@ class WxCommand(BaseCommand):
     def city_to_lat_lon(self, city: str) -> tuple:
         """Convert city name to latitude and longitude using default state"""
         try:
-            # Check cache first for default state query
-            cache_query = f"{city}, {self.default_state}, USA"
-            cached_lat, cached_lon = self.db_manager.get_cached_geocoding(cache_query)
-            if cached_lat is not None and cached_lon is not None:
-                self.logger.debug(f"Using cached geocoding for {city}")
-                # Still need to do reverse geocoding for address details
-                try:
-                    reverse_location = rate_limited_nominatim_reverse_sync(
-                        self.bot, f"{cached_lat}, {cached_lon}", timeout=10
-                    )
-                    if reverse_location:
-                        return cached_lat, cached_lon, reverse_location.raw.get('address', {})
-                except:
-                    pass
-                return cached_lat, cached_lon, {}
-            
-            # Check if the input contains a comma (city, state format)
-            if ',' in city:
-                # Parse city, state format
-                city_parts = [part.strip() for part in city.split(',')]
-                if len(city_parts) >= 2:
-                    city_name = city_parts[0]
-                    state = city_parts[1]
-                    
-                    # Try the specific city, state combination first
-                    location = rate_limited_nominatim_geocode_sync(
-                        self.bot, f"{city_name}, {state}, USA", timeout=10
-                    )
-                    if location:
-                        # Cache the result
-                        self.db_manager.cache_geocoding(f"{city_name}, {state}, USA", location.latitude, location.longitude)
-                        
-                        # Use reverse geocoding to get detailed address info
-                        try:
-                            reverse_location = rate_limited_nominatim_reverse_sync(
-                                self.bot, f"{location.latitude}, {location.longitude}", timeout=10
-                            )
-                            if reverse_location:
-                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                        except:
-                            pass
-                        return location.latitude, location.longitude, location.raw.get('address', {})
-            
-            # For common city names, try major cities first to avoid small towns
-            major_city_mappings = {
-                'albany': ['Albany, NY, USA', 'Albany, OR, USA', 'Albany, CA, USA'],
-                'portland': ['Portland, OR, USA', 'Portland, ME, USA'],
-                'boston': ['Boston, MA, USA'],
-                'paris': ['Paris, TX, USA', 'Paris, IL, USA', 'Paris, TN, USA'],
-                'springfield': ['Springfield, IL, USA', 'Springfield, MO, USA', 'Springfield, MA, USA'],
-                'franklin': ['Franklin, TN, USA', 'Franklin, MA, USA'],
-                'georgetown': ['Georgetown, TX, USA', 'Georgetown, SC, USA'],
-                'madison': ['Madison, WI, USA', 'Madison, AL, USA'],
-                'auburn': ['Auburn, AL, USA', 'Auburn, WA, USA'],
-                'troy': ['Troy, NY, USA', 'Troy, MI, USA'],
-                'clinton': ['Clinton, IA, USA', 'Clinton, MS, USA']
-            }
-            
-            # If it's a major city with multiple locations, try the major ones first
-            if city.lower() in major_city_mappings:
-                for major_city_query in major_city_mappings[city.lower()]:
-                    location = rate_limited_nominatim_geocode_sync(
-                        self.bot, major_city_query, timeout=10
-                    )
-                    if location:
-                        # Cache the result
-                        self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
-                        
-                        # Use reverse geocoding to get detailed address info
-                        try:
-                            reverse_location = rate_limited_nominatim_reverse_sync(
-                                self.bot, f"{location.latitude}, {location.longitude}", timeout=10
-                            )
-                            if reverse_location:
-                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                        except:
-                            pass
-                        return location.latitude, location.longitude, location.raw.get('address', {})
-            
-            # First try with default state
-            location = rate_limited_nominatim_geocode_sync(
-                self.bot, f"{city}, {self.default_state}, USA", timeout=10
+            # Use shared geocode_city_sync function with address info
+            default_country = self.bot.config.get('Weather', 'default_country', fallback='US')
+            lat, lon, address_info = geocode_city_sync(
+                self.bot, city, default_state=self.default_state,
+                default_country=default_country,
+                include_address_info=True, timeout=10
             )
-            if location:
-                # Cache the result
-                self.db_manager.cache_geocoding(f"{city}, {self.default_state}, USA", location.latitude, location.longitude)
-                
-                # Use reverse geocoding to get detailed address info
-                try:
-                    reverse_location = rate_limited_nominatim_reverse_sync(
-                        self.bot, f"{location.latitude}, {location.longitude}", timeout=10
-                    )
-                    if reverse_location:
-                        return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                except:
-                    pass
-                return location.latitude, location.longitude, location.raw.get('address', {})
+            
+            if lat and lon:
+                return lat, lon, address_info or {}
             else:
-                # Try without state as fallback
-                location = rate_limited_nominatim_geocode_sync(
-                    self.bot, f"{city}, USA", timeout=10
-                )
-                if location:
-                    # Cache the result
-                    self.db_manager.cache_geocoding(f"{city}, USA", location.latitude, location.longitude)
-                    
-                    # Use reverse geocoding to get detailed address info
-                    try:
-                        reverse_location = rate_limited_nominatim_reverse_sync(
-                            self.bot, f"{location.latitude}, {location.longitude}", timeout=10
-                        )
-                        if reverse_location:
-                            return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                    except:
-                        pass
-                    return location.latitude, location.longitude, location.raw.get('address', {})
-                else:
-                    return None, None, None
+                return None, None, None
         except Exception as e:
             self.logger.error(f"Error geocoding city {city}: {e}")
             return None, None, None
@@ -469,8 +357,12 @@ class WxCommand(BaseCommand):
             Tuple of (weather_string_or_periods, points_data)
         """
         try:
+            # Round coordinates to 4 decimal places to avoid API redirects
+            lat_rounded = round(lat, 4)
+            lon_rounded = round(lon, 4)
+            
             # Get weather data from NOAA
-            weather_api = f"https://api.weather.gov/points/{lat},{lon}"
+            weather_api = f"https://api.weather.gov/points/{lat_rounded},{lon_rounded}"
             
             # Get the forecast URL
             weather_data = requests.get(weather_api, timeout=self.url_timeout)
@@ -803,8 +695,12 @@ class WxCommand(BaseCommand):
             Tuple of (hourly_periods_list, points_data)
         """
         try:
+            # Round coordinates to 4 decimal places to avoid API redirects
+            lat_rounded = round(lat, 4)
+            lon_rounded = round(lon, 4)
+            
             # Get weather data from NOAA
-            weather_api = f"https://api.weather.gov/points/{lat},{lon}"
+            weather_api = f"https://api.weather.gov/points/{lat_rounded},{lon_rounded}"
             
             # Get the forecast URL
             weather_data = requests.get(weather_api, timeout=self.url_timeout)
@@ -1392,7 +1288,11 @@ class WxCommand(BaseCommand):
     def get_weather_alerts_noaa(self, lat: float, lon: float) -> tuple:
         """Get weather alerts from NOAA"""
         try:
-            alert_url = f"https://api.weather.gov/alerts/active.atom?point={lat},{lon}"
+            # Round coordinates to 4 decimal places to avoid API redirects
+            lat_rounded = round(lat, 4)
+            lon_rounded = round(lon, 4)
+            
+            alert_url = f"https://api.weather.gov/alerts/active.atom?point={lat_rounded},{lon_rounded}"
             
             alert_data = requests.get(alert_url, timeout=self.url_timeout)
             if not alert_data.ok:
