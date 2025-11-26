@@ -785,7 +785,11 @@ class GreeterCommand(BaseCommand):
         rollout_active = self._is_rollout_active()
         if rollout_active:
             # During rollout, mark user as greeted but don't actually greet them
-            self.logger.info(f"🔄 Rollout active: Marking {message.sender_id} as greeted on {message.channel} (no greeting sent)")
+            # Check if already greeted first to avoid misleading logs
+            if not self.has_been_greeted(message.sender_id, message.channel):
+                self.logger.info(f"🔄 Rollout active: Marking {message.sender_id} as greeted on {message.channel} (no greeting sent)")
+            else:
+                self.logger.debug(f"🔄 Rollout active: {message.sender_id} already greeted on {message.channel} (skipping)")
             self.mark_as_greeted(message.sender_id, message.channel)
             return False
         else:
