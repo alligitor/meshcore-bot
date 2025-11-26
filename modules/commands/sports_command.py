@@ -425,6 +425,8 @@ class SportsCommand(BaseCommand):
         
         # Load default teams from config
         self.default_teams = self.load_default_teams()
+        # Note: allowed_channels is now loaded by BaseCommand from config
+        # Keep sports_channels for backward compatibility (used in execute() for channel-specific team defaults)
         self.sports_channels = self.load_sports_channels()
         self.channel_overrides = self.load_channel_overrides()
         
@@ -518,15 +520,10 @@ class SportsCommand(BaseCommand):
         if not sports_enabled:
             return False
         
-        # Check if command requires DM and message is not DM
-        if self.requires_dm and not message.is_dm:
+        # Channel access is now handled by BaseCommand.is_channel_allowed()
+        # Call parent can_execute() which includes channel checking
+        if not super().can_execute(message):
             return False
-        
-        # Check if command requires specific channels (only for channel messages, not DMs)
-        if not message.is_dm and self.sports_channels and message.channel not in self.sports_channels:
-            # Check if this channel has an override (allows sports command even if not in main channels list)
-            if message.channel not in self.channel_overrides:
-                return False
         
         # Check per-user cooldown (don't set it here, just check)
         if self.cooldown_seconds > 0:

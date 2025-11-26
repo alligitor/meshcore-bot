@@ -14,13 +14,13 @@ from meshcore import EventType
 class ChannelManager:
     """Manages channel operations and information with enhanced concurrent fetching"""
     
-    def __init__(self, bot, max_channels: int = 8):
+    def __init__(self, bot, max_channels: int = 40):
         """
         Initialize the channel manager
         
         Args:
             bot: The MeshCore bot instance
-            max_channels: Maximum number of channels to fetch (default 8)
+            max_channels: Maximum number of channels to fetch (default 40)
         """
         self.bot = bot
         self.logger = bot.logger

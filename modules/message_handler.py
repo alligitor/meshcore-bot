@@ -1637,8 +1637,21 @@ class MessageHandler:
             self.logger.debug(f"Ignoring message from banned user: {message.sender_id}")
             return False
         
-        # Check if channel is monitored
-        if not message.is_dm and message.channel and message.channel not in self.bot.command_manager.monitor_channels:
+        # Check if channel is monitored (with command override support)
+        if not message.is_dm and message.channel:
+            # Check if channel is in global monitor_channels
+            if message.channel in self.bot.command_manager.monitor_channels:
+                return True  # Global allow - all commands can work
+            
+            # Check if ANY command allows this channel (for selective access)
+            for command_name, command in self.bot.command_manager.commands.items():
+                if hasattr(command, 'is_channel_allowed') and callable(command.is_channel_allowed):
+                    if command.is_channel_allowed(message):
+                        # At least one command allows this channel
+                        self.logger.debug(f"Channel {message.channel} allowed by command '{command_name}' override")
+                        return True
+            
+            # Channel not in global list and no command allows it
             self.logger.debug(f"Channel {message.channel} not in monitored channels: {self.bot.command_manager.monitor_channels}")
             return False
         

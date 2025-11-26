@@ -74,7 +74,8 @@ class GreeterCommand(BaseCommand):
         if self.backfill_lookback_days == 0:
             self.backfill_lookback_days = None
         
-        # Load greeter-specific channels (if not set, uses monitor_channels from [Channels] section)
+        # Note: allowed_channels is now loaded by BaseCommand from config
+        # Keep greeter_channels for backward compatibility and case-insensitive matching
         channels_str = self.get_config_value('Greeter_Command', 'channels', fallback='')
         if channels_str:
             # Store both original and lowercase versions for case-insensitive matching
@@ -766,16 +767,19 @@ class GreeterCommand(BaseCommand):
         if not message.channel:
             return False
         
-        # Check if channel is in greeter-specific channels or fall back to monitor_channels
-        if self.greeter_channels is not None:
-            # Use greeter-specific channels if configured (case-insensitive matching)
-            if message.channel and message.channel.lower() not in self.greeter_channels_lower:
-                return False
-        else:
-            # Fall back to general monitor_channels setting (case-insensitive matching)
-            monitor_channels_lower = [ch.lower() for ch in self.bot.command_manager.monitor_channels]
-            if message.channel and message.channel.lower() not in monitor_channels_lower:
-                return False
+        # Check channel access using standardized method (with case-insensitive fallback)
+        # First try standardized method (case-sensitive)
+        if not self.is_channel_allowed(message):
+            # If standardized check fails, try case-insensitive matching for backward compatibility
+            if self.greeter_channels is not None:
+                # Use greeter-specific channels if configured (case-insensitive matching)
+                if message.channel and message.channel.lower() not in self.greeter_channels_lower:
+                    return False
+            else:
+                # Fall back to general monitor_channels setting (case-insensitive matching)
+                monitor_channels_lower = [ch.lower() for ch in self.bot.command_manager.monitor_channels]
+                if message.channel and message.channel.lower() not in monitor_channels_lower:
+                    return False
         
         # Check if we're in an active rollout period
         rollout_active = self._is_rollout_active()
