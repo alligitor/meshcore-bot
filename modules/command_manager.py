@@ -171,6 +171,10 @@ class CommandManager:
         # Check all loaded plugins for matches
         for command_name, command in self.commands.items():
             if command.should_execute(message):
+                # Check if command can execute (includes channel access check)
+                if not command.can_execute(message):
+                    continue  # Skip this command if it can't execute (wrong channel, cooldown, etc.)
+                
                 # Get response format and generate response
                 response_format = command.get_response_format()
                 if response_format:
@@ -334,8 +338,19 @@ class CommandManager:
                 self.bot.bot_tx_rate_limiter.record_tx()
                 return True
             else:
-                self.logger.error(f"Failed to send channel message: {result.payload if result else 'No result'}")
-                return False
+                # Check if this is a timeout/no-event-received error
+                # This often happens when the message is sent but confirmation event doesn't arrive
+                error_payload = result.payload if result else {}
+                if isinstance(error_payload, dict) and error_payload.get('reason') == 'no_event_received':
+                    # Message likely sent but confirmation timed out - treat as success with warning
+                    self.logger.warning(f"Channel message sent to {channel} (channel {channel_num}) but confirmation event not received (message may have been sent)")
+                    self.bot.rate_limiter.record_send()
+                    self.bot.bot_tx_rate_limiter.record_tx()
+                    return True  # Treat as success since message likely sent
+                else:
+                    # Actual error - log and return failure
+                    self.logger.error(f"Failed to send channel message: {error_payload if error_payload else 'No result'}")
+                    return False
                 
         except Exception as e:
             self.logger.error(f"Failed to send channel message: {e}")
