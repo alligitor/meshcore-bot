@@ -189,6 +189,29 @@ else
     else
         print_warning "User $SERVICE_USER already exists (skipping creation)"
     fi
+    
+    # Add user to dialout group for serial port access (Linux)
+    print_info "Configuring serial port access permissions"
+    if getent group dialout > /dev/null 2>&1; then
+        if groups "$SERVICE_USER" | grep -q "\bdialout\b"; then
+            print_warning "User $SERVICE_USER is already in dialout group"
+        else
+            usermod -a -G dialout "$SERVICE_USER"
+            print_success "Added $SERVICE_USER to dialout group for serial port access"
+        fi
+    else
+        print_warning "dialout group not found - serial port access may require manual configuration"
+        print_info "If using serial connection, you may need to: sudo usermod -a -G dialout $SERVICE_USER"
+    fi
+    
+    # Also check for other common serial port groups (tty, uucp, lock)
+    for group in tty uucp lock; do
+        if getent group "$group" > /dev/null 2>&1; then
+            if ! groups "$SERVICE_USER" | grep -q "\b$group\b"; then
+                usermod -a -G "$group" "$SERVICE_USER" 2>/dev/null && print_info "Added $SERVICE_USER to $group group" || true
+            fi
+        fi
+    done
 fi
 
 print_section "Step 2: Creating Installation Directories"
@@ -434,6 +457,11 @@ else
     echo "  • Restart automatically if it crashes (with 10 second delay)"
     echo "  • Run as user '$SERVICE_USER' for security"
     echo "  • Log to systemd journal (view with journalctl)"
+    echo ""
+    print_info "Serial port access:"
+    echo "  • User '$SERVICE_USER' has been added to dialout group for serial port access"
+    echo "  • If using serial connection, ensure the service is restarted after installation"
+    echo "  • Group membership changes take effect after service restart"
     echo ""
     print_info "After editing config.ini, restart the service for changes to take effect:"
     echo "  ${YELLOW}sudo systemctl restart $SERVICE_NAME${NC}"
