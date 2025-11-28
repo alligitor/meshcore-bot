@@ -99,7 +99,7 @@ startup_advert = flood            # Send advert on startup
 # Format: keyword = response_template
 # Variables: {sender}, {connection_info}, {snr}, {timestamp}, {path}
 test = "Message received from {sender} | {connection_info}"
-help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcond, satpass, dice, roll, joke, dadjoke, sports, channels, path, prefix, repeater, stats"
+help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcond, satpass, dice, roll, joke, dadjoke, sports, channels, path, prefix, repeater, stats, alert"
 ```
 
 ### Channels
@@ -115,6 +115,16 @@ respond_to_dms = true                      # Enable DM responses
 # API keys for external services
 n2yo_api_key =                    # Satellite pass data
 airnow_api_key =                  # Air quality data
+```
+
+### Alert Command
+```ini
+[Alert_Command]
+alert_enabled = true                    # Enable/disable alert command
+max_incident_age_hours = 24             # Maximum age for incidents (hours)
+max_distance_km = 20.0                  # Maximum distance for proximity queries (km)
+agency.city.<city_name> = <agency_ids>   # City-specific agency IDs (e.g., agency.city.seattle = 17D20,17M15)
+agency.county.<county_name> = <agency_ids> # County-specific agency IDs (aggregates all city agencies)
 ```
 
 ### Logging
@@ -158,6 +168,9 @@ The bot responds to these commands:
 - `satpass <NORAD>` - Satellite pass information (default: radio passes, all passes above horizon)
 - `satpass <NORAD> visual` - Visual passes only (must be visually observable)
 - `satpass <shortcut>` - Use shortcuts like `iss`, `hst`, `hubble`, `goes18`, `tiangong`
+
+**Emergency Commands:**
+- `alert <city|zipcode|street city|lat,lon|county> [all]` - Get active emergency incidents (e.g., `alert seattle`, `alert 98101`, `alert seattle all`)
 
 **Gaming Commands:**
 - `dice` - Roll dice (d6 by default, or specify like `dice d20`, `dice 2d6`)
@@ -214,7 +227,7 @@ Example:
 [Keywords]
 test = "Message received from {sender} | {connection_info}"
 ping = "Pong!"
-help = "Bot Help: test, ping, help, hello, cmd, wx, gwx, aqi, sun, moon, solar, solarforecast, hfcond, satpass, dice, roll, joke, dadjoke, sports, channels, path, prefix, repeater, stats, multitest, webviewer"
+help = "Bot Help: test, ping, help, hello, cmd, wx, gwx, aqi, sun, moon, solar, solarforecast, hfcond, satpass, dice, roll, joke, dadjoke, sports, channels, path, prefix, repeater, stats, multitest, alert, webviewer"
 ```
 
 ## Hardware Setup

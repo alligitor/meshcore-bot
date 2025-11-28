@@ -599,6 +599,28 @@ enable_p_shortcut = false
 # false: Hacker command is disabled
 hacker_enabled = false
 
+[Alert_Command]
+# Enable or disable the alert command
+# true: Alert command is available
+# false: Alert command is disabled
+alert_enabled = false
+
+# PulsePoint agency IDs by county/region
+# Format: agency.<county_name> = comma-separated agency IDs
+# Get agency IDs from: https://web.pulsepoint.org/ or PulsePoint searchagencies API
+# You can use any naming convention that makes sense for your region
+# Examples: agency.county1, agency.city1, agency.region1, etc.
+
+# Example: County agencies
+# agency.county1 = 
+
+# Example: City agencies (can have multiple entries for the same region)
+# agency.city1 = 
+# agency.city1_alias = 
+
+# Example: Combined region (all counties/agencies)
+# agency.region_all = 
+
 [Web_Viewer]
 # Enable or disable the web data viewer
 # true: web viewer is available for viewing bot data
