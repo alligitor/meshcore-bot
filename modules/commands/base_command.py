@@ -310,7 +310,21 @@ class BaseCommand(ABC):
     
     def should_execute(self, message: MeshMessage) -> bool:
         """Check if this command should execute for the given message"""
-        return (self.matches_keyword(message) or self.matches_custom_syntax(message))
+        # First check if keyword matches
+        if not (self.matches_keyword(message) or self.matches_custom_syntax(message)):
+            return False
+        
+        # For DM-only commands, only consider them if:
+        # 1. Message is a DM, OR
+        # 2. Channel is in allowed_channels (or monitor_channels if no override)
+        # This prevents DM-only commands from being processed in public channels
+        if self.requires_dm and not message.is_dm:
+            # Check if channel is allowed for this command
+            if not self.is_channel_allowed(message):
+                # Channel not allowed - don't even consider this command
+                return False
+        
+        return True
     
     def can_execute_now(self, message: MeshMessage) -> bool:
         """Check if this command can execute right now (permissions, cooldown, etc.)"""

@@ -513,9 +513,15 @@ class CommandManager:
                 
                 # Check if command can execute (cooldown, DM requirements, etc.)
                 if not command.can_execute_now(message):
+                    # For DM-only commands in public channels, only show error if channel is allowed
+                    # (i.e., channel is in monitor_channels or command's allowed_channels)
+                    # This prevents prompting users in channels where the command shouldn't work at all
                     if command.requires_dm and not message.is_dm:
-                        error_msg = command.translate('errors.dm_only', command=command_name)
-                        await self.send_response(message, error_msg)
+                        # Only prompt if channel is allowed (configured channels)
+                        if command.is_channel_allowed(message):
+                            error_msg = command.translate('errors.dm_only', command=command_name)
+                            await self.send_response(message, error_msg)
+                        # Otherwise, silently ignore (channel not configured for this command)
                     elif command.requires_admin_access():
                         error_msg = command.translate('errors.access_denied', command=command_name)
                         await self.send_response(message, error_msg)

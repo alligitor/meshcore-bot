@@ -250,7 +250,17 @@ class BotDataViewer:
         def api_stats():
             """Get comprehensive database statistics for dashboard"""
             try:
-                stats = self._get_database_stats()
+                # Get optional time window parameters for analytics
+                top_users_window = request.args.get('top_users_window', 'all')
+                top_commands_window = request.args.get('top_commands_window', 'all')
+                top_paths_window = request.args.get('top_paths_window', 'all')
+                top_channels_window = request.args.get('top_channels_window', 'all')
+                stats = self._get_database_stats(
+                    top_users_window=top_users_window,
+                    top_commands_window=top_commands_window,
+                    top_paths_window=top_paths_window,
+                    top_channels_window=top_channels_window
+                )
                 return jsonify(stats)
             except Exception as e:
                 self.logger.error(f"Error getting stats: {e}")
@@ -795,7 +805,8 @@ class BotDataViewer:
         except Exception as e:
             self.logger.error(f"Error cleaning up old packet stream data: {e}")
     
-    def _get_database_stats(self):
+    def _get_database_stats(self, top_users_window='all', top_commands_window='all', 
+                           top_paths_window='all', top_channels_window='all'):
         """Get comprehensive database statistics for dashboard"""
         conn = None
         try:
@@ -971,14 +982,25 @@ class BotDataViewer:
                 cursor.execute("SELECT COUNT(DISTINCT channel) FROM message_stats WHERE channel IS NOT NULL")
                 stats['unique_channels_total'] = cursor.fetchone()[0]
                 
-                # Top users (most frequent message senders)
-                cursor.execute("""
+                # Top users (most frequent message senders) - filter by time window
+                if top_users_window == '24h':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-24 hours')"
+                elif top_users_window == '7d':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-7 days')"
+                elif top_users_window == '30d':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-30 days')"
+                else:  # 'all'
+                    time_filter = ""
+                
+                query = f"""
                     SELECT sender_id, COUNT(*) as count 
                     FROM message_stats 
+                    {time_filter}
                     GROUP BY sender_id 
                     ORDER BY count DESC 
                     LIMIT 15
-                """)
+                """
+                cursor.execute(query)
                 stats['top_users'] = [{'user': row[0], 'count': row[1]} for row in cursor.fetchall()]
             
             if 'command_stats' in tables:
@@ -991,14 +1013,25 @@ class BotDataViewer:
                 """)
                 stats['commands_24h'] = cursor.fetchone()[0]
                 
-                # Top commands
-                cursor.execute("""
+                # Top commands - filter by time window
+                if top_commands_window == '24h':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-24 hours')"
+                elif top_commands_window == '7d':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-7 days')"
+                elif top_commands_window == '30d':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-30 days')"
+                else:  # 'all'
+                    time_filter = ""
+                
+                query = f"""
                     SELECT command_name, COUNT(*) as count 
                     FROM command_stats 
+                    {time_filter}
                     GROUP BY command_name 
                     ORDER BY count DESC 
                     LIMIT 15
-                """)
+                """
+                cursor.execute(query)
                 stats['top_commands'] = [{'command': row[0], 'count': row[1]} for row in cursor.fetchall()]
                 
                 # Bot reply rate (commands that got responses)
@@ -1012,15 +1045,25 @@ class BotDataViewer:
                 else:
                     stats['bot_reply_rate'] = 0
                 
-                # Top channels by message count
-                cursor.execute("""
+                # Top channels by message count - filter by time window
+                if top_channels_window == '24h':
+                    time_filter = "AND timestamp > strftime('%s', 'now', '-24 hours')"
+                elif top_channels_window == '7d':
+                    time_filter = "AND timestamp > strftime('%s', 'now', '-7 days')"
+                elif top_channels_window == '30d':
+                    time_filter = "AND timestamp > strftime('%s', 'now', '-30 days')"
+                else:  # 'all'
+                    time_filter = ""
+                
+                query = f"""
                     SELECT channel, COUNT(*) as message_count, COUNT(DISTINCT sender_id) as unique_users
                     FROM message_stats 
-                    WHERE channel IS NOT NULL
+                    WHERE channel IS NOT NULL {time_filter}
                     GROUP BY channel 
                     ORDER BY message_count DESC 
                     LIMIT 10
-                """)
+                """
+                cursor.execute(query)
                 stats['top_channels'] = [
                     {'channel': row[0], 'messages': row[1], 'users': row[2]} 
                     for row in cursor.fetchall()
@@ -1043,13 +1086,24 @@ class BotDataViewer:
                         'timestamp': longest_path[3]
                     }
                 
-                # Top paths (longest paths)
-                cursor.execute("""
+                # Top paths (longest paths) - filter by time window
+                if top_paths_window == '24h':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-24 hours')"
+                elif top_paths_window == '7d':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-7 days')"
+                elif top_paths_window == '30d':
+                    time_filter = "WHERE timestamp > strftime('%s', 'now', '-30 days')"
+                else:  # 'all'
+                    time_filter = ""
+                
+                query = f"""
                     SELECT sender_id, path_length, path_string, timestamp
                     FROM path_stats 
+                    {time_filter}
                     ORDER BY path_length DESC 
                     LIMIT 5
-                """)
+                """
+                cursor.execute(query)
                 stats['top_paths'] = [
                     {
                         'user': row[0], 
@@ -1373,11 +1427,35 @@ class BotDataViewer:
                     server_stats['total_advertisements'] = cursor.fetchone()[0] or 0
                     
                     # Nodes per day statistics
+                    # Calculate today's unique nodes from complete_contact_tracking
+                    # (last_heard in last 24 hours) since daily_stats might not have today's data yet
                     cursor.execute("""
-                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
-                        WHERE date = date('now')
+                        SELECT COUNT(DISTINCT public_key) FROM complete_contact_tracking 
+                        WHERE last_heard >= datetime('now', '-24 hours')
                     """)
                     server_stats['nodes_24h'] = cursor.fetchone()[0] or 0
+                    
+                    # Get today's unique nodes by role for the stacked chart
+                    cursor.execute("""
+                        SELECT role, COUNT(DISTINCT public_key) as count
+                        FROM complete_contact_tracking 
+                        WHERE last_heard >= datetime('now', '-24 hours')
+                        AND role IS NOT NULL AND role != ''
+                        GROUP BY role
+                    """)
+                    today_by_role = {}
+                    for row in cursor.fetchall():
+                        role = row[0].lower() if row[0] else 'unknown'
+                        count = row[1]
+                        today_by_role[role] = count
+                    
+                    server_stats['nodes_24h_by_role'] = {
+                        'companion': today_by_role.get('companion', 0),
+                        'repeater': today_by_role.get('repeater', 0),
+                        'roomserver': today_by_role.get('roomserver', 0),
+                        'sensor': today_by_role.get('sensor', 0),
+                        'other': sum(v for k, v in today_by_role.items() if k not in ['companion', 'repeater', 'roomserver', 'sensor'])
+                    }
                     
                     cursor.execute("""
                         SELECT COUNT(DISTINCT public_key) FROM daily_stats 
@@ -1385,10 +1463,100 @@ class BotDataViewer:
                     """)
                     server_stats['nodes_7d'] = cursor.fetchone()[0] or 0
                     
+                    # Calculate day-over-day and period-over-period comparisons
+                    # Today vs 7 days ago (single day comparison)
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                        WHERE date = date('now', '-7 days')
+                    """)
+                    result = cursor.fetchone()
+                    server_stats['nodes_7d_ago'] = result[0] if result and result[0] else 0
+                    
+                    # Last 7 days vs previous 7 days (days 8-14 ago)
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                        WHERE date >= date('now', '-14 days') AND date < date('now', '-7 days')
+                    """)
+                    result = cursor.fetchone()
+                    server_stats['nodes_prev_7d'] = result[0] if result and result[0] else 0
+                    
+                    # Last 30 days vs previous 30 days (days 31-60 ago)
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                        WHERE date >= date('now', '-60 days') AND date < date('now', '-30 days')
+                    """)
+                    result = cursor.fetchone()
+                    server_stats['nodes_prev_30d'] = result[0] if result and result[0] else 0
+                    
+                    # Also get current period totals for comparison
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                        WHERE date >= date('now', '-7 days')
+                    """)
+                    server_stats['nodes_7d'] = cursor.fetchone()[0] or 0
+                    
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT public_key) FROM daily_stats 
+                        WHERE date >= date('now', '-30 days')
+                    """)
+                    server_stats['nodes_30d'] = cursor.fetchone()[0] or 0
+                    
                     cursor.execute("""
                         SELECT COUNT(DISTINCT public_key) FROM daily_stats
                     """)
                     server_stats['nodes_all'] = cursor.fetchone()[0] or 0
+                    
+                    # Get daily unique node counts by role for the last 30 days for the stacked graph
+                    # Join daily_stats with complete_contact_tracking to get role information
+                    # This gives us accurate historical daily counts by role
+                    cursor.execute("""
+                        SELECT ds.date, c.role, COUNT(DISTINCT ds.public_key) as daily_count
+                        FROM daily_stats ds
+                        LEFT JOIN complete_contact_tracking c ON ds.public_key = c.public_key
+                        WHERE ds.date >= date('now', '-30 days') AND ds.date <= date('now')
+                        AND (c.role IS NOT NULL AND c.role != '')
+                        GROUP BY ds.date, c.role
+                        ORDER BY ds.date ASC, c.role ASC
+                    """)
+                    daily_data_by_role = cursor.fetchall()
+                    
+                    # Organize data by date and role
+                    daily_by_role = {}
+                    for row in daily_data_by_role:
+                        date_str = row[0]
+                        role = (row[1] or 'unknown').lower()
+                        count = row[2]
+                        
+                        if date_str not in daily_by_role:
+                            daily_by_role[date_str] = {}
+                        daily_by_role[date_str][role] = count
+                    
+                    # Convert to array format with all roles for each date
+                    server_stats['daily_nodes_30d_by_role'] = []
+                    for date_str in sorted(daily_by_role.keys()):
+                        roles_data = daily_by_role[date_str]
+                        server_stats['daily_nodes_30d_by_role'].append({
+                            'date': date_str,
+                            'companion': roles_data.get('companion', 0),
+                            'repeater': roles_data.get('repeater', 0),
+                            'roomserver': roles_data.get('roomserver', 0),
+                            'sensor': roles_data.get('sensor', 0),
+                            'other': sum(v for k, v in roles_data.items() if k not in ['companion', 'repeater', 'roomserver', 'sensor'])
+                        })
+                    
+                    # Also keep the total count for backward compatibility
+                    cursor.execute("""
+                        SELECT date, COUNT(DISTINCT public_key) as daily_count
+                        FROM daily_stats 
+                        WHERE date >= date('now', '-30 days') AND date <= date('now')
+                        GROUP BY date
+                        ORDER BY date ASC
+                    """)
+                    daily_data = cursor.fetchall()
+                    server_stats['daily_nodes_30d'] = [
+                        {'date': row[0], 'count': row[1]} 
+                        for row in daily_data
+                    ]
                     
             except Exception as e:
                 self.logger.debug(f"Could not get server stats: {e}")

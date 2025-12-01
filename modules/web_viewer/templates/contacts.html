@@ -68,6 +68,7 @@
         <div class="card h-100">
             <div class="card-header">
                 <i class="fas fa-plus-circle"></i> New Devices
+                <small class="text-muted d-block" style="font-size: 0.75em; font-weight: normal; margin-top: 2px;">Last 7 days</small>
             </div>
             <div class="card-body d-flex align-items-center">
                 <div class="row text-center w-100">
@@ -92,21 +93,10 @@
     <div class="col-md-3">
         <div class="card h-100">
             <div class="card-header">
-                <i class="fas fa-chart-line"></i> Activity Trends
+                <i class="fas fa-chart-line"></i> Activity Trends (30 Days)
             </div>
-            <div class="card-body d-flex align-items-center">
-                <div class="row text-center w-100">
-                    <div class="col-6">
-                        <div id="trend-today">
-                            <div class="loading">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="col-6">
-                        <div id="trend-week">
-                            <div class="loading">Loading...</div>
-                        </div>
-                    </div>
-                </div>
+            <div class="card-body">
+                <canvas id="activityTrendsChart" style="max-height: 250px;"></canvas>
             </div>
         </div>
     </div>
@@ -189,6 +179,7 @@ class ModernContactsManager {
         this.searchTerm = '';
         this.sortColumn = 'last_seen';
         this.sortDirection = 'desc';
+        this.activityChart = null; // Chart.js instance for activity trends
         this.initializeContacts();
     }
     
@@ -560,45 +551,190 @@ class ModernContactsManager {
         document.getElementById('new-repeaters').textContent = newRepeaters;
         document.getElementById('new-room-servers').textContent = newRoomServers;
         
-        // Update activity trends
-        this.updateActivityTrends(contacts24h, contacts7d, contactsAll);
+        // Update activity trends chart
+        this.updateActivityTrendsChart();
     }
     
-    updateActivityTrends(contacts24h, contacts7d, contactsAll) {
-        // Today's trend (24h vs 7d average)
-        const dailyAverage = contacts7d / 7;
-        const todayTrend = dailyAverage > 0 ? Math.round((contacts24h / dailyAverage) * 100) : 0;
-        const todayTrendIcon = todayTrend > 100 ? '📈' : todayTrend < 100 ? '📉' : '➡️';
+    updateActivityTrendsChart() {
+        const serverStats = this.contactsData.server_stats || {};
+        const dailyDataByRole = serverStats.daily_nodes_30d_by_role || [];
+        const nodesTodayByRole = serverStats.nodes_24h_by_role || {};
         
-        document.getElementById('trend-today').innerHTML = `
-            <div class="text-center">
-                <h5 class="mb-1">${contacts24h}</h5>
-                <div class="d-flex justify-content-center align-items-center">
-                    <span class="me-1">${todayTrendIcon}</span>
-                    <span class="badge bg-${todayTrend > 100 ? 'success' : todayTrend < 100 ? 'warning' : 'secondary'} small">
-                        ${todayTrend}%
-                    </span>
-                </div>
-                <small class="text-muted">Today</small>
-            </div>
-        `;
+        // Destroy existing chart if it exists
+        if (this.activityChart) {
+            this.activityChart.destroy();
+        }
         
-        // Week's trend (7d vs all time)
-        const weekTrend = contactsAll > 0 ? Math.round((contacts7d / contactsAll) * 100) : 0;
-        const weekTrendIcon = weekTrend > 50 ? '📈' : weekTrend < 30 ? '📉' : '➡️';
+        // Prepare data for the last 30 days by role
+        // Create a map of date -> role counts for quick lookup
+        const dataMapByRole = {};
+        dailyDataByRole.forEach(item => {
+            dataMapByRole[item.date] = {
+                companion: item.companion || 0,
+                repeater: item.repeater || 0,
+                roomserver: item.roomserver || 0,
+                sensor: item.sensor || 0,
+                other: item.other || 0
+            };
+        });
         
-        document.getElementById('trend-week').innerHTML = `
-            <div class="text-center">
-                <h5 class="mb-1">${contacts7d}</h5>
-                <div class="d-flex justify-content-center align-items-center">
-                    <span class="me-1">${weekTrendIcon}</span>
-                    <span class="badge bg-${weekTrend > 50 ? 'success' : weekTrend < 30 ? 'warning' : 'secondary'} small">
-                        ${weekTrend}%
-                    </span>
-                </div>
-                <small class="text-muted">Week</small>
-            </div>
-        `;
+        // Generate labels and data arrays for each role
+        const labels = [];
+        const companionData = [];
+        const repeaterData = [];
+        const roomserverData = [];
+        const sensorData = [];
+        const otherData = [];
+        
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD format for today
+        
+        for (let i = 29; i >= 0; i--) {
+            const date = new Date(today);
+            date.setDate(date.getDate() - i);
+            const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD format
+            
+            labels.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+            
+            // Use today's data from server stats if this is today, otherwise use dataMapByRole
+            if (dateStr === todayStr) {
+                companionData.push(nodesTodayByRole.companion || 0);
+                repeaterData.push(nodesTodayByRole.repeater || 0);
+                roomserverData.push(nodesTodayByRole.roomserver || 0);
+                sensorData.push(nodesTodayByRole.sensor || 0);
+                otherData.push(nodesTodayByRole.other || 0);
+            } else {
+                const dayData = dataMapByRole[dateStr] || {};
+                companionData.push(dayData.companion || 0);
+                repeaterData.push(dayData.repeater || 0);
+                roomserverData.push(dayData.roomserver || 0);
+                sensorData.push(dayData.sensor || 0);
+                otherData.push(dayData.other || 0);
+            }
+        }
+        
+        // Get canvas context
+        const ctx = document.getElementById('activityTrendsChart');
+        if (!ctx) return;
+        
+        // Create the stacked chart
+        this.activityChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Companions',
+                        data: companionData,
+                        borderColor: 'rgb(255, 193, 7)', // Yellow/warning color
+                        backgroundColor: 'rgba(255, 193, 7, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Repeaters',
+                        data: repeaterData,
+                        borderColor: 'rgb(13, 110, 253)', // Blue/primary color
+                        backgroundColor: 'rgba(13, 110, 253, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Room Servers',
+                        data: roomserverData,
+                        borderColor: 'rgb(25, 135, 84)', // Green/success color
+                        backgroundColor: 'rgba(25, 135, 84, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Sensors',
+                        data: sensorData,
+                        borderColor: 'rgb(13, 202, 240)', // Light blue/info color
+                        backgroundColor: 'rgba(13, 202, 240, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Other',
+                        data: otherData,
+                        borderColor: 'rgb(108, 117, 125)', // Gray/secondary color
+                        backgroundColor: 'rgba(108, 117, 125, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: {
+                            boxWidth: 12,
+                            padding: 8,
+                            font: {
+                                size: 11
+                            }
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            footer: function(tooltipItems) {
+                                let total = 0;
+                                tooltipItems.forEach(item => {
+                                    total += item.parsed.y || 0;
+                                });
+                                return 'Total: ' + total;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        stacked: true,
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            maxRotation: 45,
+                            minRotation: 45,
+                            font: {
+                                size: 9
+                            }
+                        }
+                    },
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        ticks: {
+                            precision: 0
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    }
+                },
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        });
     }
     
     formatLastSeen(lastSeen) {
