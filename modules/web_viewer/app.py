@@ -522,6 +522,71 @@ class BotDataViewer:
             except Exception as e:
                 self.logger.error(f"Error toggling star status: {e}", exc_info=True)
                 return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/delete-contact', methods=['POST'])
+        def api_delete_contact():
+            """Delete a contact from the complete contact tracking database"""
+            try:
+                data = request.get_json()
+                if not data or 'public_key' not in data:
+                    return jsonify({'error': 'public_key is required'}), 400
+                
+                public_key = data['public_key']
+                
+                # Get contact data from database to log what we're deleting
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                
+                # Check if contact exists
+                cursor.execute('''
+                    SELECT name, role, device_type FROM complete_contact_tracking
+                    WHERE public_key = ?
+                ''', (public_key,))
+                
+                contact = cursor.fetchone()
+                if not contact:
+                    conn.close()
+                    return jsonify({'error': 'Contact not found'}), 404
+                
+                contact_name = contact['name']
+                contact_role = contact['role']
+                contact_device_type = contact['device_type']
+                
+                # Delete from all related tables
+                deleted_counts = {}
+                
+                # Delete from complete_contact_tracking
+                cursor.execute('DELETE FROM complete_contact_tracking WHERE public_key = ?', (public_key,))
+                deleted_counts['complete_contact_tracking'] = cursor.rowcount
+                
+                # Delete from daily_stats
+                cursor.execute('DELETE FROM daily_stats WHERE public_key = ?', (public_key,))
+                deleted_counts['daily_stats'] = cursor.rowcount
+                
+                # Delete from repeater_contacts if it exists
+                try:
+                    cursor.execute('DELETE FROM repeater_contacts WHERE public_key = ?', (public_key,))
+                    deleted_counts['repeater_contacts'] = cursor.rowcount
+                except sqlite3.OperationalError:
+                    # Table might not exist, that's okay
+                    deleted_counts['repeater_contacts'] = 0
+                
+                conn.commit()
+                conn.close()
+                
+                # Log the deletion
+                self.logger.info(f"Contact deleted: {contact_name} ({public_key[:16]}...) - Role: {contact_role}, Device: {contact_device_type}")
+                self.logger.debug(f"Deleted counts: {deleted_counts}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Contact "{contact_name}" has been deleted successfully',
+                    'deleted_counts': deleted_counts
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error deleting contact: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
     
     def _setup_socketio_handlers(self):
         """Setup SocketIO event handlers using modern patterns"""
