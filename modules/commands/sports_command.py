@@ -3,6 +3,20 @@
 Sports command for the MeshCore Bot
 Provides sports scores and schedules using ESPN API
 API description via https://github.com/zuplo/espn-openapi/
+
+Team ID Stability:
+ESPN team IDs are generally stable but can change in certain circumstances:
+- Team relocation or renaming
+- Expansion teams (new teams added to leagues)
+- ESPN data system updates
+
+If a team returns "No games found", verify the team_id using:
+  python3 test_scripts/find_espn_team_id.py <sport> <league> <team_name>
+
+Team IDs should be periodically verified, especially after:
+- League expansion announcements
+- Team relocations or rebranding
+- When users report "no games found" for known active teams
 """
 
 import re
@@ -71,6 +85,8 @@ class SportsCommand(BaseCommand):
     }
     
     # Team mappings for common searches
+    # NOTE: Team IDs can change over time (see module docstring).
+    # Use test_scripts/find_espn_team_id.py to verify/update team IDs.
     TEAM_MAPPINGS = {
         # NFL Teams
         'seahawks': {'sport': 'football', 'league': 'nfl', 'team_id': '26'},
@@ -294,8 +310,8 @@ class SportsCommand(BaseCommand):
         'washington mystics': {'sport': 'basketball', 'league': 'wnba', 'team_id': '16'},
         
         # NHL Teams (limited data available from API)
-        'kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '58'},
-        'seattle kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '58'},
+        'kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '124292'},
+        'seattle kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '124292'},
         'blues': {'sport': 'hockey', 'league': 'nhl', 'team_id': '19'},
         'stars': {'sport': 'hockey', 'league': 'nhl', 'team_id': '9'},
         
@@ -409,6 +425,8 @@ class SportsCommand(BaseCommand):
         
         # Load default teams from config
         self.default_teams = self.load_default_teams()
+        # Note: allowed_channels is now loaded by BaseCommand from config
+        # Keep sports_channels for backward compatibility (used in execute() for channel-specific team defaults)
         self.sports_channels = self.load_sports_channels()
         self.channel_overrides = self.load_channel_overrides()
         
@@ -447,6 +465,53 @@ class SportsCommand(BaseCommand):
             return self.WOMENS_TEAM_ABBREVIATIONS.get(team_id, team_abbreviation)
         else:
             return team_abbreviation
+    
+    def extract_score(self, competitor: Dict) -> str:
+        """Extract score value from competitor data, handling both dict and string formats
+        
+        ESPN API returns scores in different formats:
+        - Schedule endpoint: {'value': 13.0, 'displayValue': '13'}
+        - Scoreboard endpoint: may be string or dict format
+        
+        Returns the score as a string for consistent formatting.
+        """
+        score = competitor.get('score', '0')
+        
+        # Handle dictionary format (from schedule endpoint)
+        if isinstance(score, dict):
+            # Prefer displayValue if available, otherwise use value
+            if 'displayValue' in score:
+                return str(score['displayValue'])
+            elif 'value' in score:
+                # Convert float to int if it's a whole number, otherwise keep as is
+                value = score['value']
+                if isinstance(value, float) and value.is_integer():
+                    return str(int(value))
+                return str(value)
+            else:
+                return '0'
+        
+        # Handle string format (from scoreboard endpoint or already processed)
+        if isinstance(score, str):
+            return score
+        
+        # Handle numeric format
+        if isinstance(score, (int, float)):
+            if isinstance(score, float) and score.is_integer():
+                return str(int(score))
+            return str(score)
+        
+        # Fallback
+        return '0'
+    
+    def extract_shootout_score(self, competitor: Dict) -> Optional[int]:
+        """Extract penalty shootout score from competitor data"""
+        score = competitor.get('score', {})
+        if isinstance(score, dict) and 'shootoutScore' in score:
+            shootout = score['shootoutScore']
+            if isinstance(shootout, (int, float)):
+                return int(shootout) if isinstance(shootout, float) and shootout.is_integer() else int(shootout)
+        return None
     
     def format_clean_date_time(self, dt) -> str:
         """Format date and time without leading zeros"""
@@ -502,15 +567,10 @@ class SportsCommand(BaseCommand):
         if not sports_enabled:
             return False
         
-        # Check if command requires DM and message is not DM
-        if self.requires_dm and not message.is_dm:
+        # Channel access is now handled by BaseCommand.is_channel_allowed()
+        # Call parent can_execute() which includes channel checking
+        if not super().can_execute(message):
             return False
-        
-        # Check if command requires specific channels (only for channel messages, not DMs)
-        if not message.is_dm and self.sports_channels and message.channel not in self.sports_channels:
-            # Check if this channel has an override (allows sports command even if not in main channels list)
-            if message.channel not in self.channel_overrides:
-                return False
         
         # Check per-user cooldown (don't set it here, just check)
         if self.cooldown_seconds > 0:
@@ -865,8 +925,8 @@ class SportsCommand(BaseCommand):
             away_abbreviation = away_team.get('team', {}).get('abbreviation', 'UNK')
             home_name = self.get_team_abbreviation(home_team_id, home_abbreviation, sport, league)
             away_name = self.get_team_abbreviation(away_team_id, away_abbreviation, sport, league)
-            home_score = home_team.get('score', '0')
-            away_score = away_team.get('score', '0')
+            home_score = self.extract_score(home_team)
+            away_score = self.extract_score(away_team)
             
             # Keep original variables for backward compatibility
             team1_name = away_name  # away team first
@@ -875,17 +935,20 @@ class SportsCommand(BaseCommand):
             team2_score = home_score
             
             # Get game status
-            status = event.get('status', {})
+            # In schedule endpoint, status is in competition, not event
+            status = competition.get('status', event.get('status', {}))
             status_type = status.get('type', {})
             status_name = status_type.get('name', 'UNKNOWN')
             
             # Get timestamp for sorting
             date_str = event.get('date', '')
             timestamp = 0  # Default for sorting
+            event_timestamp = None
             if date_str:
                 try:
                     dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                    timestamp = dt.timestamp()
+                    event_timestamp = dt.timestamp()
+                    timestamp = event_timestamp
                 except:
                     pass
             
@@ -907,7 +970,7 @@ class SportsCommand(BaseCommand):
                         formatted = f"@{home_name} {home_score}-{away_score} {away_name} ({clock} {period_str})"
                 elif sport == 'baseball':
                     # Use shortDetail for ongoing baseball games to show top/bottom of inning
-                    short_detail = status.get('type', {}).get('shortDetail', '')
+                    short_detail = status_type.get('shortDetail', '')
                     if short_detail and ('Top' in short_detail or 'Bottom' in short_detail):
                         period_str = short_detail  # e.g., "Top 14th", "Bottom 9th"
                     else:
@@ -969,6 +1032,32 @@ class SportsCommand(BaseCommand):
                         pass
                 formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT{date_suffix})"
                 timestamp = 9999999998  # Final games second to last
+            elif status_name == 'STATUS_FINAL_PEN':
+                # Soccer game finished in penalty shootout
+                # Check if game was played today or on a different day
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                
+                # Get penalty shootout scores
+                home_shootout = self.extract_shootout_score(home_team)
+                away_shootout = self.extract_shootout_score(away_team)
+                
+                # Format with penalty shootout result
+                if home_shootout is not None and away_shootout is not None:
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT-PEN {home_shootout}-{away_shootout}{date_suffix})"
+                else:
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT-PEN{date_suffix})"
+                
+                timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
                 # Check if game was played today or on a different day
@@ -996,6 +1085,7 @@ class SportsCommand(BaseCommand):
             
             return {
                 'timestamp': timestamp,
+                'event_timestamp': event_timestamp,
                 'formatted': formatted,
                 'sport': sport,
                 'status': status_name
@@ -1025,9 +1115,8 @@ class SportsCommand(BaseCommand):
         try:
             score_info = await self.fetch_team_score(team_info)
             if score_info:
-                # Add sport emoji to the score info
-                sport_emoji = self.SPORT_EMOJIS.get(team_info['sport'], '🏆')
-                return f"{sport_emoji} {score_info}"
+                # fetch_team_score already includes emojis, so return as-is
+                return score_info
             else:
                 return self.translate('commands.sports.no_games_team', team=team_name)
         except Exception as e:
@@ -1035,54 +1124,147 @@ class SportsCommand(BaseCommand):
             return self.translate('commands.sports.error_fetching_team', team=team_name)
     
     async def fetch_team_score(self, team_info: Dict[str, str]) -> Optional[str]:
-        """Fetch score information for a team (legacy method for individual team queries)"""
-        game_data = await self.fetch_team_game_data(team_info)
-        return game_data['formatted'] if game_data else None
-    
-    async def fetch_team_game_data(self, team_info: Dict[str, str]) -> Optional[Dict]:
-        """Fetch structured game data for a team with timestamp for sorting"""
-        try:
-            from datetime import datetime, timedelta
-            
-            # Check multiple dates to catch recent games and upcoming games
-            dates_to_check = []
-            today = datetime.now()
-            
-            # Check yesterday, today, and tomorrow
-            for days_offset in [-1, 0, 1]:
-                check_date = today + timedelta(days=days_offset)
-                dates_to_check.append(check_date.strftime('%Y%m%d'))
-            
-            # Also check current scoreboard (no date filter) for upcoming games
-            dates_to_check.append(None)
-            
-            for date_str in dates_to_check:
-                if date_str:
-                    url = f"{self.ESPN_BASE_URL}/{team_info['sport']}/{team_info['league']}/scoreboard?dates={date_str}"
-                else:
-                    url = f"{self.ESPN_BASE_URL}/{team_info['sport']}/{team_info['league']}/scoreboard"
-                
-                # Make API request
-                response = requests.get(url, timeout=self.url_timeout)
-                response.raise_for_status()
-                
-                data = response.json()
-                events = data.get('events', [])
-                
-                if not events:
-                    continue
-                
-                # Find games involving the team
-                for event in events:
-                    game_data = self.parse_game_event_with_timestamp(event, team_info['team_id'], team_info['sport'], team_info['league'])
-                    if game_data:
-                        return game_data
-            
+        """Fetch score information for a team - returns current/next game plus past results"""
+        games = await self.fetch_team_games(team_info)
+        if not games:
             return None
+        
+        # Format games to fit within message limit (130 characters)
+        # Use 125 as a buffer to avoid cutting off mid-game
+        sport_emoji = self.SPORT_EMOJIS.get(team_info['sport'], '🏆')
+        formatted_games = []
+        current_length = 0
+        max_length = 125  # Leave buffer to avoid cutoff
+        
+        for game in games:
+            # Ensure game['formatted'] doesn't already have an emoji
+            game_formatted = game['formatted'].strip()
+            # Remove emoji if it's at the start (some games might have it)
+            if game_formatted and game_formatted[0] in self.SPORT_EMOJIS.values():
+                game_formatted = game_formatted[1:].strip()
+            
+            game_str = f"{sport_emoji} {game_formatted}"
+            # Check if adding this game would exceed limit
+            if formatted_games:
+                # Account for newline separator
+                test_length = current_length + len("\n") + len(game_str)
+            else:
+                test_length = len(game_str)
+            
+            if test_length <= max_length:
+                formatted_games.append(game_str)
+                current_length = test_length
+            else:
+                # Can't fit more games - stop before exceeding limit
+                break
+        
+        if not formatted_games:
+            # If even the first game doesn't fit, return it anyway (truncated)
+            game_formatted = games[0]['formatted'].strip()
+            if game_formatted and game_formatted[0] in self.SPORT_EMOJIS.values():
+                game_formatted = game_formatted[1:].strip()
+            return f"{sport_emoji} {game_formatted[:120]}"
+        
+        return "\n".join(formatted_games)
+    
+    async def fetch_team_games(self, team_info: Dict[str, str]) -> List[Dict]:
+        """Fetch multiple games for a team: current/next game plus past results
+        
+        Uses the team schedule endpoint which returns both past and upcoming games
+        in a single API call. Returns games sorted by relevance:
+        - Live games first
+        - Then upcoming games
+        - Then recent past games (most recent first)
+        """
+        try:
+            # Use team schedule endpoint - returns both past and upcoming games
+            url = f"{self.ESPN_BASE_URL}/{team_info['sport']}/{team_info['league']}/teams/{team_info['team_id']}/schedule"
+            
+            # Make API request
+            response = requests.get(url, timeout=self.url_timeout)
+            response.raise_for_status()
+            
+            data = response.json()
+            events = data.get('events', [])
+            
+            if not events:
+                return []
+            
+            # Parse all games
+            all_games = []
+            for event in events:
+                game_data = self.parse_game_event_with_timestamp(event, team_info['team_id'], team_info['sport'], team_info['league'])
+                if game_data:
+                    all_games.append(game_data)
+            
+            if not all_games:
+                return []
+            
+            # Sort by timestamp (negative for live games, then by actual timestamp)
+            # This prioritizes: live games > upcoming games > recent past games
+            all_games.sort(key=lambda x: x['timestamp'])
+            
+            # Get current time for comparison
+            now = datetime.now(timezone.utc).timestamp()
+            
+            # Separate into categories
+            live_games = [g for g in all_games if g['timestamp'] < 0]  # Negative timestamps = live
+            upcoming_games = []
+            past_games = []
+            
+            # Categorize games with positive timestamps
+            for game in all_games:
+                if game['timestamp'] < 0:
+                    continue  # Already in live_games
+                
+                game_event_ts = game.get('event_timestamp')
+                effective_ts = game_event_ts if game_event_ts is not None else game['timestamp']
+                
+                if game['timestamp'] >= 9999999990 and game_event_ts is None:
+                    # No real timestamp available, treat as past
+                    past_games.append((effective_ts, game))
+                elif effective_ts is None:
+                    past_games.append((effective_ts, game))
+                elif effective_ts > now:
+                    # Future game
+                    upcoming_games.append((effective_ts, game))
+                else:
+                    # Past game
+                    past_games.append((effective_ts, game))
+            
+            # Sort upcoming games by soonest first, past games by most recent first
+            upcoming_games.sort(key=lambda x: x[0] if x[0] is not None else float('inf'))
+            past_games.sort(key=lambda x: x[0] if x[0] is not None else -float('inf'), reverse=True)
+            
+            # Build result: live games + next upcoming + recent past
+            result = []
+            
+            # Add live games (if any)
+            if live_games:
+                result.extend(live_games)
+            
+            # Add next upcoming game (if no live games)
+            if not live_games and upcoming_games:
+                result.append(upcoming_games[0][1])
+            
+            # Add recent past games (most recent first, up to what fits)
+            result.extend([g for _, g in past_games])
+            
+            return result
             
         except Exception as e:
-            self.logger.error(f"Error fetching team game data: {e}")
-            return None
+            self.logger.error(f"Error fetching team games: {e}")
+            return []
+    
+    async def fetch_team_game_data(self, team_info: Dict[str, str]) -> Optional[Dict]:
+        """Fetch structured game data for a team with timestamp for sorting
+        
+        Uses the team schedule endpoint which returns both past and upcoming games
+        in a single API call, eliminating the need for multiple scoreboard requests.
+        Returns only the most relevant game (for backward compatibility).
+        """
+        games = await self.fetch_team_games(team_info)
+        return games[0] if games else None
     
     def parse_game_event_with_timestamp(self, event: Dict, team_id: str, sport: str, league: str) -> Optional[Dict]:
         """Parse a game event and return structured data with timestamp for sorting"""
@@ -1119,8 +1301,8 @@ class SportsCommand(BaseCommand):
             away_abbreviation = away_team.get('team', {}).get('abbreviation', 'UNK')
             home_name = self.get_team_abbreviation(home_team_id, home_abbreviation, sport, league)
             away_name = self.get_team_abbreviation(away_team_id, away_abbreviation, sport, league)
-            home_score = home_team.get('score', '0')
-            away_score = away_team.get('score', '0')
+            home_score = self.extract_score(home_team)
+            away_score = self.extract_score(away_team)
             
             # For individual team queries, we still want to show our team first
             # but in the correct home/away order for each sport
@@ -1136,17 +1318,20 @@ class SportsCommand(BaseCommand):
                 other_score = home_score
             
             # Get game status
-            status = event.get('status', {})
+            # In schedule endpoint, status is in competition, not event
+            status = competition.get('status', event.get('status', {}))
             status_type = status.get('type', {})
             status_name = status_type.get('name', 'UNKNOWN')
             
             # Get timestamp for sorting
             date_str = event.get('date', '')
             timestamp = 0  # Default for sorting
+            event_timestamp = None
             if date_str:
                 try:
                     dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                    timestamp = dt.timestamp()
+                    event_timestamp = dt.timestamp()
+                    timestamp = event_timestamp
                 except:
                     pass
             
@@ -1230,6 +1415,32 @@ class SportsCommand(BaseCommand):
                         pass
                 formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT{date_suffix})"
                 timestamp = 9999999998  # Final games second to last
+            elif status_name == 'STATUS_FINAL_PEN':
+                # Soccer game finished in penalty shootout
+                # Check if game was played today or on a different day
+                date_suffix = ""
+                if date_str:
+                    try:
+                        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        local_dt = dt.astimezone()
+                        today = datetime.now().date()
+                        game_date = local_dt.date()
+                        if game_date != today:
+                            date_suffix = f", {self.format_clean_date(local_dt)}"
+                    except:
+                        pass
+                
+                # Get penalty shootout scores
+                home_shootout = self.extract_shootout_score(home_team)
+                away_shootout = self.extract_shootout_score(away_team)
+                
+                # Format with penalty shootout result
+                if home_shootout is not None and away_shootout is not None:
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT-PEN {home_shootout}-{away_shootout}{date_suffix})"
+                else:
+                    formatted = f"@{home_name} {home_score}-{away_score} {away_name} (FT-PEN{date_suffix})"
+                
+                timestamp = 9999999998  # Final games second to last
             elif status_name == 'STATUS_FINAL':
                 # Other sports game is finished - put these last
                 # Check if game was played today or on a different day
@@ -1257,6 +1468,7 @@ class SportsCommand(BaseCommand):
             
             return {
                 'timestamp': timestamp,
+                'event_timestamp': event_timestamp,
                 'formatted': formatted,
                 'sport': sport,
                 'status': status_name
@@ -1312,8 +1524,8 @@ class SportsCommand(BaseCommand):
                 away_team_name = our_team_name
             
             # Get scores
-            our_score = our_team.get('score', '0')
-            other_score = other_team.get('score', '0')
+            our_score = self.extract_score(our_team)
+            other_score = self.extract_score(other_team)
             
             # Get game status
             status = event.get('status', {})

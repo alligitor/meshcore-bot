@@ -29,6 +29,23 @@ class MultitestCommand(BaseCommand):
         self.listening_duration = 6.0  # 6 seconds listening window
         self.target_packet_hash: Optional[str] = None  # Hash of the message we're tracking
         self.triggering_timestamp: float = 0.0  # Timestamp of the triggering message
+        self._load_config()
+    
+    def _load_config(self):
+        """Load configuration for multitest command"""
+        response_format = self.get_config_value('Multitest_Command', 'response_format', fallback='')
+        if response_format and response_format.strip():
+            # Strip quotes if present (config parser may add them)
+            response_format = self._strip_quotes_from_config(response_format).strip()
+            # Decode escape sequences (e.g., \n -> newline)
+            try:
+                # Use encode/decode to convert escape sequences to actual characters
+                self.response_format = response_format.encode('latin-1').decode('unicode_escape')
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                # If decoding fails, use as-is (fallback)
+                self.response_format = response_format
+        else:
+            self.response_format = None  # Use default format
     
     def get_help_text(self) -> str:
         return self.translate('commands.multitest.help', fallback="Listens for 6 seconds and collects all unique paths from incoming messages")
@@ -47,6 +64,14 @@ class MultitestCommand(BaseCommand):
         for keyword in self.keywords:
             if content_lower == keyword or content_lower.startswith(keyword + ' '):
                 return True
+        
+        # Check for variants: "mt long", "mt xlong", "multitest long", "multitest xlong"
+        if content_lower.startswith('mt ') or content_lower.startswith('multitest '):
+            parts = content_lower.split()
+            if len(parts) >= 2 and parts[0] in ['mt', 'multitest']:
+                variant = parts[1]
+                if variant in ['long', 'xlong']:
+                    return True
         
         return False
     
@@ -273,7 +298,32 @@ class MultitestCommand(BaseCommand):
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the multitest command"""
-        self.logger.info("Multitest command executed - starting listening window")
+        # Determine listening duration based on command variant
+        content = message.content.strip()
+        if content.startswith('!'):
+            content = content[1:].strip()
+        
+        content_lower = content.lower()
+        # Check for variants: "mt long", "mt xlong", "multitest long", "multitest xlong"
+        if content_lower.startswith('mt ') or content_lower.startswith('multitest '):
+            parts = content_lower.split()
+            if len(parts) >= 2 and parts[0] in ['mt', 'multitest']:
+                variant = parts[1]
+                if variant == 'long':
+                    self.listening_duration = 10.0
+                    self.logger.info("Multitest command (long) executed - starting 10 second listening window")
+                elif variant == 'xlong':
+                    self.listening_duration = 14.0
+                    self.logger.info("Multitest command (xlong) executed - starting 14 second listening window")
+                else:
+                    self.listening_duration = 6.0
+                    self.logger.info("Multitest command executed - starting 6 second listening window")
+            else:
+                self.listening_duration = 6.0
+                self.logger.info("Multitest command executed - starting 6 second listening window")
+        else:
+            self.listening_duration = 6.0
+            self.logger.info("Multitest command executed - starting 6 second listening window")
         
         # Get RF data for the triggering message (contains pre-calculated packet hash)
         rf_data = self.get_rf_data_for_message(message)
@@ -350,7 +400,25 @@ class MultitestCommand(BaseCommand):
         if self.collected_paths:
             # Sort paths for consistent output
             sorted_paths = sorted(self.collected_paths)
-            response = f"Found {len(sorted_paths)} unique path(s):\n" + "\n".join(sorted_paths)
+            paths_text = "\n".join(sorted_paths)
+            path_count = len(sorted_paths)
+            
+            # Use configured format if available, otherwise use default
+            if self.response_format:
+                try:
+                    response = self.response_format.format(
+                        sender=message.sender_id or "Unknown",
+                        path_count=path_count,
+                        paths=paths_text,
+                        listening_duration=int(self.listening_duration)
+                    )
+                except (KeyError, ValueError) as e:
+                    # If formatting fails, fall back to default
+                    self.logger.debug(f"Error formatting multitest response: {e}, using default format")
+                    response = f"Found {path_count} unique path(s):\n{paths_text}"
+            else:
+                # Default format
+                response = f"Found {path_count} unique path(s):\n{paths_text}"
         else:
             # Provide more helpful error message with diagnostic info
             matching_packets = 0

@@ -10,11 +10,12 @@ import time
 import hashlib
 import pytz
 from geopy.geocoders import Nominatim
+from ..utils import rate_limited_nominatim_reverse, get_nominatim_geocoder, geocode_zipcode, geocode_city
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, Dict
 from .base_command import BaseCommand
 from ..models import MeshMessage
-from ..utils import abbreviate_location, get_major_city_queries
+from ..utils import abbreviate_location
 
 
 class SolarforecastCommand(BaseCommand):
@@ -50,8 +51,8 @@ class SolarforecastCommand(BaseCommand):
         # Get default state from config for city disambiguation
         self.default_state = self.bot.config.get('Weather', 'default_state', fallback='WA')
         
-        # Initialize geocoder
-        self.geolocator = Nominatim(user_agent="meshcore-bot")
+        # Initialize geocoder (will use rate-limited helpers for actual calls)
+        self.geolocator = get_nominatim_geocoder()
         
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
@@ -344,110 +345,30 @@ class SolarforecastCommand(BaseCommand):
             return None, None
     
     async def _zipcode_to_lat_lon(self, zipcode: str) -> Tuple[Optional[float], Optional[float]]:
-        """Convert zipcode to lat/lon"""
-        import asyncio
+        """Convert zipcode to lat/lon using shared geocoding function"""
         try:
-            cache_query = f"{zipcode}, USA"
-            cached_lat, cached_lon = self.db_manager.get_cached_geocoding(cache_query)
-            if cached_lat and cached_lon:
-                return cached_lat, cached_lon
-            
-            loop = asyncio.get_event_loop()
-            location = await loop.run_in_executor(
-                None,
-                lambda: self.geolocator.geocode(f"{zipcode}, USA", timeout=self.url_timeout)
-            )
-            if location:
-                self.db_manager.cache_geocoding(cache_query, location.latitude, location.longitude)
-                return location.latitude, location.longitude
+            lat, lon = await geocode_zipcode(self.bot, zipcode, timeout=self.url_timeout)
+            return lat, lon
         except Exception as e:
             self.logger.error(f"Error geocoding zipcode {zipcode}: {e}")
-        return None, None
+            return None, None
     
     async def _city_to_lat_lon(self, city: str) -> Tuple[Optional[float], Optional[float]]:
-        """Convert city name to lat/lon"""
-        import asyncio
+        """Convert city name to lat/lon using shared geocoding function"""
         try:
-            # Run geocoding in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            
-            # Parse state abbreviation if present (e.g., "new york, ny" -> "new york" and "NY")
-            city_clean = city.strip()
-            state_abbr = None
-            if ',' in city_clean:
-                parts = [p.strip() for p in city_clean.rsplit(',', 1)]
-                if len(parts) == 2 and len(parts[1]) <= 2:
-                    # Likely a state abbreviation
-                    city_clean = parts[0]
-                    state_abbr = parts[1].upper()
-            
-            # Handle major cities with multiple locations (prioritize major cities)
-            # Use shared utility function for consistency across commands
-            major_city_queries = get_major_city_queries(city_clean, state_abbr)
-            if major_city_queries:
-                # Try major city options first
-                for major_city_query in major_city_queries:
-                    cached_lat, cached_lon = self.db_manager.get_cached_geocoding(major_city_query)
-                    if cached_lat and cached_lon:
-                        return cached_lat, cached_lon
-                    
-                    location = await loop.run_in_executor(
-                        None,
-                        lambda q=major_city_query: self.geolocator.geocode(q, timeout=self.url_timeout)
-                    )
-                    if location:
-                        self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
-                        return location.latitude, location.longitude
-            
-            # If state abbreviation was parsed, use it
-            if state_abbr:
-                state_query = f"{city_clean}, {state_abbr}, USA"
-                cached_lat, cached_lon = self.db_manager.get_cached_geocoding(state_query)
-                if cached_lat and cached_lon:
-                    return cached_lat, cached_lon
-                
-                location = await loop.run_in_executor(
-                    None,
-                    lambda: self.geolocator.geocode(state_query, timeout=self.url_timeout)
-                )
-                if location:
-                    self.db_manager.cache_geocoding(state_query, location.latitude, location.longitude)
-                    return location.latitude, location.longitude
-            
-            # Try with default state first
-            cache_query = f"{city_clean}, {self.default_state}, USA"
-            cached_lat, cached_lon = self.db_manager.get_cached_geocoding(cache_query)
-            if cached_lat and cached_lon:
-                return cached_lat, cached_lon
-            
-            location = await loop.run_in_executor(
-                None, 
-                lambda: self.geolocator.geocode(cache_query, timeout=self.url_timeout)
+            # Get defaults from config
+            default_country = self.bot.config.get('Weather', 'default_country', fallback='US')
+            lat, lon, _ = await geocode_city(
+                self.bot, city, 
+                default_state=self.default_state,
+                default_country=default_country,
+                include_address_info=False,  # Don't need address info, just coordinates
+                timeout=self.url_timeout
             )
-            if location:
-                self.db_manager.cache_geocoding(cache_query, location.latitude, location.longitude)
-                return location.latitude, location.longitude
-            
-            # Try without state
-            location = await loop.run_in_executor(
-                None,
-                lambda: self.geolocator.geocode(f"{city_clean}, USA", timeout=self.url_timeout)
-            )
-            if location:
-                self.db_manager.cache_geocoding(f"{city_clean}, USA", location.latitude, location.longitude)
-                return location.latitude, location.longitude
-            
-            # Try international
-            location = await loop.run_in_executor(
-                None,
-                lambda: self.geolocator.geocode(city_clean, timeout=self.url_timeout)
-            )
-            if location:
-                self.db_manager.cache_geocoding(city_clean, location.latitude, location.longitude)
-                return location.latitude, location.longitude
+            return lat, lon
         except Exception as e:
             self.logger.error(f"Error geocoding city {city}: {e}")
-        return None, None
+            return None, None
     
     async def _get_location_name(self, lat: float, lon: float, original_location: str, 
                                  location_type: str) -> str:
@@ -480,9 +401,8 @@ class SolarforecastCommand(BaseCommand):
             
             # For coordinates, always do reverse geocoding
             if location_type == "coordinates":
-                location = await loop.run_in_executor(
-                    None,
-                    lambda: self.geolocator.reverse(f"{lat}, {lon}", timeout=self.url_timeout)
+                location = await rate_limited_nominatim_reverse(
+                    self.bot, f"{lat}, {lon}", timeout=self.url_timeout
                 )
                 if location and location.raw:
                     address = location.raw.get('address', {})
@@ -499,9 +419,8 @@ class SolarforecastCommand(BaseCommand):
             # For city/zipcode, use original if it worked, or reverse geocode
             if location_type in ["city", "zipcode"]:
                 # Try reverse geocoding to get confirmed city name
-                location = await loop.run_in_executor(
-                    None,
-                    lambda: self.geolocator.reverse(f"{lat}, {lon}", timeout=self.url_timeout)
+                location = await rate_limited_nominatim_reverse(
+                    self.bot, f"{lat}, {lon}", timeout=self.url_timeout
                 )
                 if location and location.raw:
                     address = location.raw.get('address', {})

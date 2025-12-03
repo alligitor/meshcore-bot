@@ -68,6 +68,7 @@
         <div class="card h-100">
             <div class="card-header">
                 <i class="fas fa-plus-circle"></i> New Devices
+                <small class="text-muted d-block" style="font-size: 0.75em; font-weight: normal; margin-top: 2px;">Last 7 days</small>
             </div>
             <div class="card-body d-flex align-items-center">
                 <div class="row text-center w-100">
@@ -92,21 +93,10 @@
     <div class="col-md-3">
         <div class="card h-100">
             <div class="card-header">
-                <i class="fas fa-chart-line"></i> Activity Trends
+                <i class="fas fa-chart-line"></i> Activity Trends (30 Days)
             </div>
-            <div class="card-body d-flex align-items-center">
-                <div class="row text-center w-100">
-                    <div class="col-6">
-                        <div id="trend-today">
-                            <div class="loading">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="col-6">
-                        <div id="trend-week">
-                            <div class="loading">Loading...</div>
-                        </div>
-                    </div>
-                </div>
+            <div class="card-body">
+                <canvas id="activityTrendsChart" style="max-height: 250px;"></canvas>
             </div>
         </div>
     </div>
@@ -167,7 +157,7 @@
                     </thead>
                         <tbody id="contacts-table-body">
                             <tr>
-                                <td colspan="9" class="text-center">
+                                <td colspan="10" class="text-center">
                                     <div class="loading">Loading contacts data...</div>
                                 </td>
                             </tr>
@@ -189,6 +179,7 @@ class ModernContactsManager {
         this.searchTerm = '';
         this.sortColumn = 'last_seen';
         this.sortDirection = 'desc';
+        this.activityChart = null; // Chart.js instance for activity trends
         this.initializeContacts();
     }
     
@@ -394,7 +385,7 @@ class ModernContactsManager {
                 'No contacts data available';
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="11" class="text-center text-muted">
+                    <td colspan="10" class="text-center text-muted">
                         ${message}
                     </td>
                 </tr>
@@ -419,6 +410,12 @@ class ModernContactsManager {
                 <td><span class="badge bg-success">${contact.advert_count || 0}</span></td>
                 <td>
                     <div class="btn-group" role="group">
+                        ${contact.role && (contact.role.toLowerCase() === 'repeater' || contact.role.toLowerCase() === 'roomserver') ? 
+                            `<button class="btn btn-sm ${contact.is_starred ? 'btn-warning' : 'btn-outline-warning'}" onclick="contactsManager.toggleStar('${contact.user_id.replace(/'/g, "\\'")}', this)" title="${contact.is_starred ? 'Unstar contact (removes path bias)' : 'Star contact (adds strong path bias)'}">
+                                <i class="fas ${contact.is_starred ? 'fa-star' : 'fa-star'}"></i>
+                            </button>` : 
+                            ''
+                        }
                         <button class="btn btn-sm btn-outline-info" onclick="contactsManager.viewAdvertData('${contact.user_id}')" title="View Advertisement Data">
                             <i class="fas fa-info-circle"></i>
                         </button>
@@ -428,6 +425,9 @@ class ModernContactsManager {
                             </button>` : 
                             ''
                         }
+                        <button class="btn btn-sm btn-outline-danger" onclick="contactsManager.showDeleteConfirmation('${contact.user_id.replace(/'/g, "\\'")}', '${(contact.username || 'Unknown').replace(/'/g, "\\'")}')" title="Delete Contact">
+                            <i class="fas fa-trash"></i>
+                        </button>
                     </div>
                 </td>
             </tr>
@@ -551,45 +551,190 @@ class ModernContactsManager {
         document.getElementById('new-repeaters').textContent = newRepeaters;
         document.getElementById('new-room-servers').textContent = newRoomServers;
         
-        // Update activity trends
-        this.updateActivityTrends(contacts24h, contacts7d, contactsAll);
+        // Update activity trends chart
+        this.updateActivityTrendsChart();
     }
     
-    updateActivityTrends(contacts24h, contacts7d, contactsAll) {
-        // Today's trend (24h vs 7d average)
-        const dailyAverage = contacts7d / 7;
-        const todayTrend = dailyAverage > 0 ? Math.round((contacts24h / dailyAverage) * 100) : 0;
-        const todayTrendIcon = todayTrend > 100 ? '📈' : todayTrend < 100 ? '📉' : '➡️';
+    updateActivityTrendsChart() {
+        const serverStats = this.contactsData.server_stats || {};
+        const dailyDataByRole = serverStats.daily_nodes_30d_by_role || [];
+        const nodesTodayByRole = serverStats.nodes_24h_by_role || {};
         
-        document.getElementById('trend-today').innerHTML = `
-            <div class="text-center">
-                <h5 class="mb-1">${contacts24h}</h5>
-                <div class="d-flex justify-content-center align-items-center">
-                    <span class="me-1">${todayTrendIcon}</span>
-                    <span class="badge bg-${todayTrend > 100 ? 'success' : todayTrend < 100 ? 'warning' : 'secondary'} small">
-                        ${todayTrend}%
-                    </span>
-                </div>
-                <small class="text-muted">Today</small>
-            </div>
-        `;
+        // Destroy existing chart if it exists
+        if (this.activityChart) {
+            this.activityChart.destroy();
+        }
         
-        // Week's trend (7d vs all time)
-        const weekTrend = contactsAll > 0 ? Math.round((contacts7d / contactsAll) * 100) : 0;
-        const weekTrendIcon = weekTrend > 50 ? '📈' : weekTrend < 30 ? '📉' : '➡️';
+        // Prepare data for the last 30 days by role
+        // Create a map of date -> role counts for quick lookup
+        const dataMapByRole = {};
+        dailyDataByRole.forEach(item => {
+            dataMapByRole[item.date] = {
+                companion: item.companion || 0,
+                repeater: item.repeater || 0,
+                roomserver: item.roomserver || 0,
+                sensor: item.sensor || 0,
+                other: item.other || 0
+            };
+        });
         
-        document.getElementById('trend-week').innerHTML = `
-            <div class="text-center">
-                <h5 class="mb-1">${contacts7d}</h5>
-                <div class="d-flex justify-content-center align-items-center">
-                    <span class="me-1">${weekTrendIcon}</span>
-                    <span class="badge bg-${weekTrend > 50 ? 'success' : weekTrend < 30 ? 'warning' : 'secondary'} small">
-                        ${weekTrend}%
-                    </span>
-                </div>
-                <small class="text-muted">Week</small>
-            </div>
-        `;
+        // Generate labels and data arrays for each role
+        const labels = [];
+        const companionData = [];
+        const repeaterData = [];
+        const roomserverData = [];
+        const sensorData = [];
+        const otherData = [];
+        
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD format for today
+        
+        for (let i = 29; i >= 0; i--) {
+            const date = new Date(today);
+            date.setDate(date.getDate() - i);
+            const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD format
+            
+            labels.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+            
+            // Use today's data from server stats if this is today, otherwise use dataMapByRole
+            if (dateStr === todayStr) {
+                companionData.push(nodesTodayByRole.companion || 0);
+                repeaterData.push(nodesTodayByRole.repeater || 0);
+                roomserverData.push(nodesTodayByRole.roomserver || 0);
+                sensorData.push(nodesTodayByRole.sensor || 0);
+                otherData.push(nodesTodayByRole.other || 0);
+            } else {
+                const dayData = dataMapByRole[dateStr] || {};
+                companionData.push(dayData.companion || 0);
+                repeaterData.push(dayData.repeater || 0);
+                roomserverData.push(dayData.roomserver || 0);
+                sensorData.push(dayData.sensor || 0);
+                otherData.push(dayData.other || 0);
+            }
+        }
+        
+        // Get canvas context
+        const ctx = document.getElementById('activityTrendsChart');
+        if (!ctx) return;
+        
+        // Create the stacked chart
+        this.activityChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Companions',
+                        data: companionData,
+                        borderColor: 'rgb(255, 193, 7)', // Yellow/warning color
+                        backgroundColor: 'rgba(255, 193, 7, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Repeaters',
+                        data: repeaterData,
+                        borderColor: 'rgb(13, 110, 253)', // Blue/primary color
+                        backgroundColor: 'rgba(13, 110, 253, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Room Servers',
+                        data: roomserverData,
+                        borderColor: 'rgb(25, 135, 84)', // Green/success color
+                        backgroundColor: 'rgba(25, 135, 84, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Sensors',
+                        data: sensorData,
+                        borderColor: 'rgb(13, 202, 240)', // Light blue/info color
+                        backgroundColor: 'rgba(13, 202, 240, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    },
+                    {
+                        label: 'Other',
+                        data: otherData,
+                        borderColor: 'rgb(108, 117, 125)', // Gray/secondary color
+                        backgroundColor: 'rgba(108, 117, 125, 0.6)',
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: {
+                            boxWidth: 12,
+                            padding: 8,
+                            font: {
+                                size: 11
+                            }
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            footer: function(tooltipItems) {
+                                let total = 0;
+                                tooltipItems.forEach(item => {
+                                    total += item.parsed.y || 0;
+                                });
+                                return 'Total: ' + total;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        stacked: true,
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            maxRotation: 45,
+                            minRotation: 45,
+                            font: {
+                                size: 9
+                            }
+                        }
+                    },
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        ticks: {
+                            precision: 0
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    }
+                },
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        });
     }
     
     formatLastSeen(lastSeen) {
@@ -880,6 +1025,212 @@ class ModernContactsManager {
             button.classList.remove('btn-secondary');
             button.classList.add('btn-outline-primary');
         }
+    }
+    
+    async toggleStar(userId, buttonElement = null) {
+        // Find the contact data
+        const contact = this.filteredData.find(c => c.user_id === userId);
+        if (!contact) {
+            this.showError('Contact data not found');
+            return;
+        }
+        
+        // Get the button element - use passed element or find it
+        const button = buttonElement || document.querySelector(`button[onclick*="toggleStar('${userId.substring(0, 16)}"]`);
+        if (!button) {
+            this.showError('Button not found');
+            return;
+        }
+        
+        // Disable button and show loading state
+        const originalHTML = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        
+        try {
+            // Call the toggle star API
+            const response = await fetch('/api/toggle-star-contact', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    public_key: userId
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'Failed to toggle star status');
+            }
+            
+            // Update the contact data in our local array
+            const contactIndex = this.filteredData.findIndex(c => c.user_id === userId);
+            if (contactIndex !== -1) {
+                this.filteredData[contactIndex].is_starred = data.is_starred;
+            }
+            
+            // Also update in the main contacts data
+            const mainContactIndex = this.contactsData.tracking_data.findIndex(c => c.user_id === userId);
+            if (mainContactIndex !== -1) {
+                this.contactsData.tracking_data[mainContactIndex].is_starred = data.is_starred;
+            }
+            
+            // Re-render the table to show updated star status
+            this.renderContactsData();
+            
+            // Show success message
+            const action = data.is_starred ? 'starred' : 'unstarred';
+            this.showSuccess(`Contact ${action} successfully. Path command will ${data.is_starred ? 'strongly prefer' : 'no longer prefer'} this repeater.`);
+            
+        } catch (error) {
+            console.error('Error toggling star status:', error);
+            this.showError('Failed to toggle star status: ' + error.message);
+        } finally {
+            // Restore button state
+            button.disabled = false;
+            button.innerHTML = originalHTML;
+        }
+    }
+    
+    showDeleteConfirmation(userId, username) {
+        // Find the contact data
+        const contact = this.filteredData.find(c => c.user_id === userId);
+        if (!contact) {
+            this.showError('Contact data not found');
+            return;
+        }
+        
+        // Create a modal for delete confirmation
+        const modalHtml = `
+            <div class="modal fade" id="deleteContactModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header bg-danger text-white">
+                            <h5 class="modal-title">
+                                <i class="fas fa-exclamation-triangle"></i> Delete Contact
+                            </h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <p class="mb-3">
+                                <strong>Are you sure you want to delete this contact?</strong>
+                            </p>
+                            <div class="alert alert-warning">
+                                <strong>Contact Information:</strong><br>
+                                <strong>Name:</strong> ${this.escapeHtml(username || 'Unknown')}<br>
+                                <strong>Public Key:</strong> <code>${userId.substring(0, 16)}...</code>
+                            </div>
+                            <div class="alert alert-danger">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                <strong>Warning:</strong> This will permanently delete all tracking data for this contact, including:
+                                <ul class="mb-0 mt-2">
+                                    <li>Contact history and statistics</li>
+                                    <li>Location information</li>
+                                    <li>Advertisement data</li>
+                                    <li>Daily statistics</li>
+                                </ul>
+                                <p class="mb-0 mt-2">
+                                    <strong>This action cannot be undone.</strong> The contact is not banned and may reappear if heard again.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-danger" id="confirmDeleteBtn">
+                                <i class="fas fa-trash"></i> Delete Contact
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal if any
+        const existingModal = document.getElementById('deleteContactModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+        
+        // Add modal to page
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        
+        // Get the modal element
+        const modalElement = document.getElementById('deleteContactModal');
+        const modal = new bootstrap.Modal(modalElement);
+        
+        // Set up delete button handler
+        const confirmBtn = document.getElementById('confirmDeleteBtn');
+        confirmBtn.addEventListener('click', () => {
+            this.deleteContact(userId, username, modalElement);
+        });
+        
+        // Show modal
+        modal.show();
+        
+        // Clean up modal when hidden
+        modalElement.addEventListener('hidden.bs.modal', () => {
+            modalElement.remove();
+        });
+    }
+    
+    async deleteContact(userId, username, modalElement) {
+        // Disable the delete button and show loading state
+        const confirmBtn = document.getElementById('confirmDeleteBtn');
+        const originalHTML = confirmBtn.innerHTML;
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deleting...';
+        
+        try {
+            // Call the delete API
+            const response = await fetch('/api/delete-contact', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    public_key: userId
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'Failed to delete contact');
+            }
+            
+            // Close the modal
+            const modal = bootstrap.Modal.getInstance(modalElement);
+            if (modal) {
+                modal.hide();
+            }
+            
+            // Remove contact from local data
+            this.contactsData.tracking_data = this.contactsData.tracking_data.filter(c => c.user_id !== userId);
+            this.filteredData = this.filteredData.filter(c => c.user_id !== userId);
+            
+            // Re-render the table
+            this.renderContactsData();
+            this.updateStatistics();
+            
+            // Show success message
+            this.showSuccess(`Contact "${username || 'Unknown'}" has been deleted successfully.`);
+            
+        } catch (error) {
+            console.error('Error deleting contact:', error);
+            this.showError('Failed to delete contact: ' + error.message);
+            
+            // Restore button state
+            confirmBtn.disabled = false;
+            confirmBtn.innerHTML = originalHTML;
+        }
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
     
     showError(message) {

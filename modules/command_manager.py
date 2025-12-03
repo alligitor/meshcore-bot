@@ -171,6 +171,10 @@ class CommandManager:
         # Check all loaded plugins for matches
         for command_name, command in self.commands.items():
             if command.should_execute(message):
+                # Check if command can execute (includes channel access check)
+                if not command.can_execute(message):
+                    continue  # Skip this command if it can't execute (wrong channel, cooldown, etc.)
+                
                 # Get response format and generate response
                 response_format = command.get_response_format()
                 if response_format:
@@ -328,13 +332,39 @@ class CommandManager:
             from meshcore_cli.meshcore_cli import send_chan_msg
             result = await send_chan_msg(self.bot.meshcore, channel_num, content)
             
-            if result and result.type != EventType.ERROR:
-                self.logger.info(f"Successfully sent channel message to {channel} (channel {channel_num})")
-                self.bot.rate_limiter.record_send()
-                self.bot.bot_tx_rate_limiter.record_tx()
-                return True
+            # Check if the result indicates success
+            if result:
+                if hasattr(result, 'type') and result.type == EventType.ERROR:
+                    # Actual error - log and return failure
+                    error_payload = result.payload if result else {}
+                    self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): {error_payload if error_payload else 'Unknown error'}")
+                    return False
+                elif hasattr(result, 'type') and (result.type == EventType.MSG_SENT or result.type == EventType.OK):
+                    # Confirmed success - message was sent (OK or MSG_SENT both indicate success)
+                    self.logger.info(f"Successfully sent channel message to {channel} (channel {channel_num})")
+                    self.bot.rate_limiter.record_send()
+                    self.bot.bot_tx_rate_limiter.record_tx()
+                    return True
+                else:
+                    # Result is not None but doesn't have expected success event type
+                    # This could be a ROUTING_INFO or other intermediate event
+                    event_type_name = result.type.name if hasattr(result, 'type') and hasattr(result.type, 'name') else str(result.type) if hasattr(result, 'type') else 'unknown'
+                    self.logger.warning(f"Channel message to {channel} (channel {channel_num}) returned unexpected event type: {event_type_name}. Message may not have been sent.")
+                    # Check if this is a timeout/no-event-received error
+                    error_payload = result.payload if result else {}
+                    if isinstance(error_payload, dict) and error_payload.get('reason') == 'no_event_received':
+                        # Message likely sent but confirmation timed out - treat as success with warning
+                        self.logger.warning(f"Channel message sent to {channel} (channel {channel_num}) but confirmation event not received (message may have been sent)")
+                        self.bot.rate_limiter.record_send()
+                        self.bot.bot_tx_rate_limiter.record_tx()
+                        return True  # Treat as success since message likely sent
+                    else:
+                        # Unknown event type - log and return failure
+                        self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): Unexpected event type {event_type_name}")
+                        return False
             else:
-                self.logger.error(f"Failed to send channel message: {result.payload if result else 'No result'}")
+                # No result returned - this means send_chan_msg failed
+                self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): No result returned from send_chan_msg")
                 return False
                 
         except Exception as e:
@@ -498,9 +528,15 @@ class CommandManager:
                 
                 # Check if command can execute (cooldown, DM requirements, etc.)
                 if not command.can_execute_now(message):
+                    # For DM-only commands in public channels, only show error if channel is allowed
+                    # (i.e., channel is in monitor_channels or command's allowed_channels)
+                    # This prevents prompting users in channels where the command shouldn't work at all
                     if command.requires_dm and not message.is_dm:
-                        error_msg = command.translate('errors.dm_only', command=command_name)
-                        await self.send_response(message, error_msg)
+                        # Only prompt if channel is allowed (configured channels)
+                        if command.is_channel_allowed(message):
+                            error_msg = command.translate('errors.dm_only', command=command_name)
+                            await self.send_response(message, error_msg)
+                        # Otherwise, silently ignore (channel not configured for this command)
                     elif command.requires_admin_access():
                         error_msg = command.translate('errors.access_denied', command=command_name)
                         await self.send_response(message, error_msg)

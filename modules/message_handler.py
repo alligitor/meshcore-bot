@@ -398,11 +398,18 @@ class MessageHandler:
                 if 'hops' in packet_info:
                     signal_info['hops'] = packet_info['hops']
                 
+                # Extract packet_hash if available (from routing_info or packet_info)
+                packet_hash = None
+                if 'routing_info' in packet_info and packet_info['routing_info']:
+                    packet_hash = packet_info['routing_info'].get('packet_hash')
+                elif 'packet_hash' in packet_info:
+                    packet_hash = packet_info['packet_hash']
+                
                 # Track this advertisement in the complete database
                 if hasattr(self.bot, 'repeater_manager'):
                     # Track all advertisements regardless of type
                     success = await self.bot.repeater_manager.track_contact_advertisement(
-                        advert_data, signal_info
+                        advert_data, signal_info, packet_hash=packet_hash
                     )
                     if success:
                         # Log rich advert information
@@ -479,6 +486,11 @@ class MessageHandler:
                         decoded_packet = self.decode_meshcore_packet(raw_hex, extracted_payload)
                         if decoded_packet:
                             # Calculate packet hash for this packet (useful for tracking same message via different paths)
+                            # Use extracted_payload if available (actual MeshCore packet), otherwise use raw_hex
+                            # This matches the logic in decode_meshcore_packet which prefers extracted_payload
+                            # extracted_payload is the actual MeshCore packet without RF wrapper, so use it if available
+                            packet_hex_for_hash = extracted_payload if (extracted_payload and len(extracted_payload) > 0) else raw_hex
+                            
                             # Ensure we use the numeric payload_type value (not enum or string)
                             payload_type_value = decoded_packet.get('payload_type', None)
                             if payload_type_value is not None:
@@ -486,7 +498,7 @@ class MessageHandler:
                                 if hasattr(payload_type_value, 'value'):
                                     payload_type_value = payload_type_value.value
                                 payload_type_value = int(payload_type_value)
-                            packet_hash = calculate_packet_hash(raw_hex, payload_type_value)
+                            packet_hash = calculate_packet_hash(packet_hex_for_hash, payload_type_value)
                             
                             routing_info = {
                                 'path_length': decoded_packet.get('path_len', 0),
@@ -517,6 +529,8 @@ class MessageHandler:
                             
                             # Process ADVERT packets for contact tracking (regardless of path length)
                             if routing_info['payload_type'] == 'ADVERT':
+                                # Add routing_info to decoded_packet so it's available in _process_advertisement_packet
+                                decoded_packet['routing_info'] = routing_info
                                 # Create signal info from available data
                                 signal_info = {
                                     'snr': snr_value,
@@ -1544,6 +1558,16 @@ class MessageHandler:
                 stats_command.record_message(message)
                 stats_command.record_path_stats(message)
         
+        # Check greeter command for public channel messages (BEFORE general message filtering)
+        # This allows greeter to work on its own configured channels even if not in monitor_channels
+        if 'greeter' in self.bot.command_manager.commands:
+            greeter_command = self.bot.command_manager.commands['greeter']
+            if greeter_command and greeter_command.should_execute(message):
+                try:
+                    await greeter_command.execute(message)
+                except Exception as e:
+                    self.logger.error(f"Error executing greeter command: {e}")
+        
         # Now check if we should process this message for bot responses
         if not self.should_process_message(message):
             return
@@ -1613,8 +1637,21 @@ class MessageHandler:
             self.logger.debug(f"Ignoring message from banned user: {message.sender_id}")
             return False
         
-        # Check if channel is monitored
-        if not message.is_dm and message.channel and message.channel not in self.bot.command_manager.monitor_channels:
+        # Check if channel is monitored (with command override support)
+        if not message.is_dm and message.channel:
+            # Check if channel is in global monitor_channels
+            if message.channel in self.bot.command_manager.monitor_channels:
+                return True  # Global allow - all commands can work
+            
+            # Check if ANY command allows this channel (for selective access)
+            for command_name, command in self.bot.command_manager.commands.items():
+                if hasattr(command, 'is_channel_allowed') and callable(command.is_channel_allowed):
+                    if command.is_channel_allowed(message):
+                        # At least one command allows this channel
+                        self.logger.debug(f"Channel {message.channel} allowed by command '{command_name}' override")
+                        return True
+            
+            # Channel not in global list and no command allows it
             self.logger.debug(f"Channel {message.channel} not in monitored channels: {self.bot.command_manager.monitor_channels}")
             return False
         
@@ -1650,8 +1687,9 @@ class MessageHandler:
             if metadata:
                 signal_info.update(metadata)
             
-            # Try to get signal data from recent RF data correlation
+            # Try to get signal data and packet_hash from recent RF data correlation
             # Only collect RSSI/SNR for zero-hop (direct) advertisements
+            packet_hash = None
             try:
                 # Look for recent RF data that might correlate with this contact
                 recent_rf_data = self.bot.message_handler.recent_rf_data
@@ -1660,6 +1698,9 @@ class MessageHandler:
                     for rf_entry in recent_rf_data[-10:]:  # Check last 10 RF entries
                         if 'routing_info' in rf_entry:
                             routing_info = rf_entry['routing_info']
+                            
+                            # Extract packet_hash if available
+                            packet_hash = routing_info.get('packet_hash') or rf_entry.get('packet_hash')
                             
                             # Only collect signal data for direct (zero-hop) advertisements
                             path_length = routing_info.get('path_length', 0)
@@ -1694,7 +1735,7 @@ class MessageHandler:
                     self.logger.info(f"📡 New repeater discovered: {contact_name} - tracking in database only")
                     
                     # Track repeater in complete database with signal info
-                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info)
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info, packet_hash=packet_hash)
                     
                     # Check if auto-purge is needed (run after tracking to ensure data is captured)
                     await self.bot.repeater_manager.check_and_auto_purge()
@@ -1706,7 +1747,7 @@ class MessageHandler:
                     self.logger.info(f"👤 New companion discovered: {contact_name} - will be added to device contacts")
                     
                     # Track companion in complete database with signal info
-                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info)
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info, packet_hash=packet_hash)
                     
                     # Add companion to device contact list
                     try:
@@ -1724,7 +1765,7 @@ class MessageHandler:
             
             # Fallback: Track in database for unknown contact types
             if hasattr(self.bot, 'repeater_manager'):
-                await self.bot.repeater_manager.track_contact_advertisement(contact_data)
+                await self.bot.repeater_manager.track_contact_advertisement(contact_data, packet_hash=packet_hash)
                 await self.bot.repeater_manager.check_and_auto_purge()
             
             # For unknown contact types, handle based on auto_manage_contacts setting

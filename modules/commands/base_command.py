@@ -26,6 +26,9 @@ class BaseCommand(ABC):
         self.bot = bot
         self.logger = bot.logger
         self._last_execution_time = 0
+        
+        # Load allowed channels from config (standardized channel override)
+        self.allowed_channels = self._load_allowed_channels()
     
         # Load translated keywords after initialization
         self._load_translated_keywords()
@@ -130,8 +133,65 @@ class BaseCommand(ABC):
         """Get help text for this command"""
         return self.description or "No help available for this command."
     
+    def _load_allowed_channels(self) -> Optional[List[str]]:
+        """
+        Load allowed channels from config.
+        
+        Config format: [CommandName_Command]
+        channels = channel1,channel2,channel3
+        
+        Returns:
+            - None: Use global monitor_channels (default behavior)
+            - Empty list []: Command disabled for all channels (only DMs)
+            - List of channels: Command only works in these channels
+        """
+        # Derive section name from command name
+        # Convert "sports" -> "Sports_Command", "greeter" -> "Greeter_Command", etc.
+        section_name = f"{self.name.title().replace('_', '_')}_Command"
+        
+        # Try to get channels config
+        channels_str = self.get_config_value(section_name, 'channels', fallback=None, value_type='str')
+        
+        if channels_str is None:
+            return None  # Use global monitor_channels
+        
+        if channels_str.strip() == '':
+            return []  # Disabled for all channels (DM only)
+        
+        # Parse comma-separated list
+        channels = [ch.strip() for ch in channels_str.split(',') if ch.strip()]
+        return channels if channels else None
+    
+    def is_channel_allowed(self, message: MeshMessage) -> bool:
+        """
+        Check if this command is allowed in the message's channel.
+        
+        Returns:
+            - True if DM and command allows DMs (unless requires_dm is False, but that's separate)
+            - True if channel is in allowed_channels (or None for global)
+            - False otherwise
+        """
+        # DMs are always allowed (unless requires_dm is False, but that's checked separately)
+        if message.is_dm:
+            return True
+        
+        # If no channel override, use global monitor_channels
+        if self.allowed_channels is None:
+            return message.channel in self.bot.command_manager.monitor_channels
+        
+        # If empty list, command is disabled for channels (DM only)
+        if self.allowed_channels == []:
+            return False
+        
+        # Check if channel is in allowed list
+        return message.channel in self.allowed_channels
+    
     def can_execute(self, message: MeshMessage) -> bool:
         """Check if this command can be executed with the given message"""
+        # Check channel access (standardized channel override)
+        if not self.is_channel_allowed(message):
+            return False
+        
         # Check if command requires DM and message is not DM
         if self.requires_dm and not message.is_dm:
             return False
@@ -250,7 +310,21 @@ class BaseCommand(ABC):
     
     def should_execute(self, message: MeshMessage) -> bool:
         """Check if this command should execute for the given message"""
-        return (self.matches_keyword(message) or self.matches_custom_syntax(message))
+        # First check if keyword matches
+        if not (self.matches_keyword(message) or self.matches_custom_syntax(message)):
+            return False
+        
+        # For DM-only commands, only consider them if:
+        # 1. Message is a DM, OR
+        # 2. Channel is in allowed_channels (or monitor_channels if no override)
+        # This prevents DM-only commands from being processed in public channels
+        if self.requires_dm and not message.is_dm:
+            # Check if channel is allowed for this command
+            if not self.is_channel_allowed(message):
+                # Channel not allowed - don't even consider this command
+                return False
+        
+        return True
     
     def can_execute_now(self, message: MeshMessage) -> bool:
         """Check if this command can execute right now (permissions, cooldown, etc.)"""

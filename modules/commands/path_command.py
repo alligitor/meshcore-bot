@@ -44,6 +44,11 @@ class PathCommand(BaseCommand):
         self.recency_weight = max(0.0, min(1.0, recency_weight))  # Clamp to 0.0-1.0
         self.proximity_weight = 1.0 - self.recency_weight
         
+        # Get star bias multiplier (how much to boost starred repeaters' scores)
+        # Default 2.5 means starred repeaters get 2.5x their normal score
+        self.star_bias_multiplier = bot.config.getfloat('Path_Command', 'star_bias_multiplier', fallback=2.5)
+        self.star_bias_multiplier = max(1.0, self.star_bias_multiplier)  # Ensure at least 1.0
+        
         # Get confidence indicator symbols from config
         self.high_confidence_symbol = bot.config.get('Path_Command', 'high_confidence_symbol', fallback='🎯')
         self.medium_confidence_symbol = bot.config.get('Path_Command', 'medium_confidence_symbol', fallback='📍')
@@ -194,7 +199,8 @@ class PathCommand(BaseCommand):
                                     'advert_count': row['advert_count'],
                                     'signal_strength': row['signal_strength'],
                                     'hop_count': row['hop_count'],
-                                    'role': row['role']
+                                    'role': row['role'],
+                                    'is_starred': bool(row.get('is_starred', 0))  # Include star status for bias
                                 })
                     except Exception as e:
                         self.logger.debug(f"Error getting complete database: {e}")
@@ -209,7 +215,7 @@ class PathCommand(BaseCommand):
                             query = '''
                                 SELECT name, public_key, device_type, last_heard, last_heard as last_seen, 
                                        last_advert_timestamp, latitude, longitude, city, state, country,
-                                       advert_count, signal_strength, hop_count, role
+                                       advert_count, signal_strength, hop_count, role, is_starred
                                 FROM complete_contact_tracking 
                                 WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
                                 AND (
@@ -222,7 +228,7 @@ class PathCommand(BaseCommand):
                             query = '''
                                 SELECT name, public_key, device_type, last_heard, last_heard as last_seen, 
                                        last_advert_timestamp, latitude, longitude, city, state, country,
-                                       advert_count, signal_strength, hop_count, role
+                                       advert_count, signal_strength, hop_count, role, is_starred
                                 FROM complete_contact_tracking 
                                 WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
                                 ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
@@ -250,7 +256,8 @@ class PathCommand(BaseCommand):
                                     'advert_count': row.get('advert_count', 0),
                                     'signal_strength': row.get('signal_strength'),
                                     'hop_count': row.get('hop_count'),
-                                    'role': row.get('role')
+                                    'role': row.get('role'),
+                                    'is_starred': bool(row.get('is_starred', 0))  # Include star status for bias
                                 } for row in results
                             ]
                     except Exception as e:
@@ -272,7 +279,8 @@ class PathCommand(BaseCommand):
                             'longitude': row['longitude'],
                             'city': row['city'],
                             'state': row['state'],
-                            'country': row['country']
+                            'country': row['country'],
+                            'is_starred': row.get('is_starred', False)  # Include star status for bias
                         } for row in results
                     ]
                     
@@ -510,6 +518,12 @@ class PathCommand(BaseCommand):
             
             # Use configurable weighting (default: 40% recency, 60% proximity)
             combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
+            
+            # Apply star bias multiplier if repeater is starred
+            if repeater.get('is_starred', False):
+                combined_score *= self.star_bias_multiplier
+                self.logger.debug(f"Applied star bias ({self.star_bias_multiplier}x) to {repeater.get('name', 'unknown')}")
+            
             combined_scores.append((combined_score, distance, repeater))
         
         if not combined_scores:
@@ -805,22 +819,22 @@ class PathCommand(BaseCommand):
             # Use last_advert_timestamp if available, otherwise fall back to last_heard
             if self.max_repeater_age_days > 0:
                 query = '''
-                    SELECT latitude, longitude FROM complete_contact_tracking 
+                    SELECT latitude, longitude, is_starred FROM complete_contact_tracking 
                     WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
                     AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
                     AND (
                         (last_advert_timestamp IS NOT NULL AND last_advert_timestamp >= datetime('now', '-{} days'))
                         OR (last_advert_timestamp IS NULL AND last_heard >= datetime('now', '-{} days'))
                     )
-                    ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
+                    ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
                     LIMIT 1
                 '''.format(self.max_repeater_age_days, self.max_repeater_age_days)
             else:
                 query = '''
-                    SELECT latitude, longitude FROM complete_contact_tracking 
+                    SELECT latitude, longitude, is_starred FROM complete_contact_tracking 
                     WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
                     AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
-                    ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
+                    ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
                     LIMIT 1
                 '''
             
@@ -870,6 +884,11 @@ class PathCommand(BaseCommand):
             
             # Use configurable weighting (default: 40% recency, 60% proximity)
             combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
+            
+            # Apply star bias multiplier if repeater is starred
+            if repeater.get('is_starred', False):
+                combined_score *= self.star_bias_multiplier
+                self.logger.debug(f"Applied star bias ({self.star_bias_multiplier}x) to {repeater.get('name', 'unknown')}")
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
@@ -927,6 +946,11 @@ class PathCommand(BaseCommand):
             
             # Use configurable weighting (default: 40% recency, 60% proximity)
             combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
+            
+            # Apply star bias multiplier if repeater is starred
+            if repeater.get('is_starred', False):
+                combined_score *= self.star_bias_multiplier
+                self.logger.debug(f"Applied star bias ({self.star_bias_multiplier}x) to {repeater.get('name', 'unknown')}")
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score

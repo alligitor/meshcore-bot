@@ -91,8 +91,8 @@ class DBManager:
             self.logger.error(f"Error getting cached geocoding: {e}")
             return None, None
     
-    def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 24):
-        """Cache geocoding result for future use"""
+    def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 720):
+        """Cache geocoding result for future use (default: 30 days)"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -148,8 +148,8 @@ class DBManager:
                 return None
         return None
     
-    def cache_json(self, cache_key: str, cache_value: Dict, cache_type: str, cache_hours: int = 24):
-        """Cache a JSON value for future use"""
+    def cache_json(self, cache_key: str, cache_value: Dict, cache_type: str, cache_hours: int = 720):
+        """Cache a JSON value for future use (default: 30 days for geolocation)"""
         try:
             json_str = json.dumps(cache_value)
             self.cache_value(cache_key, json_str, cache_type, cache_hours)

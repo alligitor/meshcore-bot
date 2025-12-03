@@ -58,7 +58,7 @@
 
 <!-- Network Activity Overview -->
 <div class="row mb-4">
-    <div class="col-md-4">
+    <div class="col-md-6">
         <div class="card">
             <div class="card-header">
                 <i class="fas fa-users"></i> Active Contacts
@@ -82,31 +82,7 @@
         </div>
     </div>
     
-    <div class="col-md-4">
-        <div class="card">
-            <div class="card-header">
-                <i class="fas fa-broadcast-tower"></i> Advertisements
-            </div>
-            <div class="card-body">
-                <div class="row text-center">
-                    <div class="col-4">
-                        <h4 id="advertisements-24h" class="text-primary">0</h4>
-                        <small class="text-muted">24h</small>
-                    </div>
-                    <div class="col-4">
-                        <h4 id="advertisements-7d" class="text-info">0</h4>
-                        <small class="text-muted">7d</small>
-                    </div>
-                    <div class="col-4">
-                        <h4 id="total-advertisements" class="text-success">0</h4>
-                        <small class="text-muted">All</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-4">
+    <div class="col-md-6">
         <div class="card">
             <div class="card-header">
                 <i class="fas fa-network-wired"></i> Network Health
@@ -131,29 +107,9 @@
     </div>
 </div>
 
-<!-- Network Performance - Three Columns -->
+<!-- Network Performance - Two Columns -->
 <div class="row mb-4">
-    <div class="col-md-4">
-        <div class="card h-100">
-            <div class="card-header">
-                <i class="fas fa-signal"></i> Signal Quality
-            </div>
-            <div class="card-body">
-                <div class="row text-center">
-                    <div class="col-6">
-                        <h4 id="avg-snr-24h" class="text-success">0</h4>
-                        <small class="text-muted">Avg SNR (24h)</small>
-                    </div>
-                    <div class="col-6">
-                        <h4 id="avg-signal-strength-24h" class="text-info">0</h4>
-                        <small class="text-muted">Avg Signal (24h)</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-4">
+    <div class="col-md-6">
         <div class="card h-100">
             <div class="card-header">
                 <i class="fas fa-globe"></i> Geographic Coverage
@@ -177,7 +133,7 @@
         </div>
     </div>
     
-    <div class="col-md-4">
+    <div class="col-md-6">
         <div class="card h-100">
             <div class="card-header">
                 <i class="fas fa-hashtag"></i> Channel Statistics
@@ -203,7 +159,7 @@
     <div class="col-md-4">
         <div class="card h-100">
             <div class="card-header">
-                <i class="fas fa-users"></i> User Statistics
+                <i class="fas fa-users"></i> Bot User Statistics
             </div>
             <div class="card-body text-center">
                 <div class="row text-center">
@@ -265,8 +221,16 @@
 <div class="row mb-4" id="analytics-section">
     <div class="col-12 col-md-6 col-lg-3">
         <div class="card h-100">
-            <div class="card-header">
-                <i class="fas fa-trophy"></i> Most Popular Commands
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="fas fa-trophy"></i> Most Popular Commands
+                </div>
+                <select id="top-commands-time-window" class="form-select form-select-sm" style="width: auto; font-size: 0.75rem;">
+                    <option value="24h">24h</option>
+                    <option value="7d">7d</option>
+                    <option value="30d">30d</option>
+                    <option value="all" selected>All</option>
+                </select>
             </div>
             <div class="card-body">
                 <div id="top-commands-list">
@@ -278,8 +242,16 @@
     
     <div class="col-12 col-md-6 col-lg-3">
         <div class="card h-100">
-            <div class="card-header">
-                <i class="fas fa-users"></i> Most Active Users
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="fas fa-users"></i> Most Active Users
+                </div>
+                <select id="top-users-time-window" class="form-select form-select-sm" style="width: auto; font-size: 0.75rem;">
+                    <option value="24h">24h</option>
+                    <option value="7d">7d</option>
+                    <option value="30d">30d</option>
+                    <option value="all" selected>All</option>
+                </select>
             </div>
             <div class="card-body">
                 <div id="top-users-list">
@@ -291,8 +263,16 @@
     
     <div class="col-12 col-md-6 col-lg-3">
         <div class="card h-100">
-            <div class="card-header">
-                <i class="fas fa-route"></i> Longest Network Paths
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="fas fa-route"></i> Longest Paths
+                </div>
+                <select id="longest-paths-time-window" class="form-select form-select-sm" style="width: auto; font-size: 0.75rem;">
+                    <option value="24h">24h</option>
+                    <option value="7d">7d</option>
+                    <option value="30d">30d</option>
+                    <option value="all" selected>All</option>
+                </select>
             </div>
             <div class="card-body">
                 <div id="longest-paths-list">
@@ -304,8 +284,16 @@
     
     <div class="col-12 col-md-6 col-lg-3">
         <div class="card h-100">
-            <div class="card-header">
-                <i class="fas fa-hashtag"></i> Top Channels
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="fas fa-hashtag"></i> Top Channels
+                </div>
+                <select id="top-channels-time-window" class="form-select form-select-sm" style="width: auto; font-size: 0.75rem;">
+                    <option value="24h">24h</option>
+                    <option value="7d">7d</option>
+                    <option value="30d">30d</option>
+                    <option value="all" selected>All</option>
+                </select>
             </div>
             <div class="card-body">
                 <div id="top-channels-list">
@@ -336,6 +324,41 @@ class ModernDashboard {
         this.startAutoRefresh();
         this.updateUptime();
         this.updateTimestamp();
+        this.setupTimeWindowSelector();
+    }
+    
+    setupTimeWindowSelector() {
+        // Setup selector for Most Active Users
+        const usersSelector = document.getElementById('top-users-time-window');
+        if (usersSelector) {
+            usersSelector.addEventListener('change', (e) => {
+                this.loadTopUsers(e.target.value);
+            });
+        }
+        
+        // Setup selector for Most Popular Commands
+        const commandsSelector = document.getElementById('top-commands-time-window');
+        if (commandsSelector) {
+            commandsSelector.addEventListener('change', (e) => {
+                this.loadTopCommands(e.target.value);
+            });
+        }
+        
+        // Setup selector for Longest Paths
+        const pathsSelector = document.getElementById('longest-paths-time-window');
+        if (pathsSelector) {
+            pathsSelector.addEventListener('change', (e) => {
+                this.loadLongestPaths(e.target.value);
+            });
+        }
+        
+        // Setup selector for Top Channels
+        const channelsSelector = document.getElementById('top-channels-time-window');
+        if (channelsSelector) {
+            channelsSelector.addEventListener('change', (e) => {
+                this.loadTopChannels(e.target.value);
+            });
+        }
     }
     
     async loadDashboardData() {
@@ -369,6 +392,17 @@ class ModernDashboard {
             // Update all metrics
             this.updateMetrics(statsData);
             
+            // Load analytics with default time windows
+            const usersTimeWindow = document.getElementById('top-users-time-window')?.value || 'all';
+            const commandsTimeWindow = document.getElementById('top-commands-time-window')?.value || 'all';
+            const pathsTimeWindow = document.getElementById('longest-paths-time-window')?.value || 'all';
+            const channelsTimeWindow = document.getElementById('top-channels-time-window')?.value || 'all';
+            
+            this.loadTopUsers(usersTimeWindow);
+            this.loadTopCommands(commandsTimeWindow);
+            this.loadLongestPaths(pathsTimeWindow);
+            this.loadTopChannels(channelsTimeWindow);
+            
             // Update database status
             this.updateDatabaseStatus('Connected', 'success');
             
@@ -397,15 +431,8 @@ class ModernDashboard {
         this.updateElement('contacts-7d', data.contacts_7d);
         this.updateElement('tracked-contacts', data.tracked_contacts);
         
-        this.updateElement('total-advertisements', data.total_advertisements);
-        this.updateElement('advertisements-24h', data.advertisements_24h);
-        this.updateElement('advertisements-7d', data.advertisements_7d);
-        
         this.updateElement('avg-hop-count', data.avg_hop_count);
         this.updateElement('max-hop-count', data.max_hop_count);
-        
-        this.updateElement('avg-snr-24h', data.avg_snr_24h);
-        this.updateElement('avg-signal-strength-24h', data.avg_signal_strength_24h);
         
         this.updateElement('countries', data.countries);
         this.updateElement('states', data.states);
@@ -427,34 +454,7 @@ class ModernDashboard {
         this.updateElement('unique-channels-total', data.unique_channels_total);
         this.updateElement('bot-reply-rate', data.bot_reply_rate ? `${data.bot_reply_rate}%` : '0%');
         
-        // Analytics section - show if any analytics have data
-        let hasAnalytics = false;
-        
-        // Top commands
-        if (data.top_commands && data.top_commands.length > 0) {
-            this.updateTopCommands(data.top_commands);
-            hasAnalytics = true;
-        }
-        
-        // Top users
-        if (data.top_users && data.top_users.length > 0) {
-            this.updateTopUsers(data.top_users);
-            hasAnalytics = true;
-        }
-        
-        // Longest paths
-        if (data.top_paths && data.top_paths.length > 0) {
-            this.updateLongestPaths(data.top_paths);
-            hasAnalytics = true;
-        }
-        
-        // Top channels
-        if (data.top_channels && data.top_channels.length > 0) {
-            this.updateTopChannels(data.top_channels);
-            hasAnalytics = true;
-        }
-        
-        // Analytics section is always visible - no need to control display
+        // Analytics are loaded separately with time window selectors
     }
     
     updateElement(elementId, value) {
@@ -463,6 +463,27 @@ class ModernDashboard {
             element.textContent = value || 0;
         } else {
             console.error(`Element ${elementId} not found!`);
+        }
+    }
+    
+    async loadTopCommands(timeWindow = 'all') {
+        try {
+            const response = await fetch(`/api/stats?top_commands_window=${timeWindow}`);
+            const data = await response.json();
+            
+            if (data.error) {
+                console.error('Error loading top commands:', data.error);
+                return;
+            }
+            
+            if (data.top_commands && data.top_commands.length > 0) {
+                this.updateTopCommands(data.top_commands);
+            } else {
+                const container = document.getElementById('top-commands-list');
+                container.innerHTML = '<div class="text-muted text-center">No commands found</div>';
+            }
+        } catch (error) {
+            console.error('Error loading top commands:', error);
         }
     }
     
@@ -479,6 +500,27 @@ class ModernDashboard {
         `).join('');
     }
     
+    async loadTopUsers(timeWindow = 'all') {
+        try {
+            const response = await fetch(`/api/stats?top_users_window=${timeWindow}`);
+            const data = await response.json();
+            
+            if (data.error) {
+                console.error('Error loading top users:', data.error);
+                return;
+            }
+            
+            if (data.top_users && data.top_users.length > 0) {
+                this.updateTopUsers(data.top_users);
+            } else {
+                const container = document.getElementById('top-users-list');
+                container.innerHTML = '<div class="text-muted text-center">No users found</div>';
+            }
+        } catch (error) {
+            console.error('Error loading top users:', error);
+        }
+    }
+    
     updateTopUsers(users) {
         const container = document.getElementById('top-users-list');
         container.innerHTML = users.map((user, index) => `
@@ -490,6 +532,27 @@ class ModernDashboard {
                 <span class="badge bg-info">${user.count} messages</span>
             </div>
         `).join('');
+    }
+    
+    async loadLongestPaths(timeWindow = 'all') {
+        try {
+            const response = await fetch(`/api/stats?top_paths_window=${timeWindow}`);
+            const data = await response.json();
+            
+            if (data.error) {
+                console.error('Error loading longest paths:', data.error);
+                return;
+            }
+            
+            if (data.top_paths && data.top_paths.length > 0) {
+                this.updateLongestPaths(data.top_paths);
+            } else {
+                const container = document.getElementById('longest-paths-list');
+                container.innerHTML = '<div class="text-muted text-center">No paths found</div>';
+            }
+        } catch (error) {
+            console.error('Error loading longest paths:', error);
+        }
     }
     
     updateLongestPaths(paths) {
@@ -509,6 +572,27 @@ class ModernDashboard {
                 </div>
             </div>
         `).join('');
+    }
+    
+    async loadTopChannels(timeWindow = 'all') {
+        try {
+            const response = await fetch(`/api/stats?top_channels_window=${timeWindow}`);
+            const data = await response.json();
+            
+            if (data.error) {
+                console.error('Error loading top channels:', data.error);
+                return;
+            }
+            
+            if (data.top_channels && data.top_channels.length > 0) {
+                this.updateTopChannels(data.top_channels);
+            } else {
+                const container = document.getElementById('top-channels-list');
+                container.innerHTML = '<div class="text-muted text-center">No channels found</div>';
+            }
+        } catch (error) {
+            console.error('Error loading top channels:', error);
+        }
     }
     
     updateTopChannels(channels) {

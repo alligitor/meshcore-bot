@@ -114,7 +114,7 @@ class TestCommand(BaseCommand):
             # Query for all repeaters with matching prefix
             query = '''
                 SELECT latitude, longitude, public_key, name,
-                       last_advert_timestamp, last_heard, advert_count
+                       last_advert_timestamp, last_heard, advert_count, is_starred
                 FROM complete_contact_tracking 
                 WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
                 AND latitude IS NOT NULL AND longitude IS NOT NULL
@@ -137,7 +137,8 @@ class TestCommand(BaseCommand):
                     'name': row.get('name'),
                     'last_advert_timestamp': row.get('last_advert_timestamp'),
                     'last_heard': row.get('last_heard'),
-                    'advert_count': row.get('advert_count', 0)
+                    'advert_count': row.get('advert_count', 0),
+                    'is_starred': bool(row.get('is_starred', 0))
                 })
             
             # If only one repeater, return it
@@ -221,7 +222,7 @@ class TestCommand(BaseCommand):
                 WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
                 AND latitude IS NOT NULL AND longitude IS NOT NULL
                 AND latitude != 0 AND longitude != 0
-                ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
+                ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
                 LIMIT 1
             '''
             
@@ -315,6 +316,11 @@ class TestCommand(BaseCommand):
             # Weight: 40% recency, 60% proximity
             combined_score = (recency_score * 0.4) + (proximity_score * 0.6)
             
+            # Apply star bias multiplier if repeater is starred (use same config as path command)
+            star_bias_multiplier = self.bot.config.getfloat('Path_Command', 'star_bias_multiplier', fallback=2.5)
+            if repeater.get('is_starred', False):
+                combined_score *= star_bias_multiplier
+            
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
                 best_repeater = repeater
@@ -345,6 +351,11 @@ class TestCommand(BaseCommand):
             
             # Weight: 40% recency, 60% proximity
             combined_score = (recency_score * 0.4) + (proximity_score * 0.6)
+            
+            # Apply star bias multiplier if repeater is starred (use same config as path command)
+            star_bias_multiplier = self.bot.config.getfloat('Path_Command', 'star_bias_multiplier', fallback=2.5)
+            if repeater.get('is_starred', False):
+                combined_score *= star_bias_multiplier
             
             if combined_score > best_combined_score:
                 best_combined_score = combined_score

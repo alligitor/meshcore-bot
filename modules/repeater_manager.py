@@ -7,10 +7,12 @@ Manages a database of repeater contacts and provides purging functionality
 import sqlite3
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from meshcore import EventType
+from .utils import rate_limited_nominatim_reverse_sync
 
 
 
@@ -41,6 +43,10 @@ class RepeaterManager:
         self.companion_dm_threshold_days = bot.config.getint('Companion_Purge', 'companion_dm_threshold_days', fallback=30)
         self.companion_advert_threshold_days = bot.config.getint('Companion_Purge', 'companion_advert_threshold_days', fallback=30)
         self.companion_min_inactive_days = bot.config.getint('Companion_Purge', 'companion_min_inactive_days', fallback=30)
+        
+        # Geocoding cache: packet_hash -> timestamp (to prevent duplicate geocoding within 1 minute)
+        self.geocoding_cache = {}
+        self.geocoding_cache_window = 60  # 1 minute window
     
     def _init_repeater_tables(self):
         """Initialize repeater-specific database tables"""
@@ -175,12 +181,18 @@ class RepeaterManager:
                         cursor.execute(f"ALTER TABLE complete_contact_tracking ADD COLUMN {column_name} {column_type}")
                         conn.commit()
                 
+                # Add is_starred column for path command bias
+                if 'is_starred' not in tracking_columns:
+                    self.logger.info("Adding is_starred column to complete_contact_tracking")
+                    cursor.execute("ALTER TABLE complete_contact_tracking ADD COLUMN is_starred BOOLEAN DEFAULT 0")
+                    conn.commit()
+                
                 self.logger.info("Database schema migration completed")
                 
         except Exception as e:
             self.logger.error(f"Error during database schema migration: {e}")
     
-    async def track_contact_advertisement(self, advert_data: Dict, signal_info: Dict = None) -> bool:
+    async def track_contact_advertisement(self, advert_data: Dict, signal_info: Dict = None, packet_hash: Optional[str] = None) -> bool:
         """Track any contact advertisement in the complete tracking database"""
         try:
             # Extract basic information
@@ -231,13 +243,18 @@ class RepeaterManager:
             
             # Check if we need to perform geocoding based on location changes
             existing_data = existing[0] if existing else None
-            should_geocode, location_info = self._should_geocode_location(location_info, existing_data, name)
+            should_geocode, location_info = self._should_geocode_location(location_info, existing_data, name, packet_hash)
             
             # Re-extract location data with geocoding if needed
             if should_geocode:
                 self.logger.debug(f"📍 Re-extracting location data with geocoding for {name}")
-                location_info = self._extract_location_data(advert_data, should_geocode=True)
+                location_info = self._extract_location_data(advert_data, should_geocode=True, packet_hash=packet_hash)
                 self.logger.debug(f"📍 Location data with geocoding: {location_info}")
+                
+                # Update geocoding cache if we have a valid packet_hash (skip invalid/default hashes)
+                if packet_hash and packet_hash != "0000000000000000" and location_info.get('latitude') and location_info.get('longitude'):
+                    self.geocoding_cache[packet_hash] = time.time()
+                    self.logger.debug(f"📍 Cached geocoding for packet_hash {packet_hash[:16]}...")
             
             if existing:
                 # Update existing entry
@@ -444,7 +461,7 @@ class RepeaterManager:
                     query = '''
                         SELECT public_key, name, role, device_type, first_heard, last_heard, 
                                advert_count, latitude, longitude, city, state, country,
-                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp, is_starred
                         FROM complete_contact_tracking
                         WHERE role = ?
                         ORDER BY last_heard DESC
@@ -455,7 +472,7 @@ class RepeaterManager:
                     query = '''
                         SELECT public_key, name, role, device_type, first_heard, last_heard, 
                                advert_count, latitude, longitude, city, state, country,
-                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp
+                               signal_strength, hop_count, is_currently_tracked, last_advert_timestamp, is_starred
                         FROM complete_contact_tracking
                         ORDER BY last_heard DESC
                     '''
@@ -955,7 +972,7 @@ class RepeaterManager:
             self.logger.error(f"Error getting companions for purging: {e}")
             return []
     
-    def _extract_location_data(self, contact_data: Dict, should_geocode: bool = True) -> Dict[str, Optional[str]]:
+    def _extract_location_data(self, contact_data: Dict, should_geocode: bool = True, packet_hash: Optional[str] = None) -> Dict[str, Optional[str]]:
         """Extract location data from contact_data JSON"""
         location_info = {
             'latitude': None,
@@ -1077,13 +1094,13 @@ class RepeaterManager:
                     # Valid coordinates - try reverse geocoding if we don't have city/state/country and geocoding is enabled
                     if should_geocode and (not location_info['city'] or not location_info['state'] or not location_info['country']):
                         try:
-                            # Use reverse geocoding to get city/state/country
-                            city = self._get_city_from_coordinates(lat, lon)
+                            # Use reverse geocoding to get city/state/country (pass packet_hash to prevent duplicate API calls)
+                            city = self._get_city_from_coordinates(lat, lon, packet_hash=packet_hash)
                             if city:
                                 location_info['city'] = city
                             
-                            # Get state and country from coordinates
-                            state, country = self._get_state_country_from_coordinates(lat, lon)
+                            # Get state and country from coordinates (pass packet_hash to prevent duplicate API calls)
+                            state, country = self._get_state_country_from_coordinates(lat, lon, packet_hash=packet_hash)
                             if state:
                                 location_info['state'] = state
                             if country:
@@ -1099,7 +1116,7 @@ class RepeaterManager:
         
         return location_info
 
-    def _should_geocode_location(self, location_info: Dict, existing_data: Dict = None, name: str = "Unknown") -> tuple[bool, Dict]:
+    def _should_geocode_location(self, location_info: Dict, existing_data: Dict = None, name: str = "Unknown", packet_hash: Optional[str] = None) -> tuple[bool, Dict]:
         """
         Determine if geocoding should be performed based on location changes.
         
@@ -1107,12 +1124,35 @@ class RepeaterManager:
             location_info: New location data extracted from advert
             existing_data: Existing location data from database (optional)
             name: Contact name for logging
+            packet_hash: Optional packet hash to prevent duplicate geocoding within time window
             
         Returns:
             tuple: (should_geocode: bool, updated_location_info: Dict)
         """
         should_geocode = False
         updated_location_info = location_info.copy()
+        
+        # Clean up old cache entries (older than cache window)
+        current_time = time.time()
+        expired_keys = [
+            key for key, timestamp in self.geocoding_cache.items()
+            if current_time - timestamp > self.geocoding_cache_window
+        ]
+        for key in expired_keys:
+            del self.geocoding_cache[key]
+        
+        # Check packet hash cache first - if we've geocoded this packet recently, skip
+        # Skip caching for invalid/default packet hashes (all zeros)
+        if packet_hash and packet_hash != "0000000000000000" and packet_hash in self.geocoding_cache:
+            cache_age = current_time - self.geocoding_cache[packet_hash]
+            if cache_age < self.geocoding_cache_window:
+                self.logger.debug(f"📍 Skipping geocoding for packet_hash {packet_hash[:16]}... (geocoded {cache_age:.1f}s ago)")
+                # Use existing location data if available, otherwise return as-is
+                if existing_data:
+                    updated_location_info['city'] = existing_data.get('city')
+                    updated_location_info['state'] = existing_data.get('state')
+                    updated_location_info['country'] = existing_data.get('country')
+                return False, updated_location_info
         
         # If no existing data, only geocode if we have valid coordinates but missing location data
         if not existing_data:
@@ -1216,21 +1256,31 @@ class RepeaterManager:
         
         return None
 
-    def _get_state_country_from_coordinates(self, latitude: float, longitude: float) -> tuple[Optional[str], Optional[str]]:
+    def _get_state_country_from_coordinates(self, latitude: float, longitude: float, packet_hash: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Get state and country from coordinates using reverse geocoding"""
+        # Check packet hash cache first to prevent duplicate API calls
+        if packet_hash and packet_hash != "0000000000000000":
+            current_time = time.time()
+            if packet_hash in self.geocoding_cache:
+                cache_age = current_time - self.geocoding_cache[packet_hash]
+                if cache_age < self.geocoding_cache_window:
+                    # Check database for state/country data
+                    existing_data = self._get_existing_geocoded_data(latitude, longitude)
+                    if existing_data:
+                        return existing_data.get('state'), existing_data.get('country')
+                    # If no data in database, return None (don't make API call)
+                    return None, None
+        
         # Check database first to avoid duplicate API calls
         existing_data = self._get_existing_geocoded_data(latitude, longitude)
         if existing_data:
             return existing_data.get('state'), existing_data.get('country')
         
         try:
-            from geopy.geocoders import Nominatim
-            
-            # Initialize geocoder with proper timeout
-            geolocator = Nominatim(user_agent="meshcore-bot", timeout=10)
-            
-            # Perform reverse geocoding
-            location = geolocator.reverse(f"{latitude}, {longitude}")
+            # Use rate-limited Nominatim reverse geocoding
+            location = rate_limited_nominatim_reverse_sync(
+                self.bot, f"{latitude}, {longitude}", timeout=10
+            )
             if location:
                 address = location.raw.get('address', {})
                 
@@ -1249,21 +1299,31 @@ class RepeaterManager:
         
         return None, None
 
-    def _get_city_from_coordinates(self, latitude: float, longitude: float) -> Optional[str]:
+    def _get_city_from_coordinates(self, latitude: float, longitude: float, packet_hash: Optional[str] = None) -> Optional[str]:
         """Get city name from coordinates using reverse geocoding, with neighborhood for large cities"""
+        # Check packet hash cache first to prevent duplicate API calls
+        if packet_hash and packet_hash != "0000000000000000":
+            current_time = time.time()
+            if packet_hash in self.geocoding_cache:
+                cache_age = current_time - self.geocoding_cache[packet_hash]
+                if cache_age < self.geocoding_cache_window:
+                    # Check database for city data
+                    existing_data = self._get_existing_geocoded_data(latitude, longitude)
+                    if existing_data and existing_data.get('city'):
+                        return existing_data.get('city')
+                    # If no city in database, return None (don't make API call)
+                    return None
+        
         # Check database first to avoid duplicate API calls
         existing_data = self._get_existing_geocoded_data(latitude, longitude)
         if existing_data and existing_data.get('city'):
             return existing_data.get('city')
         
         try:
-            from geopy.geocoders import Nominatim
-            
-            # Initialize geocoder with proper timeout
-            geolocator = Nominatim(user_agent="meshcore-bot", timeout=10)
-            
-            # Perform reverse geocoding
-            location = geolocator.reverse(f"{latitude}, {longitude}")
+            # Use rate-limited Nominatim reverse geocoding
+            location = rate_limited_nominatim_reverse_sync(
+                self.bot, f"{latitude}, {longitude}", timeout=10
+            )
             if location:
                 address = location.raw.get('address', {})
                 
@@ -1289,7 +1349,7 @@ class RepeaterManager:
             self.logger.debug(f"Error getting city from coordinates {latitude}, {longitude}: {e}")
             return None
     
-    def _get_full_location_from_coordinates(self, latitude: float, longitude: float) -> Dict[str, Optional[str]]:
+    def _get_full_location_from_coordinates(self, latitude: float, longitude: float, packet_hash: Optional[str] = None) -> Dict[str, Optional[str]]:
         """Get complete location information (city, state, country) from coordinates using reverse geocoding"""
         location_info = {
             'city': None,
@@ -1308,6 +1368,20 @@ class RepeaterManager:
                 self.logger.debug(f"Skipping geocoding for invalid coordinates: {latitude}, {longitude}")
                 return location_info
             
+            # Check packet hash cache first (before database check)
+            if packet_hash and packet_hash != "0000000000000000":
+                current_time = time.time()
+                if packet_hash in self.geocoding_cache:
+                    cache_age = current_time - self.geocoding_cache[packet_hash]
+                    if cache_age < self.geocoding_cache_window:
+                        self.logger.debug(f"📍 Skipping geocoding API call for packet_hash {packet_hash[:16]}... (geocoded {cache_age:.1f}s ago)")
+                        # Still check database for location data
+                        existing_data = self._get_existing_geocoded_data(latitude, longitude)
+                        if existing_data:
+                            return existing_data
+                        # If no database data, return empty (don't make API call)
+                        return location_info
+            
             # Check database first for existing geocoded data
             existing_data = self._get_existing_geocoded_data(latitude, longitude)
             if existing_data:
@@ -1321,17 +1395,11 @@ class RepeaterManager:
                 self.logger.debug(f"Using cached location data for {latitude}, {longitude}")
                 return cached_result
             
-            from geopy.geocoders import Nominatim
-            
-            # Initialize geocoder with proper user agent and timeout
-            geolocator = Nominatim(
-                user_agent="meshcore-bot-geolocation-update",
-                timeout=10  # 10 second timeout
-            )
-            
-            # Perform reverse geocoding
+            # Use rate-limited Nominatim reverse geocoding
             self.logger.debug(f"Calling Nominatim reverse geocoding for {latitude}, {longitude}")
-            location = geolocator.reverse(f"{latitude}, {longitude}")
+            location = rate_limited_nominatim_reverse_sync(
+                self.bot, f"{latitude}, {longitude}", timeout=10
+            )
             
             if location:
                 address = location.raw.get('address', {})
@@ -1372,8 +1440,8 @@ class RepeaterManager:
             else:
                 self.logger.warning(f"Geocoding API returned no location for {latitude}, {longitude}")
             
-            # Cache the result for 24 hours to avoid duplicate API calls
-            self.db_manager.cache_json(cache_key, location_info, "geolocation", cache_hours=24)
+            # Cache the result for 30 days - geolocation data is very stable
+            self.db_manager.cache_json(cache_key, location_info, "geolocation", cache_hours=720)
             
             return location_info
             
@@ -3394,8 +3462,8 @@ class RepeaterManager:
         """Get cached geocoding result for a query"""
         return self.db_manager.get_cached_geocoding(query)
     
-    def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 24):
-        """Cache geocoding result for future use"""
+    def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 720):
+        """Cache geocoding result for future use (default: 30 days)"""
         self.db_manager.cache_geocoding(query, latitude, longitude, cache_hours)
     
     def cleanup_geocoding_cache(self):
@@ -3459,7 +3527,7 @@ class RepeaterManager:
                 
                 try:
                     # Get full location information from coordinates
-                    location_info = self._get_full_location_from_coordinates(latitude, longitude)
+                    location_info = self._get_full_location_from_coordinates(latitude, longitude, packet_hash=None)
                     
                     # Debug logging to see what we got
                     self.logger.debug(f"Geocoding result for {name}: city='{location_info['city']}', state='{location_info['state']}', country='{location_info['country']}'")

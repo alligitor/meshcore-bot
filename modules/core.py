@@ -25,7 +25,7 @@ from meshcore import EventType
 from meshcore_cli.meshcore_cli import send_cmd, send_chan_msg
 
 # Import our modules
-from .rate_limiter import RateLimiter, BotTxRateLimiter
+from .rate_limiter import RateLimiter, BotTxRateLimiter, NominatimRateLimiter
 from .message_handler import MessageHandler
 from .command_manager import CommandManager
 from .channel_manager import ChannelManager
@@ -90,6 +90,10 @@ class MeshCoreBot:
         self.bot_tx_rate_limiter = BotTxRateLimiter(
             self.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
         )
+        # Nominatim rate limiter: 1.1 seconds between requests (Nominatim policy: max 1 req/sec)
+        self.nominatim_rate_limiter = NominatimRateLimiter(
+            self.config.getfloat('Bot', 'nominatim_rate_limit_seconds', fallback=1.1)
+        )
         self.tx_delay_ms = self.config.getint('Bot', 'tx_delay_ms', fallback=250)
         
         # Initialize translator for localization BEFORE CommandManager
@@ -114,7 +118,11 @@ class MeshCoreBot:
         
         self.message_handler = MessageHandler(self)
         self.command_manager = CommandManager(self)
-        self.channel_manager = ChannelManager(self)
+        
+        # Load max_channels from config (default 40, MeshCore supports up to 40 channels)
+        max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
+        self.channel_manager = ChannelManager(self, max_channels=max_channels)
+        
         self.scheduler = MessageScheduler(self)
         
         # Initialize repeater manager
@@ -234,6 +242,24 @@ bot_latitude = 40.7128
 # Example: -74.0060 for New York City, -123.00 for Victoria BC
 bot_longitude = -74.0060
 
+# Interval-based advertising settings
+# Send periodic flood adverts at specified intervals
+# 0: Disabled (default)
+# >0: Send flood advert every N hours
+advert_interval_hours = 0
+
+# Send startup advert when bot finishes initializing
+# false: No startup advert (default)
+# zero-hop: Send local broadcast advert
+# flood: Send network-wide flood advert
+startup_advert = false
+
+# Auto-manage contact list when new contacts are discovered
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
+auto_manage_contacts = false
+
 [Jokes]
 # Enable or disable the joke command
 # true: Joke command is available
@@ -255,18 +281,6 @@ dadjoke_enabled = true
 # false: Fetch new jokes until we get a short one
 # true: Split long jokes into multiple messages
 long_jokes = false
-
-# Send startup advert when bot finishes initializing
-# false: No startup advert (default)
-# zero-hop: Send local broadcast advert
-# flood: Send network-wide flood advert
-startup_advert = false
-
-# Auto-manage contact list when new contacts are discovered
-# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
-# bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
-# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = false
 
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands
