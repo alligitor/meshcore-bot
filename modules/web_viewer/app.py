@@ -229,6 +229,11 @@ class BotDataViewer:
             """Statistics page"""
             return render_template('stats.html')
         
+        @self.app.route('/greeter')
+        def greeter():
+            """Greeter management page"""
+            return render_template('greeter.html')
+        
         
         # API Routes
         @self.app.route('/api/health')
@@ -597,6 +602,280 @@ class BotDataViewer:
             except Exception as e:
                 self.logger.error(f"Error deleting contact: {e}", exc_info=True)
                 return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/greeter')
+        def api_greeter():
+            """Get greeter data including rollout status, settings, and greeted users"""
+            try:
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                
+                # Check if greeter tables exist
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='greeter_rollout'")
+                if not cursor.fetchone():
+                    conn.close()
+                    return jsonify({
+                        'enabled': False,
+                        'rollout_active': False,
+                        'settings': {},
+                        'greeted_users': [],
+                        'error': 'Greeter tables not found'
+                    })
+                
+                # Get active rollout status
+                cursor.execute('''
+                    SELECT id, rollout_started_at, rollout_days, rollout_completed,
+                           datetime(rollout_started_at, '+' || rollout_days || ' days') as end_date,
+                           datetime('now') as current_time
+                    FROM greeter_rollout
+                    WHERE rollout_completed = 0
+                    ORDER BY rollout_started_at DESC
+                    LIMIT 1
+                ''')
+                rollout = cursor.fetchone()
+                
+                rollout_active = False
+                rollout_data = None
+                time_remaining = None
+                
+                if rollout:
+                    rollout_id = rollout['id']
+                    started_at_str = rollout['rollout_started_at']
+                    rollout_days = rollout['rollout_days']
+                    end_date_str = rollout['end_date']
+                    current_time_str = rollout['current_time']
+                    
+                    end_date = datetime.fromisoformat(end_date_str)
+                    current_time = datetime.fromisoformat(current_time_str)
+                    
+                    if current_time < end_date:
+                        rollout_active = True
+                        remaining_seconds = (end_date - current_time).total_seconds()
+                        time_remaining = {
+                            'days': int(remaining_seconds // 86400),
+                            'hours': int((remaining_seconds % 86400) // 3600),
+                            'minutes': int((remaining_seconds % 3600) // 60),
+                            'seconds': int(remaining_seconds % 60),
+                            'total_seconds': int(remaining_seconds)
+                        }
+                        rollout_data = {
+                            'id': rollout_id,
+                            'started_at': started_at_str,
+                            'days': rollout_days,
+                            'end_date': end_date_str
+                        }
+                
+                # Get greeter settings from config
+                settings = {
+                    'enabled': self.config.getboolean('Greeter_Command', 'enabled', fallback=False),
+                    'greeting_message': self.config.get('Greeter_Command', 'greeting_message', 
+                                                       fallback='Welcome to the mesh, {sender}!'),
+                    'rollout_days': self.config.getint('Greeter_Command', 'rollout_days', fallback=7),
+                    'include_mesh_info': self.config.getboolean('Greeter_Command', 'include_mesh_info', 
+                                                               fallback=True),
+                    'mesh_info_format': self.config.get('Greeter_Command', 'mesh_info_format',
+                                                      fallback='\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters'),
+                    'per_channel_greetings': self.config.getboolean('Greeter_Command', 'per_channel_greetings',
+                                                                   fallback=False)
+                }
+                
+                # Generate sample greeting
+                sample_greeting = settings['greeting_message'].format(sender='SampleUser')
+                if settings['include_mesh_info']:
+                    sample_mesh_info = settings['mesh_info_format'].format(
+                        total_contacts=100,
+                        repeaters=5,
+                        companions=95,
+                        recent_activity_24h=10
+                    )
+                    sample_greeting += sample_mesh_info
+                
+                # Check if message_stats table exists for last seen data
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='message_stats'")
+                has_message_stats = cursor.fetchone() is not None
+                
+                # Get greeted users - use GROUP BY to ensure only one entry per (sender_id, channel)
+                # This handles any potential duplicates that might exist in the database
+                # We use MIN(greeted_at) to get the earliest (first) greeting time
+                # If per_channel_greetings is False, we'll still show one entry per user (channel will be NULL)
+                # If per_channel_greetings is True, we'll show one entry per user per channel
+                cursor.execute('''
+                    SELECT sender_id, channel, MIN(greeted_at) as greeted_at, 
+                           MAX(rollout_marked) as rollout_marked
+                    FROM greeted_users
+                    GROUP BY sender_id, channel
+                    ORDER BY MIN(greeted_at) DESC
+                    LIMIT 500
+                ''')
+                greeted_users_rows = cursor.fetchall()
+                greeted_users = []
+                
+                for row in greeted_users_rows:
+                    # Access row data - handle both dict-style (Row) and tuple access
+                    try:
+                        sender_id = row['sender_id'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[0]
+                        channel_raw = row['channel'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[1]
+                        greeted_at = row['greeted_at'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[2]
+                        rollout_marked = row['rollout_marked'] if isinstance(row, dict) or hasattr(row, '__getitem__') else row[3]
+                    except (KeyError, IndexError, TypeError) as e:
+                        self.logger.error(f"Error accessing row data: {e}, row type: {type(row)}")
+                        continue
+                    
+                    sender_id = str(sender_id) if sender_id else ''
+                    channel = str(channel_raw) if channel_raw else '(global)'
+                    
+                    # Get last seen timestamp from message_stats if available
+                    last_seen = None
+                    if has_message_stats:
+                        # Get the most recent channel message (not DM) for this user
+                        # If per_channel_greetings is enabled, match the specific channel
+                        # Otherwise, get the most recent message from any channel
+                        if channel_raw:  # Use the raw channel value, not the formatted one
+                            cursor.execute('''
+                                SELECT MAX(timestamp) as last_seen
+                                FROM message_stats
+                                WHERE sender_id = ? 
+                                  AND channel = ?
+                                  AND is_dm = 0
+                                  AND channel IS NOT NULL
+                            ''', (sender_id, channel_raw))
+                        else:
+                            # Global greeting - get last seen from any channel
+                            cursor.execute('''
+                                SELECT MAX(timestamp) as last_seen
+                                FROM message_stats
+                                WHERE sender_id = ? 
+                                  AND is_dm = 0
+                                  AND channel IS NOT NULL
+                            ''', (sender_id,))
+                        
+                        result = cursor.fetchone()
+                        if result and result['last_seen']:
+                            last_seen = result['last_seen']
+                    
+                    greeted_users.append({
+                        'sender_id': sender_id,
+                        'channel': channel,
+                        'greeted_at': str(greeted_at),
+                        'rollout_marked': bool(rollout_marked),
+                        'last_seen': last_seen
+                    })
+                
+                conn.close()
+                
+                return jsonify({
+                    'enabled': settings['enabled'],
+                    'rollout_active': rollout_active,
+                    'rollout_data': rollout_data,
+                    'time_remaining': time_remaining,
+                    'settings': settings,
+                    'sample_greeting': sample_greeting,
+                    'greeted_users': greeted_users,
+                    'total_greeted': len(greeted_users)
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error getting greeter data: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/greeter/end-rollout', methods=['POST'])
+        def api_end_rollout():
+            """End the active onboarding period"""
+            try:
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                
+                # Find active rollout
+                cursor.execute('''
+                    SELECT id FROM greeter_rollout
+                    WHERE rollout_completed = 0
+                    ORDER BY rollout_started_at DESC
+                    LIMIT 1
+                ''')
+                rollout = cursor.fetchone()
+                
+                if not rollout:
+                    conn.close()
+                    return jsonify({'success': False, 'error': 'No active rollout found'}), 404
+                
+                rollout_id = rollout['id']
+                
+                # Mark rollout as completed
+                cursor.execute('''
+                    UPDATE greeter_rollout
+                    SET rollout_completed = 1
+                    WHERE id = ?
+                ''', (rollout_id,))
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"Greeter rollout {rollout_id} ended manually via web viewer")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Onboarding period ended successfully'
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error ending rollout: {e}", exc_info=True)
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/greeter/ungreet', methods=['POST'])
+        def api_ungreet_user():
+            """Mark a user as ungreeted (remove from greeted_users table)"""
+            try:
+                data = request.get_json()
+                if not data or 'sender_id' not in data:
+                    return jsonify({'error': 'sender_id is required'}), 400
+                
+                sender_id = data['sender_id']
+                channel = data.get('channel')  # Optional - if None, removes global greeting
+                
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                
+                # Check if user exists
+                if channel and channel != '(global)':
+                    cursor.execute('''
+                        SELECT id FROM greeted_users
+                        WHERE sender_id = ? AND channel = ?
+                    ''', (sender_id, channel))
+                else:
+                    cursor.execute('''
+                        SELECT id FROM greeted_users
+                        WHERE sender_id = ? AND channel IS NULL
+                    ''', (sender_id,))
+                
+                if not cursor.fetchone():
+                    conn.close()
+                    return jsonify({'error': 'User not found in greeted users'}), 404
+                
+                # Delete the record
+                if channel and channel != '(global)':
+                    cursor.execute('''
+                        DELETE FROM greeted_users
+                        WHERE sender_id = ? AND channel = ?
+                    ''', (sender_id, channel))
+                else:
+                    cursor.execute('''
+                        DELETE FROM greeted_users
+                        WHERE sender_id = ? AND channel IS NULL
+                    ''', (sender_id,))
+                
+                conn.commit()
+                conn.close()
+                
+                self.logger.info(f"User {sender_id} marked as ungreeted (channel: {channel or 'global'})")
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'User {sender_id} marked as ungreeted'
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error ungreeting user: {e}", exc_info=True)
+                return jsonify({'success': False, 'error': str(e)}), 500
     
     def _setup_socketio_handlers(self):
         """Setup SocketIO event handlers using modern patterns"""

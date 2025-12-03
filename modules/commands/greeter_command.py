@@ -204,6 +204,10 @@ class GreeterCommand(BaseCommand):
                 ''')
                 
                 conn.commit()
+                
+                # Clean up any existing duplicates (in case they existed before UNIQUE constraint)
+                self._cleanup_duplicate_greetings()
+                
                 self.logger.info("Greeter tables initialized successfully")
                 
         except Exception as e:
@@ -563,49 +567,111 @@ class GreeterCommand(BaseCommand):
                 
                 cursor = conn.cursor()
                 
-                # Use INSERT OR IGNORE to atomically handle race conditions
-                # The UNIQUE constraint on (sender_id, channel) ensures no duplicates
-                # OR IGNORE silently skips if record already exists (which is fine)
+                # Check if user is already greeted first to avoid unnecessary inserts
+                # This also helps us detect and handle any existing duplicates
                 if self.per_channel_greetings:
                     cursor.execute('''
-                        INSERT OR IGNORE INTO greeted_users (sender_id, channel)
-                        VALUES (?, ?)
+                        SELECT id, greeted_at FROM greeted_users
+                        WHERE sender_id = ? AND channel = ?
+                        ORDER BY greeted_at ASC
+                        LIMIT 1
                     ''', (sender_id, channel))
-                    conn.commit()
+                    existing = cursor.fetchone()
                     
-                    # Verify the record exists (should always be true after INSERT OR IGNORE)
+                    if existing:
+                        # User already greeted - check if there are duplicates
+                        cursor.execute('''
+                            SELECT COUNT(*) FROM greeted_users
+                            WHERE sender_id = ? AND channel = ?
+                        ''', (sender_id, channel))
+                        count = cursor.fetchone()[0]
+                        if count > 1:
+                            # Duplicates exist - clean them up, keeping the earliest (first) greeting
                     cursor.execute('''
                         SELECT id FROM greeted_users
                         WHERE sender_id = ? AND channel = ?
+                                ORDER BY greeted_at ASC
                     ''', (sender_id, channel))
-                    if cursor.fetchone():
-                        # Record exists - check if we just inserted it or it was already there
-                        # We can't easily tell, but that's fine - the important thing is it exists
+                            all_ids = [row[0] for row in cursor.fetchall()]
+                            if len(all_ids) > 1:
+                                # Delete all but the first (earliest)
+                                placeholders = ','.join(['?'] * (len(all_ids) - 1))
+                                cursor.execute(f'''
+                                    DELETE FROM greeted_users
+                                    WHERE id IN ({placeholders})
+                                ''', all_ids[1:])
+                                conn.commit()
+                                self.logger.debug(f"Cleaned up {len(all_ids) - 1} duplicate greeting entries for {sender_id} on {channel}, kept earliest")
+                        self.logger.debug(f"User {sender_id} already greeted on channel {channel}")
+                        return True
+                    
+                    # User not greeted yet - insert
+                    try:
+                        cursor.execute('''
+                            INSERT INTO greeted_users (sender_id, channel)
+                            VALUES (?, ?)
+                        ''', (sender_id, channel))
+                        conn.commit()
                         self.logger.info(f"✅ Saved: Marked {sender_id} as greeted on channel {channel}")
                         return True
-                    else:
-                        # This should never happen with INSERT OR IGNORE, but handle gracefully
-                        self.logger.error(f"Failed to insert or verify greeting record for {sender_id} on {channel}")
-                        return False
+                    except sqlite3.IntegrityError:
+                        # Race condition - another process inserted it between our check and insert
+                        # This is fine, the user is now greeted
+                        conn.rollback()
+                        self.logger.debug(f"User {sender_id} was marked as greeted by another process (race condition)")
+                        return True
                 else:
                     # Global mode: store NULL for channel (greeted once globally)
                     cursor.execute('''
-                        INSERT OR IGNORE INTO greeted_users (sender_id, channel)
-                        VALUES (?, NULL)
+                        SELECT id, greeted_at FROM greeted_users
+                        WHERE sender_id = ? AND channel IS NULL
+                        ORDER BY greeted_at ASC
+                        LIMIT 1
                     ''', (sender_id,))
-                    conn.commit()
+                    existing = cursor.fetchone()
                     
-                    # Verify the record exists
+                    if existing:
+                        # User already greeted - check if there are duplicates
+                        cursor.execute('''
+                            SELECT COUNT(*) FROM greeted_users
+                            WHERE sender_id = ? AND channel IS NULL
+                        ''', (sender_id,))
+                        count = cursor.fetchone()[0]
+                        if count > 1:
+                            # Duplicates exist - clean them up, keeping the earliest (first) greeting
                     cursor.execute('''
                         SELECT id FROM greeted_users
                         WHERE sender_id = ? AND channel IS NULL
+                                ORDER BY greeted_at ASC
                     ''', (sender_id,))
-                    if cursor.fetchone():
+                            all_ids = [row[0] for row in cursor.fetchall()]
+                            if len(all_ids) > 1:
+                                # Delete all but the first (earliest)
+                                placeholders = ','.join(['?'] * (len(all_ids) - 1))
+                                cursor.execute(f'''
+                                    DELETE FROM greeted_users
+                                    WHERE id IN ({placeholders})
+                                ''', all_ids[1:])
+                                conn.commit()
+                                self.logger.debug(f"Cleaned up {len(all_ids) - 1} duplicate greeting entries for {sender_id} (global), kept earliest")
+                        self.logger.debug(f"User {sender_id} already greeted globally")
+                        return True
+                    
+                    # User not greeted yet - insert
+                    try:
+                        cursor.execute('''
+                            INSERT INTO greeted_users (sender_id, channel)
+                            VALUES (?, NULL)
+                        ''', (sender_id,))
+                        conn.commit()
                         self.logger.info(f"✅ Saved: Marked {sender_id} as greeted globally (all channels)")
                         return True
-                    else:
-                        self.logger.error(f"Failed to insert or verify greeting record for {sender_id} globally")
-                        return False
+                    except sqlite3.IntegrityError:
+                        # Race condition - another process inserted it between our check and insert
+                        # This is fine, the user is now greeted
+                        conn.rollback()
+                        self.logger.debug(f"User {sender_id} was marked as greeted by another process (race condition)")
+                        return True
                         
         except sqlite3.IntegrityError as e:
             # UNIQUE constraint violation - should not happen with INSERT OR IGNORE
@@ -630,16 +696,78 @@ class GreeterCommand(BaseCommand):
             self.logger.error(f"Error getting greeted users count: {e}")
             return 0
     
+    def _cleanup_duplicate_greetings(self):
+        """Remove duplicate entries from greeted_users table, keeping the earliest (first) greeting"""
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Find duplicates - count how many exist per (sender_id, channel)
+                cursor.execute('''
+                    SELECT sender_id, channel, COUNT(*) as count
+                    FROM greeted_users
+                    GROUP BY sender_id, channel
+                    HAVING COUNT(*) > 1
+                ''')
+                duplicates = cursor.fetchall()
+                
+                if duplicates:
+                    self.logger.info(f"Found {len(duplicates)} duplicate greeting entries, cleaning up...")
+                    
+                    # For each duplicate, keep only the earliest (first) entry
+                    for sender_id, channel, count in duplicates:
+                        # Get all IDs for this (sender_id, channel) combination, ordered by earliest first
+                        if channel:
+                            cursor.execute('''
+                                SELECT id, greeted_at
+                                FROM greeted_users
+                                WHERE sender_id = ? AND channel = ?
+                                ORDER BY greeted_at ASC
+                            ''', (sender_id, channel))
+                        else:
+                            cursor.execute('''
+                                SELECT id, greeted_at
+                                FROM greeted_users
+                                WHERE sender_id = ? AND channel IS NULL
+                                ORDER BY greeted_at ASC
+                            ''', (sender_id,))
+                        
+                        rows = cursor.fetchall()
+                        if len(rows) > 1:
+                            # Keep the first (earliest) one, delete the rest
+                            keep_id = rows[0][0]
+                            delete_ids = [row[0] for row in rows[1:]]
+                            
+                            # Delete duplicates
+                            placeholders = ','.join(['?'] * len(delete_ids))
+                            cursor.execute(f'''
+                                DELETE FROM greeted_users
+                                WHERE id IN ({placeholders})
+                            ''', delete_ids)
+                            
+                            self.logger.debug(f"Kept earliest greeting record {keep_id} for {sender_id} (channel: {channel or 'global'}), deleted {len(delete_ids)} duplicates")
+                    
+                    conn.commit()
+                    self.logger.info(f"Cleaned up duplicate greeting entries")
+                else:
+                    self.logger.debug("No duplicate greeting entries found")
+                    
+        except Exception as e:
+            self.logger.error(f"Error cleaning up duplicate greetings: {e}")
+            # Don't raise - allow initialization to continue even if cleanup fails
+    
     def get_recent_greeted_users(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get recent greeted users (for verification)"""
+        """Get recent greeted users (for verification) - ordered by first greeting time"""
         try:
             with sqlite3.connect(self.bot.db_manager.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT sender_id, channel, greeted_at, rollout_marked
+                    SELECT sender_id, channel, MIN(greeted_at) as greeted_at, 
+                           MAX(rollout_marked) as rollout_marked
                     FROM greeted_users
-                    ORDER BY greeted_at DESC
+                    GROUP BY sender_id, channel
+                    ORDER BY MIN(greeted_at) DESC
                     LIMIT ?
                 ''', (limit,))
                 rows = cursor.fetchall()
