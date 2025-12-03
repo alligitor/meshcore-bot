@@ -58,8 +58,8 @@ bot_tx_rate_limit_seconds = 1.0
 
 # Transmission delay in milliseconds before sending messages
 # Helps prevent message collisions on the mesh network
-# Recommended: 100-500ms for busy networks, 0 for quiet networks
-tx_delay_ms = 250
+# Recommended: 400-800ms for busy networks, 100 for quiet networks
+tx_delay_ms = 400
 
 # DM retry settings for improved reliability (meshcore-2.1.6+)
 # Maximum number of retry attempts for failed DM sends
@@ -106,7 +106,7 @@ startup_advert = false
 # device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
 # bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
 # false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = false
+auto_manage_contacts = bot
 
 [Localization]
 # Language code for bot responses (en, es, es-MX, es-ES, fr, de, ja, etc.)
@@ -591,7 +591,7 @@ low_confidence_symbol = ❓
 # Enable "p" shortcut for path command (similar to "t" for test command)
 # true: Respond to just "p" or "p <path_data>" as a shortcut for "path"
 # false: Only respond to "path", "decode", or "route" keywords (default)
-enable_p_shortcut = false
+enable_p_shortcut = true
 
 [Hacker_Command]
 # Enable or disable the hacker command
