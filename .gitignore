@@ -121,6 +121,8 @@ Thumbs.db
 *.log
 config.ini
 *.db
+*.db-wal
+*.db-shm
 mctomqtt.py
 bot_cli.py
 bot_start_time.txt

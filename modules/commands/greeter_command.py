@@ -43,16 +43,72 @@ class GreeterCommand(BaseCommand):
             try:
                 with sqlite3.connect(self.bot.db_manager.db_path) as conn:
                     cursor = conn.cursor()
+                    # Check for active rollout (more robust check)
                     cursor.execute('''
-                        SELECT id FROM greeter_rollout
+                        SELECT id, rollout_started_at, rollout_days, rollout_completed,
+                               datetime(rollout_started_at, '+' || rollout_days || ' days') as end_date,
+                               datetime('now') as current_time
+                        FROM greeter_rollout
                         WHERE rollout_completed = 0
+                        ORDER BY rollout_started_at DESC
+                        LIMIT 1
                     ''')
-                    if not cursor.fetchone():
-                        # No active rollout - start one automatically
+                    active_rollout = cursor.fetchone()
+                    
+                    if active_rollout:
+                        # Verify the rollout is actually still active (not expired)
+                        rollout_id, started_at_str, rollout_days, completed, end_date_str, current_time_str = active_rollout
+                        end_date = datetime.fromisoformat(end_date_str)
+                        current_time = datetime.fromisoformat(current_time_str)
+                        
+                        if current_time < end_date:
+                            # Rollout is still active - don't start a new one
+                            remaining = (end_date - current_time).total_seconds() / 86400
+                            self.logger.info(f"Active rollout found (ID: {rollout_id}, {remaining:.1f} days remaining) - not starting new rollout")
+                        else:
+                            # Rollout expired but not marked as completed - mark it and start new one
+                            self.logger.warning(f"Found expired rollout (ID: {rollout_id}) - marking as completed and starting new one")
+                            cursor.execute('''
+                                UPDATE greeter_rollout
+                                SET rollout_completed = 1
+                                WHERE id = ?
+                            ''', (rollout_id,))
+                            conn.commit()
+                            self.logger.info(f"Auto-starting greeter rollout for {self.rollout_days} days")
+                            self.start_rollout(backfill_first=self.auto_backfill)
+                    else:
+                        # No active rollout - check if one was recently completed to prevent immediate restart
+                        cursor.execute('''
+                            SELECT id, rollout_started_at, rollout_days
+                            FROM greeter_rollout
+                            WHERE rollout_completed = 1
+                            ORDER BY rollout_started_at DESC
+                            LIMIT 1
+                        ''')
+                        recent_rollout = cursor.fetchone()
+                        
+                        if recent_rollout:
+                            recent_id, recent_started_at_str, recent_rollout_days = recent_rollout
+                            recent_started_at = datetime.fromisoformat(recent_started_at_str)
+                            # Calculate when this rollout would have ended
+                            recent_end_date = recent_started_at + timedelta(days=recent_rollout_days)
+                            cursor.execute("SELECT datetime('now')")
+                            current_time = datetime.fromisoformat(cursor.fetchone()[0])
+                            
+                            # If rollout ended less than 1 day ago, don't auto-start a new one
+                            # (prevents restart loops if there's a bug)
+                            if current_time < recent_end_date + timedelta(days=1):
+                                days_since_end = (current_time - recent_end_date).total_seconds() / 86400
+                                self.logger.info(f"Recent rollout completed {days_since_end:.1f} days ago (ID: {recent_id}) - skipping auto-start to prevent restart loop")
+                                return
+                        
+                        # No active rollout and no recent completed rollout - start one automatically
                         self.logger.info(f"Auto-starting greeter rollout for {self.rollout_days} days")
                         self.start_rollout(backfill_first=self.auto_backfill)
             except Exception as e:
                 self.logger.error(f"Error checking for existing rollout: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
     
     def _load_config(self):
         """Load configuration for greeter command"""
@@ -192,17 +248,19 @@ class GreeterCommand(BaseCommand):
                         
                         if current_time < end_date:
                             # Still in rollout period - mark active users
-                            self.logger.info(f"Greeter rollout active: marking active users (ends {end_date})")
+                            remaining = (end_date - current_time).total_seconds() / 86400
+                            self.logger.info(f"Greeter rollout active: marking active users (ends {end_date}, {remaining:.1f} days remaining)")
                             self._mark_active_users_as_greeted(rollout_id)
                         else:
                             # Rollout period ended - mark as completed
+                            days_over = (current_time - end_date).total_seconds() / 86400
                             cursor.execute('''
                                 UPDATE greeter_rollout
                                 SET rollout_completed = 1
                                 WHERE id = ?
                             ''', (rollout_id,))
                             conn.commit()
-                            self.logger.info(f"Greeter rollout period completed (ended {end_date})")
+                            self.logger.info(f"Greeter rollout period completed (ended {end_date}, {days_over:.1f} days ago) - will check for auto-restart")
                         
         except Exception as e:
             self.logger.error(f"Error checking rollout period: {e}")
@@ -481,7 +539,11 @@ class GreeterCommand(BaseCommand):
     
     def mark_as_greeted(self, sender_id: str, channel: str) -> bool:
         """
-        Mark a user as greeted
+        Mark a user as greeted atomically.
+        
+        Uses INSERT OR IGNORE with UNIQUE constraint to handle race conditions.
+        Returns True if user was successfully marked (or already marked).
+        Returns False only on actual errors (not on duplicate attempts).
         
         Args:
             sender_id: The user's ID
@@ -494,48 +556,62 @@ class GreeterCommand(BaseCommand):
             db_path = self.bot.db_manager.db_path
             self.logger.debug(f"Marking {sender_id} as greeted (channel: {channel}, db: {db_path})")
             
-            with sqlite3.connect(db_path) as conn:
+            with sqlite3.connect(db_path, timeout=10.0) as conn:
+                # Use WAL mode for better concurrency (if not already enabled)
+                # This helps with race conditions
+                conn.execute('PRAGMA journal_mode=WAL')
+                
                 cursor = conn.cursor()
                 
-                # Check if already exists first
+                # Use INSERT OR IGNORE to atomically handle race conditions
+                # The UNIQUE constraint on (sender_id, channel) ensures no duplicates
+                # OR IGNORE silently skips if record already exists (which is fine)
                 if self.per_channel_greetings:
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO greeted_users (sender_id, channel)
+                        VALUES (?, ?)
+                    ''', (sender_id, channel))
+                    conn.commit()
+                    
+                    # Verify the record exists (should always be true after INSERT OR IGNORE)
                     cursor.execute('''
                         SELECT id FROM greeted_users
                         WHERE sender_id = ? AND channel = ?
                     ''', (sender_id, channel))
-                    exists = cursor.fetchone() is not None
-                    
-                    if not exists:
-                        cursor.execute('''
-                            INSERT INTO greeted_users (sender_id, channel)
-                            VALUES (?, ?)
-                        ''', (sender_id, channel))
-                        conn.commit()
+                    if cursor.fetchone():
+                        # Record exists - check if we just inserted it or it was already there
+                        # We can't easily tell, but that's fine - the important thing is it exists
                         self.logger.info(f"✅ Saved: Marked {sender_id} as greeted on channel {channel}")
                         return True
                     else:
-                        self.logger.debug(f"User {sender_id} already marked as greeted on channel {channel}")
-                        return True
+                        # This should never happen with INSERT OR IGNORE, but handle gracefully
+                        self.logger.error(f"Failed to insert or verify greeting record for {sender_id} on {channel}")
+                        return False
                 else:
                     # Global mode: store NULL for channel (greeted once globally)
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO greeted_users (sender_id, channel)
+                        VALUES (?, NULL)
+                    ''', (sender_id,))
+                    conn.commit()
+                    
+                    # Verify the record exists
                     cursor.execute('''
                         SELECT id FROM greeted_users
                         WHERE sender_id = ? AND channel IS NULL
                     ''', (sender_id,))
-                    exists = cursor.fetchone() is not None
-                    
-                    if not exists:
-                        cursor.execute('''
-                            INSERT INTO greeted_users (sender_id, channel)
-                            VALUES (?, NULL)
-                        ''', (sender_id,))
-                        conn.commit()
+                    if cursor.fetchone():
                         self.logger.info(f"✅ Saved: Marked {sender_id} as greeted globally (all channels)")
                         return True
                     else:
-                        self.logger.debug(f"User {sender_id} already marked as greeted globally")
-                        return True
+                        self.logger.error(f"Failed to insert or verify greeting record for {sender_id} globally")
+                        return False
                         
+        except sqlite3.IntegrityError as e:
+            # UNIQUE constraint violation - should not happen with INSERT OR IGNORE
+            # but handle it gracefully if it does (means user already marked)
+            self.logger.debug(f"User {sender_id} already marked as greeted (integrity check: {e})")
+            return True
         except Exception as e:
             self.logger.error(f"❌ Error marking user as greeted: {e}")
             import traceback
@@ -734,13 +810,14 @@ class GreeterCommand(BaseCommand):
                         return True
                     else:
                         # Rollout period ended - mark as completed
+                        days_over = (current_time - end_date).total_seconds() / 86400
                         cursor.execute('''
                             UPDATE greeter_rollout
                             SET rollout_completed = 1
                             WHERE id = ?
                         ''', (rollout_id,))
                         conn.commit()
-                        self.logger.info(f"Greeter rollout period completed (ended {end_date})")
+                        self.logger.info(f"Greeter rollout period completed (ended {end_date}, {days_over:.1f} days ago)")
                         return False
                 
                 self.logger.debug("No active rollout found")
@@ -810,10 +887,51 @@ class GreeterCommand(BaseCommand):
             
             # Mark as greeted BEFORE getting mesh info (to prevent duplicate greetings)
             # This ensures we don't greet the same user twice even if there's a delay
+            # mark_as_greeted uses atomic INSERT OR IGNORE to handle race conditions
             marked = self.mark_as_greeted(message.sender_id, message.channel)
             if not marked:
                 self.logger.warning(f"Failed to mark {message.sender_id} as greeted - aborting greeting")
                 return False
+            
+            # Final verification: Double-check that user hasn't been greeted by another process
+            # This is a last-ditch check to catch any race conditions
+            # The INSERT OR IGNORE in mark_as_greeted() should have handled this, but we verify
+            if self.has_been_greeted(message.sender_id, message.channel):
+                # User is marked - verify this is a fresh mark (not an old one)
+                # If the record was just created (within last 5 seconds), we likely created it
+                # If it's older, another process may have created it first
+                try:
+                    with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                        cursor = conn.cursor()
+                        if self.per_channel_greetings:
+                            cursor.execute('''
+                                SELECT datetime(greeted_at) as greeted_at, datetime('now') as now
+                                FROM greeted_users
+                                WHERE sender_id = ? AND channel = ?
+                            ''', (message.sender_id, message.channel))
+                        else:
+                            cursor.execute('''
+                                SELECT datetime(greeted_at) as greeted_at, datetime('now') as now
+                                FROM greeted_users
+                                WHERE sender_id = ? AND channel IS NULL
+                            ''', (message.sender_id,))
+                        result = cursor.fetchone()
+                        if result:
+                            greeted_at_str, now_str = result
+                            greeted_at = datetime.fromisoformat(greeted_at_str)
+                            now = datetime.fromisoformat(now_str)
+                            seconds_ago = (now - greeted_at).total_seconds()
+                            
+                            # If marked more than 5 seconds ago, likely another process did it first
+                            # (our mark_as_greeted should have just run, so it should be very recent)
+                            if seconds_ago > 5:
+                                self.logger.info(f"User {message.sender_id} was already greeted {seconds_ago:.1f}s ago by another process - aborting duplicate greeting")
+                                return False
+                            else:
+                                self.logger.debug(f"User {message.sender_id} marked {seconds_ago:.1f}s ago - proceeding with greeting")
+                except Exception as e:
+                    # If check fails, proceed anyway (better to greet than miss a greeting)
+                    self.logger.debug(f"Could not verify greeting timestamp (proceeding anyway): {e}")
             
             # Format greeting parts (may be single or multi-part)
             # Pass channel name for channel-specific greetings

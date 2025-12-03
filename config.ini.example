@@ -599,6 +599,17 @@ enable_p_shortcut = false
 # false: Hacker command is disabled
 hacker_enabled = false
 
+[Multitest_Command]
+# Response format for multitest command results
+# Available fields: {sender}, {path_count}, {paths}, {listening_duration}
+# {sender}: Name/ID of message sender
+# {path_count}: Number of unique paths found
+# {paths}: Newline-separated list of paths
+# {listening_duration}: Listening window duration in seconds
+# Leave empty to use default format
+# Example: "Found {path_count} unique path(s) for @[{sender}]:\n{paths}"
+response_format = 
+
 [Alert_Command]
 # Enable or disable the alert command
 # true: Alert command is available
