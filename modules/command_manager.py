@@ -332,25 +332,40 @@ class CommandManager:
             from meshcore_cli.meshcore_cli import send_chan_msg
             result = await send_chan_msg(self.bot.meshcore, channel_num, content)
             
-            if result and result.type != EventType.ERROR:
-                self.logger.info(f"Successfully sent channel message to {channel} (channel {channel_num})")
-                self.bot.rate_limiter.record_send()
-                self.bot.bot_tx_rate_limiter.record_tx()
-                return True
-            else:
-                # Check if this is a timeout/no-event-received error
-                # This often happens when the message is sent but confirmation event doesn't arrive
-                error_payload = result.payload if result else {}
-                if isinstance(error_payload, dict) and error_payload.get('reason') == 'no_event_received':
-                    # Message likely sent but confirmation timed out - treat as success with warning
-                    self.logger.warning(f"Channel message sent to {channel} (channel {channel_num}) but confirmation event not received (message may have been sent)")
+            # Check if the result indicates success
+            if result:
+                if hasattr(result, 'type') and result.type == EventType.ERROR:
+                    # Actual error - log and return failure
+                    error_payload = result.payload if result else {}
+                    self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): {error_payload if error_payload else 'Unknown error'}")
+                    return False
+                elif hasattr(result, 'type') and (result.type == EventType.MSG_SENT or result.type == EventType.OK):
+                    # Confirmed success - message was sent (OK or MSG_SENT both indicate success)
+                    self.logger.info(f"Successfully sent channel message to {channel} (channel {channel_num})")
                     self.bot.rate_limiter.record_send()
                     self.bot.bot_tx_rate_limiter.record_tx()
-                    return True  # Treat as success since message likely sent
+                    return True
                 else:
-                    # Actual error - log and return failure
-                    self.logger.error(f"Failed to send channel message: {error_payload if error_payload else 'No result'}")
-                    return False
+                    # Result is not None but doesn't have expected success event type
+                    # This could be a ROUTING_INFO or other intermediate event
+                    event_type_name = result.type.name if hasattr(result, 'type') and hasattr(result.type, 'name') else str(result.type) if hasattr(result, 'type') else 'unknown'
+                    self.logger.warning(f"Channel message to {channel} (channel {channel_num}) returned unexpected event type: {event_type_name}. Message may not have been sent.")
+                    # Check if this is a timeout/no-event-received error
+                    error_payload = result.payload if result else {}
+                    if isinstance(error_payload, dict) and error_payload.get('reason') == 'no_event_received':
+                        # Message likely sent but confirmation timed out - treat as success with warning
+                        self.logger.warning(f"Channel message sent to {channel} (channel {channel_num}) but confirmation event not received (message may have been sent)")
+                        self.bot.rate_limiter.record_send()
+                        self.bot.bot_tx_rate_limiter.record_tx()
+                        return True  # Treat as success since message likely sent
+                    else:
+                        # Unknown event type - log and return failure
+                        self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): Unexpected event type {event_type_name}")
+                        return False
+            else:
+                # No result returned - this means send_chan_msg failed
+                self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): No result returned from send_chan_msg")
+                return False
                 
         except Exception as e:
             self.logger.error(f"Failed to send channel message: {e}")
