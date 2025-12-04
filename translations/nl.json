@@ -156,12 +156,12 @@
     "commands": {
         "help": {
             "description": "Toont commando's. Gebruik 'help <commando>' voor details.",
-            "general": "**MeshCore Bot Help**\n\n**Beschikbare commando's:**\n{commands_list}",
-            "unknown": "**Onbekend commando: '{command}'**\n\nBeschikbare commando's:\n{available}",
-            "specific": "**Help voor '{command}':**\n{help_text}",
+            "general": "MeshCore Bot Help\n\nBeschikbare commando's:\n{commands_list}",
+            "unknown": "Onbekend commando: '{command}'\n\nBeschikbare commando's:\n{available}",
+            "specific": "Help voor '{command}':\n{help_text}",
             "no_help": "Geen help beschikbaar",
-            "usage_examples": "\n**Gebruiksvoorbeelden:**\n• `help @` - Help voor @{string} syntax\n• `help t` - Help voor t {string} syntax\n• `help advert` - Help voor advert commando\n• `help test` - Help voor test commando\n• `help ping` - Help voor ping commando",
-            "custom_syntax": "\n**Aangepaste syntax:**\n• `t zin` - Bevestiging met zin (kanalen & DM's)\n• `@{string}` - Bevestiging met string (alleen DM's)\n• `advert` - Verstuur flood-advert (alleen DM's, 1 uur cooldown)"
+            "usage_examples": "\nGebruiksvoorbeelden:\n• `help @` - Help voor @{string} syntax\n• `help t` - Help voor t {string} syntax\n• `help advert` - Help voor advert commando\n• `help test` - Help voor test commando\n• `help ping` - Help voor ping commando",
+            "custom_syntax": "\nAangepaste syntax:\n• `t zin` - Bevestiging met zin (kanalen & DM's)\n• `@{string}` - Bevestiging met string (alleen DM's)\n• `advert` - Verstuur flood-advert (alleen DM's, 1 uur cooldown)"
         },
         "ping": {
             "description": "Reageert op 'ping' met 'Pong!'",

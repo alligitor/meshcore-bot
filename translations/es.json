@@ -32,12 +32,12 @@
     "commands": {
         "help": {
             "description": "Muestra los comandos. Usa 'help <comando>' para más detalles.",
-            "general": "**Ayuda del Bot MeshCore**\n\n**Comandos Disponibles:**\n{commands_list}",
-            "unknown": "**Comando desconocido: '{command}'**\n\nComandos disponibles:\n{available}",
-            "specific": "**Ayuda para '{command}':**\n{help_text}",
+            "general": "Ayuda del Bot MeshCore\n\nComandos Disponibles:\n{commands_list}",
+            "unknown": "Comando desconocido: '{command}'\n\nComandos disponibles:\n{available}",
+            "specific": "Ayuda para '{command}':\n{help_text}",
             "no_help": "No hay ayuda disponible",
-            "usage_examples": "\n**Ejemplos de Uso:**\n• `help @` - Obtener ayuda para la sintaxis @{string}\n• `help t` - Obtener ayuda para la sintaxis t {string}\n• `help advert` - Obtener ayuda para el comando advert\n• `help test` - Obtener ayuda para el comando test\n• `help ping` - Obtener ayuda para el comando ping",
-            "custom_syntax": "\n**Sintaxis Personalizada:**\n• `t frase` - Confirmación con frase (canales y DMs)\n• `@{string}` - Confirmación con texto (solo DMs)\n• `advert` - Enviar anuncio masivo (solo DMs, espera de 1 hora)"
+            "usage_examples": "\nEjemplos de Uso:\n• `help @` - Obtener ayuda para la sintaxis @{string}\n• `help t` - Obtener ayuda para la sintaxis t {string}\n• `help advert` - Obtener ayuda para el comando advert\n• `help test` - Obtener ayuda para el comando test\n• `help ping` - Obtener ayuda para el comando ping",
+            "custom_syntax": "\nSintaxis Personalizada:\n• `t frase` - Confirmación con frase (canales y DMs)\n• `@{string}` - Confirmación con texto (solo DMs)\n• `advert` - Enviar anuncio masivo (solo DMs, espera de 1 hora)"
         },
         "ping": {
             "description": "Responde a 'ping' con '¡Pong!'",

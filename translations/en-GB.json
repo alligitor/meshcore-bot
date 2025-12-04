@@ -156,12 +156,12 @@
   "commands": {
     "help": {
       "description": "Shows commands. Use 'help <command>' for details.",
-      "general": "**MeshCore Bot Help**\n\n**Available Commands:**\n{commands_list}",
-      "unknown": "**Unknown command: '{command}'**\n\nAvailable commands:\n{available}",
-      "specific": "**Help for '{command}':**\n{help_text}",
+      "general": "MeshCore Bot Help\n\nAvailable Commands:\n{commands_list}",
+      "unknown": "Unknown command: '{command}'\n\nAvailable commands:\n{available}",
+      "specific": "Help for '{command}':\n{help_text}",
       "no_help": "No help available",
-      "usage_examples": "\n**Usage Examples:**\n• `help @` - Get help for @{string} syntax\n• `help t` - Get help for t {string} syntax\n• `help advert` - Get help for advert command\n• `help test` - Get help for test command\n• `help ping` - Get help for ping command",
-      "custom_syntax": "\n**Custom Syntax:**\n• `t phrase` - Acknowledgment with phrase (channels & DMs)\n• `@{string}` - Acknowledgment with string (DMs only)\n• `advert` - Send flood advert (DMs only, 1-hour cooldown)"
+      "usage_examples": "\nUsage Examples:\n• `help @` - Get help for @{string} syntax\n• `help t` - Get help for t {string} syntax\n• `help advert` - Get help for advert command\n• `help test` - Get help for test command\n• `help ping` - Get help for ping command",
+      "custom_syntax": "\nCustom Syntax:\n• `t phrase` - Acknowledgment with phrase (channels & DMs)\n• `@{string}` - Acknowledgment with string (DMs only)\n• `advert` - Send flood advert (DMs only, 1-hour cooldown)"
     },
     "ping": {
       "description": "Responds to 'ping' with 'Pong!'",
