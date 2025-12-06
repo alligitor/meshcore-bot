@@ -140,13 +140,21 @@
             </div>
             <div class="card-body text-center">
                 <div class="row text-center">
-                    <div class="col-6">
+                    <div class="col-3">
                         <h4 id="unique-channels-total" class="text-success">0</h4>
                         <small class="text-muted">Total Channels</small>
                     </div>
-                    <div class="col-6">
-                        <h4 id="bot-reply-rate" class="text-warning">0%</h4>
-                        <small class="text-muted">Reply Rate</small>
+                    <div class="col-3">
+                        <h4 id="bot-reply-rate-24h" class="text-warning">0%</h4>
+                        <small class="text-muted">24h Reply Rate</small>
+                    </div>
+                    <div class="col-3">
+                        <h4 id="bot-reply-rate-7d" class="text-warning">0%</h4>
+                        <small class="text-muted">7d Reply Rate</small>
+                    </div>
+                    <div class="col-3">
+                        <h4 id="bot-reply-rate-30d" class="text-warning">0%</h4>
+                        <small class="text-muted">30d Reply Rate</small>
                     </div>
                 </div>
             </div>
@@ -452,7 +460,9 @@ class ModernDashboard {
         this.updateElement('unique-users-total', data.unique_users_total);
         this.updateElement('unique-senders-24h', data.unique_senders_24h);
         this.updateElement('unique-channels-total', data.unique_channels_total);
-        this.updateElement('bot-reply-rate', data.bot_reply_rate ? `${data.bot_reply_rate}%` : '0%');
+        this.updateElement('bot-reply-rate-24h', data.bot_reply_rate_24h !== undefined ? `${data.bot_reply_rate_24h}%` : '0%');
+        this.updateElement('bot-reply-rate-7d', data.bot_reply_rate_7d !== undefined ? `${data.bot_reply_rate_7d}%` : '0%');
+        this.updateElement('bot-reply-rate-30d', data.bot_reply_rate_30d !== undefined ? `${data.bot_reply_rate_30d}%` : '0%');
         
         // Analytics are loaded separately with time window selectors
     }

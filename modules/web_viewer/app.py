@@ -1751,16 +1751,54 @@ class BotDataViewer:
                 cursor.execute(query)
                 stats['top_commands'] = [{'command': row[0], 'count': row[1]} for row in cursor.fetchall()]
                 
-                # Bot reply rate (commands that got responses)
+                # Bot reply rates (commands that got responses) - calculate for different time windows
+                # 24 hour reply rate
                 cursor.execute("""
-                    SELECT COUNT(*) FROM command_stats WHERE response_sent = 1
+                    SELECT COUNT(*) FROM command_stats 
+                    WHERE timestamp > strftime('%s', 'now', '-24 hours') AND response_sent = 1
                 """)
-                replied_commands = cursor.fetchone()[0]
-                total_commands = stats.get('total_commands', 0)
-                if total_commands > 0:
-                    stats['bot_reply_rate'] = round((replied_commands / total_commands) * 100, 1)
+                replied_24h = cursor.fetchone()[0]
+                cursor.execute("""
+                    SELECT COUNT(*) FROM command_stats 
+                    WHERE timestamp > strftime('%s', 'now', '-24 hours')
+                """)
+                total_24h = cursor.fetchone()[0]
+                if total_24h > 0:
+                    stats['bot_reply_rate_24h'] = round((replied_24h / total_24h) * 100, 1)
                 else:
-                    stats['bot_reply_rate'] = 0
+                    stats['bot_reply_rate_24h'] = 0
+                
+                # 7 day reply rate
+                cursor.execute("""
+                    SELECT COUNT(*) FROM command_stats 
+                    WHERE timestamp > strftime('%s', 'now', '-7 days') AND response_sent = 1
+                """)
+                replied_7d = cursor.fetchone()[0]
+                cursor.execute("""
+                    SELECT COUNT(*) FROM command_stats 
+                    WHERE timestamp > strftime('%s', 'now', '-7 days')
+                """)
+                total_7d = cursor.fetchone()[0]
+                if total_7d > 0:
+                    stats['bot_reply_rate_7d'] = round((replied_7d / total_7d) * 100, 1)
+                else:
+                    stats['bot_reply_rate_7d'] = 0
+                
+                # 30 day reply rate
+                cursor.execute("""
+                    SELECT COUNT(*) FROM command_stats 
+                    WHERE timestamp > strftime('%s', 'now', '-30 days') AND response_sent = 1
+                """)
+                replied_30d = cursor.fetchone()[0]
+                cursor.execute("""
+                    SELECT COUNT(*) FROM command_stats 
+                    WHERE timestamp > strftime('%s', 'now', '-30 days')
+                """)
+                total_30d = cursor.fetchone()[0]
+                if total_30d > 0:
+                    stats['bot_reply_rate_30d'] = round((replied_30d / total_30d) * 100, 1)
+                else:
+                    stats['bot_reply_rate_30d'] = 0
                 
                 # Top channels by message count - filter by time window
                 if top_channels_window == '24h':
