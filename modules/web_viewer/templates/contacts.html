@@ -66,9 +66,11 @@
     <!-- New Devices -->
     <div class="col-md-3">
         <div class="card h-100">
-            <div class="card-header">
-                <i class="fas fa-plus-circle"></i> New Devices
-                <small class="text-muted d-block" style="font-size: 0.75em; font-weight: normal; margin-top: 2px;">Last 7 days</small>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>
+                    <i class="fas fa-plus-circle"></i> New Devices
+                </span>
+                <small class="text-muted" style="font-size: 0.75em; font-weight: normal;">Last 7 days</small>
             </div>
             <div class="card-body d-flex align-items-center">
                 <div class="row text-center w-100">
@@ -1305,6 +1307,72 @@ document.addEventListener('DOMContentLoaded', () => {
 .sort-active i {
     opacity: 1;
     color: #0d6efd !important;
+}
+
+/* Dark mode table styling with better contrast */
+[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(odd) > td {
+    background-color: #3a3a3a; /* Slightly lighter than even rows, but not too light */
+}
+
+[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(even) > td {
+    background-color: #2d2d2d; /* Darker gray (card-bg) */
+}
+
+[data-theme="dark"] .table-hover > tbody > tr:hover > td {
+    background-color: #404040 !important; /* Slightly lighter for hover, but maintains good contrast */
+}
+
+[data-theme="dark"] .table-dark {
+    background-color: var(--bg-tertiary);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .table-dark th {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .table td {
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+/* Ensure all text in table cells is light in dark mode */
+[data-theme="dark"] .table td,
+[data-theme="dark"] .table td * {
+    color: var(--text-color) !important;
+}
+
+/* Node names (strong tags) should be light and prominent */
+[data-theme="dark"] .table td strong {
+    color: #ffffff !important;
+    font-weight: 600;
+}
+
+/* Ensure small text is also light */
+[data-theme="dark"] .table td small {
+    color: var(--text-muted) !important;
+}
+
+/* Dark mode input group styling */
+[data-theme="dark"] .input-group-text {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .input-group .form-control {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .input-group .form-control:focus {
+    background-color: var(--bg-tertiary);
+    border-color: #007bff;
+    color: var(--text-color);
+    box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
 }
 </style>
 {% endblock %}

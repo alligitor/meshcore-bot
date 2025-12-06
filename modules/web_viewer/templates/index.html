@@ -172,12 +172,12 @@
             <div class="card-body text-center">
                 <div class="row text-center">
                     <div class="col-6">
-                        <h4 id="unique-users-total" class="text-primary">0</h4>
-                        <small class="text-muted">Total Users</small>
-                    </div>
-                    <div class="col-6">
                         <h4 id="unique-senders-24h" class="text-info">0</h4>
                         <small class="text-muted">24h Active</small>
+                    </div>
+                    <div class="col-6">
+                        <h4 id="unique-users-total" class="text-primary">0</h4>
+                        <small class="text-muted">Total Users</small>
                     </div>
                 </div>
             </div>
@@ -192,12 +192,12 @@
             <div class="card-body">
                 <div class="row text-center">
                     <div class="col-6">
-                        <h4 id="total-messages" class="text-primary">0</h4>
-                        <small class="text-muted">Total Messages</small>
-                    </div>
-                    <div class="col-6">
                         <h4 id="messages-24h" class="text-info">0</h4>
                         <small class="text-muted">24h Messages</small>
+                    </div>
+                    <div class="col-6">
+                        <h4 id="total-messages" class="text-primary">0</h4>
+                        <small class="text-muted">Total Messages</small>
                     </div>
                 </div>
             </div>
@@ -212,12 +212,12 @@
             <div class="card-body">
                 <div class="row text-center">
                     <div class="col-6">
-                        <h4 id="total-commands" class="text-success">0</h4>
-                        <small class="text-muted">Total Commands</small>
-                    </div>
-                    <div class="col-6">
                         <h4 id="commands-24h" class="text-warning">0</h4>
                         <small class="text-muted">24h Commands</small>
+                    </div>
+                    <div class="col-6">
+                        <h4 id="total-commands" class="text-success">0</h4>
+                        <small class="text-muted">Total Commands</small>
                     </div>
                 </div>
             </div>
@@ -738,7 +738,7 @@ window.addEventListener('beforeunload', () => {
 /* Status indicators moved to enhanced section below */
 
 .loading {
-    color: #6c757d;
+    color: var(--text-muted);
     font-style: italic;
 }
 
@@ -748,7 +748,7 @@ window.addEventListener('beforeunload', () => {
 
 .card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    box-shadow: 0 4px 8px var(--shadow-color);
 }
 
 .metric-value {
@@ -758,7 +758,7 @@ window.addEventListener('beforeunload', () => {
 
 .metric-label {
     font-size: 0.875rem;
-    color: #6c757d;
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
@@ -767,7 +767,7 @@ window.addEventListener('beforeunload', () => {
 
 /* Health status card styling */
 .health-status-card .col-md-3 {
-    border-right: 1px solid #e9ecef;
+    border-right: 1px solid var(--border-color);
     padding: 0.75rem 0.5rem;
     position: relative;
 }
@@ -793,7 +793,7 @@ window.addEventListener('beforeunload', () => {
 
 .card.shadow-sm:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(0,0,0,0.1) !important;
+    box-shadow: 0 8px 25px var(--shadow-color) !important;
 }
 
 .bg-gradient-primary {
@@ -838,6 +838,17 @@ window.addEventListener('beforeunload', () => {
 
 @keyframes pulse {
     0% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.4); }
+    70% { box-shadow: 0 0 0 6px rgba(40, 167, 69, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
+}
+
+[data-theme="dark"] .status-indicator {
+    box-shadow: 0 0 0 2px rgba(40, 167, 69, 0.4);
+    animation: pulse-dark 2s infinite;
+}
+
+@keyframes pulse-dark {
+    0% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.6); }
     70% { box-shadow: 0 0 0 6px rgba(40, 167, 69, 0); }
     100% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
 }
