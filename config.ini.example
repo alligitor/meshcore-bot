@@ -90,6 +90,12 @@ bot_longitude = -74.0060
 # Set to a lower value if you want to limit channel fetching for performance
 max_channels = 12
 
+# Channel refresh interval in seconds
+# How often to refresh channel list from device to prevent stale data in database
+# Default: 3600 (1 hour). Set to 0 to disable periodic refresh (channels only refreshed on startup)
+# This ensures the database stays in sync if channels are changed on the device directly
+channel_refresh_interval_seconds = 3600
+
 # Interval-based advertising settings
 # Send periodic flood adverts at specified intervals
 # 0: Disabled (default)
@@ -254,73 +260,6 @@ colored_output = true
 # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 meshcore_log_level = INFO
 
-[Greeter_Command]
-# Enable or disable the greeter command
-# true: Bot will greet users on their first public channel message
-# false: Greeter is disabled
-enabled = false
-
-# Channels where greetings should occur (comma-separated)
-# IMPORTANT: Leave commented out (or omit entirely) to use global monitor_channels (default behavior)
-# If uncommented with empty value (channels = ), command will be DM-only
-# Comma-separated list to restrict to specific channels (only greeter command works there)
-# Example: channels = general,welcome,newbies
-# If not specified, uses the channels from [Channels] monitor_channels setting
-# channels = 
-
-# Greeting message template (default for all channels)
-# Available fields: {sender} - the user's name/ID
-# For multi-part greetings, separate messages with pipe (|)
-# Example (single): "Welcome to the mesh, @[{sender}]!"
-# Example (multi-part): "Welcome to the mesh, @[{sender}]!|This is a great place to chat.|Use !help for commands."
-greeting_message = Welcome to the mesh, @[{sender}]!
-
-# Channel-specific greeting messages (optional)
-# Format: channel_name:greeting_message,channel_name2:greeting_message2
-# If a channel has a specific greeting, it will be used instead of the default greeting_message
-# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
-# Multi-part greetings are supported per channel using pipe (|) separator
-# Leave empty to use greeting_message for all channels
-channel_greetings = 
-
-# Per-channel greetings (tracking behavior)
-# false: Greet each user only once globally (default - user gets one greeting total)
-# true: Greet each user once per channel (user can be greeted on each channel separately)
-# Note: This controls tracking, not the greeting message itself. Use channel_greetings for different messages.
-per_channel_greetings = false
-
-# Include mesh network information in greeting
-# true: Add mesh statistics to greeting (total contacts, repeaters, etc.)
-# false: Only send the greeting message
-include_mesh_info = true
-
-# Mesh info format template
-# Available fields: {total_contacts}, {repeaters}, {companions}, {recent_activity_24h}
-# Example: "\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters"
-# Note: Mesh info is appended to the last greeting message part
-mesh_info_format = \n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters, {recent_activity_24h} active in last 24h
-
-# Rollout period in days
-# When greeter is first enabled on an active mesh, this sets how many days
-# to listen and mark all active users as already greeted before beginning
-# to greet new users. This prevents greeting everyone on an established mesh.
-# Set to 0 to disable rollout (will greet all new users immediately)
-# Note: Use auto_backfill to mark historical users and shorten/eliminate rollout period
-rollout_days = 7
-
-# Auto-backfill from historical message_stats data
-# true: Automatically mark all users who have posted on public channels in the past
-# false: Only mark users during rollout period (default)
-# This allows shortening or eliminating the rollout period by using existing data
-auto_backfill = false
-
-# Backfill lookback period in days
-# Number of days to look back when auto-backfilling (0 = all time)
-# Only used if auto_backfill = true
-# Example: 30 = only mark users who posted in last 30 days
-# Example: 0 = mark all users who have ever posted (all time)
-backfill_lookback_days = 30
-
 [Custom_Syntax]
 # Custom syntax patterns for special message formats
 # Format: pattern = "response_format"
@@ -371,6 +310,55 @@ repeater_prefix_api_url =
 # How long to cache prefix data before refreshing from API
 # Recommended: 1-6 hours (data doesn't change frequently)
 repeater_prefix_cache_hours = 1
+
+[Feed_Manager]
+# Enable feed manager functionality
+# true: Feed manager is enabled and will poll feeds
+# false: Feed manager is disabled
+feed_manager_enabled = false
+
+# Default check interval in seconds (5 minutes)
+# How often to check feeds for new items
+# Individual feeds can override this with their own interval
+default_check_interval_seconds = 300
+
+# Maximum number of items to process per feed per check
+# Prevents overwhelming channels with too many items at once
+max_items_per_check = 10
+
+# Default output format for feed messages
+# Placeholders: {title}, {body}, {date}, {link}, {emoji}
+# Shortening functions: {field|truncate:N}, {field|word_wrap:N}, {field|first_words:N}
+# Example: "{emoji} {body|truncate:100} - {date}\n{link|truncate:50}"
+# Default uses body instead of title for main content
+default_output_format = {emoji} {body|truncate:100} - {date}\n{link|truncate:50}
+
+# Default message send interval in seconds
+# How long to wait between sending queued messages from the same feed
+# Prevents rate limiting by spacing out message sends
+# Individual feeds can override this with their own interval
+default_message_send_interval_seconds = 2.0
+
+# Request timeout in seconds
+# Maximum time to wait for feed requests
+feed_request_timeout = 30
+
+# User-Agent string for HTTP requests
+# Identifies the bot when fetching feeds
+feed_user_agent = MeshCoreBot/1.0 FeedManager
+
+# Rate limiting: minimum seconds between requests to same domain
+# Prevents overwhelming feed sources
+feed_rate_limit_seconds = 5
+
+# Maximum message length (mesh limit is 130)
+# Messages longer than this will be truncated
+max_message_length = 130
+
+# Enable/disable feed command
+# true: Feed command is available (admin only)
+# false: Feed command is disabled
+feed_command_enabled = true
 
 [Prefix_Command]
 # Enable or disable repeater geolocation in prefix command
@@ -656,3 +644,94 @@ debug = false
 # true: Start web viewer automatically when bot starts
 # false: Start web viewer manually
 auto_start = false
+
+[Greeter_Command]
+# Enable or disable the greeter command
+# true: Bot will greet users on their first public channel message
+# false: Greeter is disabled
+enabled = false
+
+# Channels where greetings should occur (comma-separated)
+# IMPORTANT: Leave commented out (or omit entirely) to use global monitor_channels (default behavior)
+# If uncommented with empty value (channels = ), command will be DM-only
+# Comma-separated list to restrict to specific channels (only greeter command works there)
+# Example: channels = general,welcome,newbies
+# If not specified, uses the channels from [Channels] monitor_channels setting
+# channels = 
+
+# Greeting message template (default for all channels)
+# Available fields: {sender} - the user's name/ID
+# For multi-part greetings, separate messages with pipe (|)
+# Example (single): "Welcome to the mesh, @[{sender}]!"
+# Example (multi-part): "Welcome to the mesh, @[{sender}]!|This is a great place to chat.|Use !help for commands."
+greeting_message = Welcome to the mesh, @[{sender}]!
+
+# Channel-specific greeting messages (optional)
+# Format: channel_name:greeting_message,channel_name2:greeting_message2
+# If a channel has a specific greeting, it will be used instead of the default greeting_message
+# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
+# Multi-part greetings are supported per channel using pipe (|) separator
+# Leave empty to use greeting_message for all channels
+channel_greetings = 
+
+# Per-channel greetings (tracking behavior)
+# false: Greet each user only once globally (default - user gets one greeting total)
+# true: Greet each user once per channel (user can be greeted on each channel separately)
+# Note: This controls tracking, not the greeting message itself. Use channel_greetings for different messages.
+per_channel_greetings = false
+
+# Include mesh network information in greeting
+# true: Add mesh statistics to greeting (total contacts, repeaters, etc.)
+# false: Only send the greeting message
+include_mesh_info = true
+
+# Mesh info format template
+# Available fields: {total_contacts}, {repeaters}, {companions}, {recent_activity_24h}
+# Example: "\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters"
+# Note: Mesh info is appended to the last greeting message part
+mesh_info_format = \n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters, {recent_activity_24h} active in last 24h
+
+# Rollout period in days
+# When greeter is first enabled on an active mesh, this sets how many days
+# to listen and mark all active users as already greeted before beginning
+# to greet new users. This prevents greeting everyone on an established mesh.
+# Set to 0 to disable rollout (will greet all new users immediately)
+# Note: Use auto_backfill to mark historical users and shorten/eliminate rollout period
+rollout_days = 7
+
+# Auto-backfill from historical message_stats data
+# true: Automatically mark all users who have posted on public channels in the past
+# false: Only mark users during rollout period (default)
+# This allows shortening or eliminating the rollout period by using existing data
+auto_backfill = false
+
+# Backfill lookback period in days
+# Number of days to look back when auto-backfilling (0 = all time)
+# Only used if auto_backfill = true
+# Example: 30 = only mark users who posted in last 30 days
+# Example: 0 = mark all users who have ever posted (all time)
+backfill_lookback_days = 30
+
+# Dead air delay in seconds
+# Wait this many seconds before sending a greeting to a new user
+# This allows time for other users to greet the new user first
+# Set to 0 to send greetings immediately (default behavior)
+# Example: 30 = wait 30 seconds before greeting
+dead_air_delay_seconds = 0
+
+# Defer to human greeting
+# If enabled and dead_air_delay_seconds > 0, the bot will not send a greeting
+# if another user mentions the new user's name within the dead air delay period
+# true: Check for human greetings and defer if found
+# false: Always send bot greeting after delay (default)
+# Note: Only effective when dead_air_delay_seconds > 0
+defer_to_human_greeting = false
+
+# Levenshtein distance for name matching
+# Maximum edit distance allowed when checking if a user has been greeted before
+# Prevents duplicate greetings for users who make small changes to their name
+# Set to 0 to disable fuzzy matching (exact name match only, default)
+# Example: 2 = "John" and "Jon" (distance 1) or "John" and "Jhon" (distance 1) would match
+# Example: 3 = "Alice" and "Alicia" (distance 2) would match
+# Recommended: 1-3 for most use cases
+levenshtein_distance = 0

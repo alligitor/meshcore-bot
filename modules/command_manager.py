@@ -205,7 +205,24 @@ class CommandManager:
     
     async def handle_advert_command(self, message: MeshMessage):
         """Handle the advert command from DM"""
-        await self.commands['advert'].execute(message)
+        command = self.commands['advert']
+        success = await command.execute(message)
+        
+        # Small delay to ensure send_response has completed
+        await asyncio.sleep(0.1)
+        
+        # Determine if a response was sent
+        response_sent = False
+        if hasattr(command, 'last_response') and command.last_response:
+            response_sent = True
+        elif hasattr(self, '_last_response') and self._last_response:
+            response_sent = True
+        
+        # Record command execution in stats database
+        if 'stats' in self.commands:
+            stats_command = self.commands['stats']
+            if stats_command:
+                stats_command.record_command(message, 'advert', response_sent)
     
     async def send_dm(self, recipient_id: str, content: str) -> bool:
         """Send a direct message using meshcore-cli command"""
@@ -528,6 +545,7 @@ class CommandManager:
                 
                 # Check if command can execute (cooldown, DM requirements, etc.)
                 if not command.can_execute_now(message):
+                    response_sent = False
                     # For DM-only commands in public channels, only show error if channel is allowed
                     # (i.e., channel is in monitor_channels or command's allowed_channels)
                     # This prevents prompting users in channels where the command shouldn't work at all
@@ -536,10 +554,12 @@ class CommandManager:
                         if command.is_channel_allowed(message):
                             error_msg = command.translate('errors.dm_only', command=command_name)
                             await self.send_response(message, error_msg)
+                            response_sent = True
                         # Otherwise, silently ignore (channel not configured for this command)
                     elif command.requires_admin_access():
                         error_msg = command.translate('errors.access_denied', command=command_name)
                         await self.send_response(message, error_msg)
+                        response_sent = True
                     elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
                         # Check if it's the per-user version (takes user_id parameter)
                         import inspect
@@ -552,6 +572,14 @@ class CommandManager:
                         if remaining > 0:
                             error_msg = command.translate('errors.cooldown', command=command_name, seconds=remaining)
                             await self.send_response(message, error_msg)
+                            response_sent = True
+                    
+                    # Record command execution in stats database (even if it failed checks)
+                    if 'stats' in self.commands:
+                        stats_command = self.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, command_name, response_sent)
+                    
                     return
                 
                 try:
@@ -567,22 +595,33 @@ class CommandManager:
                     # Execute the command
                     success = await command.execute(message)
                     
-                    # Capture command data for web viewer (with small delay to ensure response is set)
+                    # Small delay to ensure send_response has completed
+                    await asyncio.sleep(0.1)
+                    
+                    # Determine if a response was sent by checking response tracking
+                    response_sent = False
+                    response = None
+                    if hasattr(command, 'last_response') and command.last_response:
+                        response = command.last_response
+                        response_sent = True
+                    elif hasattr(self, '_last_response') and self._last_response:
+                        response = self._last_response
+                        response_sent = True
+                    
+                    # Record command execution in stats database
+                    if 'stats' in self.commands:
+                        stats_command = self.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, command_name, response_sent)
+                    
+                    # Capture command data for web viewer
                     if (hasattr(self.bot, 'web_viewer_integration') and 
                         self.bot.web_viewer_integration and 
                         self.bot.web_viewer_integration.bot_integration):
                         try:
-                            # Small delay to ensure send_response has completed
-                            await asyncio.sleep(0.1)
-                            
-                            # Get the response that was sent (if any)
-                            # Prioritize command.last_response (full response) over _last_response (may be split)
-                            # This ensures commands like path that split messages still show full response in webviewer
-                            response = "Command executed"  # Default response
-                            if hasattr(command, 'last_response') and command.last_response:
-                                response = command.last_response
-                            elif hasattr(self, '_last_response') and self._last_response:
-                                response = self._last_response
+                            # Use the response we found, or default
+                            if response is None:
+                                response = "Command executed"
                             
                             self.bot.web_viewer_integration.bot_integration.capture_command(
                                 message, command_name, response, success if success is not None else True
@@ -595,6 +634,12 @@ class CommandManager:
                     # Send error message to user
                     error_msg = command.translate('errors.execution_error', command=command_name, error=str(e))
                     await self.send_response(message, error_msg)
+                    
+                    # Record command execution in stats database (error response was sent)
+                    if 'stats' in self.commands:
+                        stats_command = self.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, command_name, True)  # Error message counts as response
                     
                     # Capture failed command for web viewer
                     if (hasattr(self.bot, 'web_viewer_integration') and 

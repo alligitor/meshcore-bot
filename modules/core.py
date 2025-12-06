@@ -35,6 +35,7 @@ from .db_manager import DBManager
 from .i18n import Translator
 from .solar_conditions import set_config
 from .web_viewer.integration import WebViewerIntegration
+from .feed_manager import FeedManager
 
 
 class MeshCoreBot:
@@ -124,6 +125,15 @@ class MeshCoreBot:
         self.channel_manager = ChannelManager(self, max_channels=max_channels)
         
         self.scheduler = MessageScheduler(self)
+        
+        # Initialize feed manager
+        self.logger.info("Initializing feed manager")
+        try:
+            self.feed_manager = FeedManager(self)
+            self.logger.info("Feed manager initialized successfully")
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize feed manager: {e}")
+            self.feed_manager = None
         
         # Initialize repeater manager
         self.logger.info("Initializing repeater manager")
@@ -743,6 +753,10 @@ use_zulu_time = false
         # Setup scheduled messages
         self.scheduler.setup_scheduled_messages()
         
+        # Initialize feed manager (if enabled)
+        if self.feed_manager:
+            await self.feed_manager.initialize()
+        
         # Start scheduler thread
         self.scheduler.start()
         
@@ -793,6 +807,10 @@ use_zulu_time = false
             print("Stopping MeshCore Bot...")
         
         self.connected = False
+        
+        # Stop feed manager
+        if self.feed_manager:
+            await self.feed_manager.stop()
         
         # Stop web viewer with proper shutdown sequence
         if self.web_viewer_integration:

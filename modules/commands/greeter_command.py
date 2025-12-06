@@ -6,6 +6,7 @@ Greets users on their first public channel message with mesh information
 
 import sqlite3
 import time
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from .base_command import BaseCommand
@@ -25,6 +26,9 @@ class GreeterCommand(BaseCommand):
         super().__init__(bot)
         self._init_greeter_tables()
         self._load_config()
+        
+        # Track pending greetings (for dead air delay)
+        self.pending_greetings = {}  # key: (sender_id, channel), value: asyncio.Task
         
         # Auto-backfill if enabled
         if self.enabled and self.auto_backfill:
@@ -166,6 +170,14 @@ class GreeterCommand(BaseCommand):
             self.greeting_parts = [part.strip() for part in self.greeting_message.split('|') if part.strip()]
         else:
             self.greeting_parts = [self.greeting_message]
+        
+        # Dead air delay settings
+        self.dead_air_delay_seconds = self.get_config_value('Greeter_Command', 'dead_air_delay_seconds',
+                                                           fallback=0, value_type='int')
+        self.defer_to_human_greeting = self.get_config_value('Greeter_Command', 'defer_to_human_greeting',
+                                                            fallback=False, value_type='bool')
+        self.levenshtein_distance = self.get_config_value('Greeter_Command', 'levenshtein_distance',
+                                                          fallback=0, value_type='int')
     
     def _init_greeter_tables(self):
         """Initialize database tables for greeter tracking"""
@@ -508,9 +520,83 @@ class GreeterCommand(BaseCommand):
             self.logger.error(f"Error starting rollout: {e}")
             return False
     
+    def _levenshtein_distance(self, s1: str, s2: str) -> int:
+        """
+        Calculate Levenshtein distance between two strings
+        
+        Args:
+            s1: First string
+            s2: Second string
+            
+        Returns:
+            Levenshtein distance (number of edits needed)
+        """
+        if len(s1) < len(s2):
+            return self._levenshtein_distance(s2, s1)
+        
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        return previous_row[-1]
+    
+    def _find_similar_greeted_user(self, sender_id: str, channel: str) -> Optional[str]:
+        """
+        Find if a user with a similar name (within Levenshtein distance) has been greeted
+        
+        Args:
+            sender_id: The user's ID to check
+            channel: The channel name (used only if per_channel_greetings is True)
+            
+        Returns:
+            The greeted sender_id if a similar one is found, None otherwise
+        """
+        if self.levenshtein_distance <= 0:
+            return None
+        
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                if self.per_channel_greetings:
+                    # Per-channel mode: check greeted users on this specific channel
+                    cursor.execute('''
+                        SELECT DISTINCT sender_id FROM greeted_users
+                        WHERE channel = ?
+                    ''', (channel,))
+                else:
+                    # Global mode: check all greeted users (channel = NULL)
+                    cursor.execute('''
+                        SELECT DISTINCT sender_id FROM greeted_users
+                        WHERE channel IS NULL
+                    ''')
+                
+                greeted_users = cursor.fetchall()
+                
+                # Check each greeted user for similarity
+                for (greeted_id,) in greeted_users:
+                    distance = self._levenshtein_distance(sender_id.lower(), greeted_id.lower())
+                    if distance <= self.levenshtein_distance:
+                        self.logger.debug(f"Found similar user: {greeted_id} (distance: {distance} from {sender_id})")
+                        return greeted_id
+                
+                return None
+        except Exception as e:
+            self.logger.error(f"Error checking for similar greeted users: {e}")
+            return None
+    
     def has_been_greeted(self, sender_id: str, channel: str) -> bool:
         """
-        Check if a user has been greeted
+        Check if a user has been greeted (with optional Levenshtein distance matching)
         
         Args:
             sender_id: The user's ID
@@ -536,7 +622,17 @@ class GreeterCommand(BaseCommand):
                         WHERE sender_id = ? AND channel IS NULL
                     ''', (sender_id,))
                 
-                return cursor.fetchone() is not None
+                if cursor.fetchone() is not None:
+                    return True
+                
+                # If exact match not found and Levenshtein distance is enabled, check for similar names
+                if self.levenshtein_distance > 0:
+                    similar_user = self._find_similar_greeted_user(sender_id, channel)
+                    if similar_user:
+                        self.logger.info(f"User {sender_id} matches previously greeted user {similar_user} (Levenshtein distance enabled)")
+                        return True
+                
+                return False
         except Exception as e:
             self.logger.error(f"Error checking if user has been greeted: {e}")
             return False
@@ -587,11 +683,11 @@ class GreeterCommand(BaseCommand):
                         count = cursor.fetchone()[0]
                         if count > 1:
                             # Duplicates exist - clean them up, keeping the earliest (first) greeting
-                    cursor.execute('''
-                        SELECT id FROM greeted_users
-                        WHERE sender_id = ? AND channel = ?
+                            cursor.execute('''
+                                SELECT id FROM greeted_users
+                                WHERE sender_id = ? AND channel = ?
                                 ORDER BY greeted_at ASC
-                    ''', (sender_id, channel))
+                            ''', (sender_id, channel))
                             all_ids = [row[0] for row in cursor.fetchall()]
                             if len(all_ids) > 1:
                                 # Delete all but the first (earliest)
@@ -639,11 +735,11 @@ class GreeterCommand(BaseCommand):
                         count = cursor.fetchone()[0]
                         if count > 1:
                             # Duplicates exist - clean them up, keeping the earliest (first) greeting
-                    cursor.execute('''
-                        SELECT id FROM greeted_users
-                        WHERE sender_id = ? AND channel IS NULL
+                            cursor.execute('''
+                                SELECT id FROM greeted_users
+                                WHERE sender_id = ? AND channel IS NULL
                                 ORDER BY greeted_at ASC
-                    ''', (sender_id,))
+                            ''', (sender_id,))
                             all_ids = [row[0] for row in cursor.fetchall()]
                             if len(all_ids) > 1:
                                 # Delete all but the first (earliest)
@@ -956,6 +1052,182 @@ class GreeterCommand(BaseCommand):
             self.logger.error(traceback.format_exc())
             return False
     
+    def _check_human_greeting(self, new_user_id: str, channel: str, since_timestamp: int) -> bool:
+        """
+        Check if a human has greeted the new user by mentioning their name in a message
+        
+        Args:
+            new_user_id: The new user's ID to check for
+            channel: The channel to check
+            since_timestamp: Only check messages after this timestamp
+            
+        Returns:
+            True if a human (not the new user) has mentioned the new user's name
+        """
+        if not self.defer_to_human_greeting:
+            return False
+        
+        try:
+            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if message_stats table exists
+                cursor.execute('''
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='message_stats'
+                ''')
+                if not cursor.fetchone():
+                    return False
+                
+                # Get recent messages from this channel since the new user posted
+                cursor.execute('''
+                    SELECT sender_id, content
+                    FROM message_stats
+                    WHERE channel = ?
+                      AND timestamp >= ?
+                      AND is_dm = 0
+                      AND sender_id != ?
+                    ORDER BY timestamp DESC
+                ''', (channel, since_timestamp, new_user_id))
+                
+                messages = cursor.fetchall()
+                
+                # Check if any message contains the new user's name
+                new_user_id_lower = new_user_id.lower()
+                for sender_id, content in messages:
+                    if content and new_user_id_lower in content.lower():
+                        # Also check with Levenshtein distance if enabled
+                        if self.levenshtein_distance > 0:
+                            # Check if any word in the message is within Levenshtein distance
+                            words = content.lower().split()
+                            for word in words:
+                                # Remove common punctuation
+                                word = word.strip('.,!?;:()[]{}@')
+                                distance = self._levenshtein_distance(new_user_id_lower, word)
+                                if distance <= self.levenshtein_distance:
+                                    self.logger.info(f"Human greeting detected: {sender_id} mentioned {new_user_id} in channel {channel}")
+                                    return True
+                        else:
+                            # Simple substring match
+                            self.logger.info(f"Human greeting detected: {sender_id} mentioned {new_user_id} in channel {channel}")
+                            return True
+                
+                return False
+        except Exception as e:
+            self.logger.error(f"Error checking for human greeting: {e}")
+            return False
+    
+    def _cancel_pending_greeting(self, sender_id: str, channel: str):
+        """Cancel a pending greeting if it exists"""
+        key = (sender_id, channel)
+        if key in self.pending_greetings:
+            task = self.pending_greetings[key]
+            if not task.done():
+                task.cancel()
+                self.logger.info(f"Cancelled pending greeting for {sender_id} on {channel}")
+            del self.pending_greetings[key]
+    
+    async def _send_delayed_greeting(self, message: MeshMessage):
+        """
+        Send a greeting after the dead air delay, checking for human greetings during the delay
+        
+        Args:
+            message: The original message that triggered the greeting
+        """
+        key = (message.sender_id, message.channel)
+        original_timestamp = message.timestamp or int(time.time())
+        
+        try:
+            # Wait for the dead air delay
+            if self.dead_air_delay_seconds > 0:
+                self.logger.debug(f"Waiting {self.dead_air_delay_seconds} seconds before greeting {message.sender_id} on {message.channel}")
+                await asyncio.sleep(self.dead_air_delay_seconds)
+            
+            # Check if greeting was cancelled (user was already greeted or human responded)
+            if key not in self.pending_greetings:
+                self.logger.debug(f"Greeting for {message.sender_id} on {message.channel} was cancelled")
+                return
+            
+            # Check if we should still greet (user might have been greeted by another process)
+            if self.has_been_greeted(message.sender_id, message.channel):
+                self.logger.debug(f"User {message.sender_id} already greeted on {message.channel} - skipping")
+                if key in self.pending_greetings:
+                    del self.pending_greetings[key]
+                return
+            
+            # If defer to human greeting is enabled, check if a human has greeted the user
+            # Check messages from the original timestamp onwards (during the delay period)
+            if self.defer_to_human_greeting and self.dead_air_delay_seconds > 0:
+                if self._check_human_greeting(message.sender_id, message.channel, original_timestamp):
+                    self.logger.info(f"Deferring to human greeting for {message.sender_id} on {message.channel}")
+                    # Mark as greeted so we don't greet them later
+                    self.mark_as_greeted(message.sender_id, message.channel)
+                    if key in self.pending_greetings:
+                        del self.pending_greetings[key]
+                    return
+            
+            # Send the greeting
+            await self._send_greeting(message)
+            
+            # Clean up
+            if key in self.pending_greetings:
+                del self.pending_greetings[key]
+                
+        except asyncio.CancelledError:
+            self.logger.debug(f"Delayed greeting for {message.sender_id} on {message.channel} was cancelled")
+            # Clean up on cancellation
+            if key in self.pending_greetings:
+                del self.pending_greetings[key]
+        except Exception as e:
+            self.logger.error(f"Error in delayed greeting for {message.sender_id}: {e}")
+            if key in self.pending_greetings:
+                del self.pending_greetings[key]
+    
+    async def _send_greeting(self, message: MeshMessage) -> bool:
+        """
+        Actually send the greeting message (extracted from execute for reuse)
+        
+        Args:
+            message: The message that triggered the greeting
+            
+        Returns:
+            True if greeting was sent successfully
+        """
+        try:
+            # Format greeting parts (may be single or multi-part)
+            # Pass channel name for channel-specific greetings
+            greeting_parts = await self._format_greeting_parts(message.sender_id, message.channel)
+            
+            # Send greeting(s)
+            mode_str = "per-channel" if self.per_channel_greetings else "global"
+            self.logger.info(f"Greeting {message.sender_id} on channel {message.channel} ({mode_str} mode, {len(greeting_parts)} part(s))")
+            
+            # Log database verification
+            total_greeted = self.get_greeted_users_count()
+            self.logger.debug(f"Database verification: {total_greeted} total user(s) marked as greeted")
+            
+            # Send all greeting parts
+            success = True
+            for i, greeting_part in enumerate(greeting_parts):
+                if i > 0:
+                    # Wait for bot TX rate limiter between multi-part messages
+                    # This ensures we respect the bot's rate limiting configuration
+                    await self.bot.bot_tx_rate_limiter.wait_for_tx()
+                    # Additional delay to ensure proper spacing (use configured rate limit)
+                    rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+                    # Use a conservative sleep time to avoid rate limiting
+                    sleep_time = max(rate_limit + 0.5, 1.0)  # At least 1 second, or rate_limit + 0.5 seconds
+                    await asyncio.sleep(sleep_time)
+                
+                result = await self.send_response(message, greeting_part)
+                if not result:
+                    success = False
+            
+            return success
+        except Exception as e:
+            self.logger.error(f"Error sending greeting: {e}")
+            return False
+    
     def should_execute(self, message: MeshMessage) -> bool:
         """
         Check if greeter should execute for this message
@@ -1013,7 +1285,7 @@ class GreeterCommand(BaseCommand):
             if not self.should_execute(message):
                 return False
             
-            # Mark as greeted BEFORE getting mesh info (to prevent duplicate greetings)
+            # Mark as greeted BEFORE scheduling greeting (to prevent duplicate greetings)
             # This ensures we don't greet the same user twice even if there's a delay
             # mark_as_greeted uses atomic INSERT OR IGNORE to handle race conditions
             marked = self.mark_as_greeted(message.sender_id, message.channel)
@@ -1061,41 +1333,70 @@ class GreeterCommand(BaseCommand):
                     # If check fails, proceed anyway (better to greet than miss a greeting)
                     self.logger.debug(f"Could not verify greeting timestamp (proceeding anyway): {e}")
             
-            # Format greeting parts (may be single or multi-part)
-            # Pass channel name for channel-specific greetings
-            greeting_parts = await self._format_greeting_parts(message.sender_id, message.channel)
-            
-            # Send greeting(s)
-            mode_str = "per-channel" if self.per_channel_greetings else "global"
-            self.logger.info(f"Greeting {message.sender_id} on channel {message.channel} ({mode_str} mode, {len(greeting_parts)} part(s))")
-            
-            # Log database verification
-            total_greeted = self.get_greeted_users_count()
-            self.logger.debug(f"Database verification: {total_greeted} total user(s) marked as greeted")
-            
-            # Send all greeting parts
-            success = True
-            for i, greeting_part in enumerate(greeting_parts):
-                if i > 0:
-                    # Wait for bot TX rate limiter between multi-part messages
-                    # This ensures we respect the bot's rate limiting configuration
-                    await self.bot.bot_tx_rate_limiter.wait_for_tx()
-                    # Additional delay to ensure proper spacing (use configured rate limit)
-                    import asyncio
-                    rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
-                    # Use a conservative sleep time to avoid rate limiting
-                    sleep_time = max(rate_limit + 0.5, 1.0)  # At least 1 second, or rate_limit + 0.5 seconds
-                    await asyncio.sleep(sleep_time)
+            # Check if dead air delay is enabled
+            if self.dead_air_delay_seconds > 0:
+                # Schedule delayed greeting
+                key = (message.sender_id, message.channel)
                 
-                result = await self.send_response(message, greeting_part)
-                if not result:
-                    success = False
-            
-            return success
+                # Cancel any existing pending greeting for this user/channel
+                if key in self.pending_greetings:
+                    self._cancel_pending_greeting(message.sender_id, message.channel)
+                
+                # Schedule new delayed greeting
+                task = asyncio.create_task(self._send_delayed_greeting(message))
+                self.pending_greetings[key] = task
+                self.logger.info(f"Scheduled delayed greeting for {message.sender_id} on {message.channel} (delay: {self.dead_air_delay_seconds}s)")
+                return True
+            else:
+                # Send greeting immediately (original behavior)
+                return await self._send_greeting(message)
             
         except Exception as e:
             self.logger.error(f"Error executing greeter command: {e}")
             return False
+    
+    def check_message_for_human_greeting(self, message: MeshMessage):
+        """
+        Check if an incoming message should cancel a pending greeting
+        Called from message handler when new messages arrive
+        
+        Args:
+            message: The incoming message to check
+        """
+        if not self.defer_to_human_greeting or not self.dead_air_delay_seconds > 0:
+            return
+        
+        if message.is_dm or not message.channel:
+            return
+        
+        # Check all pending greetings for this channel
+        keys_to_cancel = []
+        for (sender_id, channel), task in list(self.pending_greetings.items()):
+            if channel == message.channel and sender_id != message.sender_id:
+                # Check if this message mentions the pending user
+                if message.content and sender_id.lower() in message.content.lower():
+                    # Also check with Levenshtein distance if enabled
+                    should_cancel = False
+                    if self.levenshtein_distance > 0:
+                        words = message.content.lower().split()
+                        for word in words:
+                            word = word.strip('.,!?;:()[]{}@')
+                            distance = self._levenshtein_distance(sender_id.lower(), word)
+                            if distance <= self.levenshtein_distance:
+                                should_cancel = True
+                                break
+                    else:
+                        should_cancel = True
+                    
+                    if should_cancel:
+                        self.logger.info(f"Human greeting detected in real-time: {message.sender_id} mentioned {sender_id} - cancelling pending greeting")
+                        keys_to_cancel.append((sender_id, channel))
+        
+        # Cancel the pending greetings
+        for key in keys_to_cancel:
+            self._cancel_pending_greeting(key[0], key[1])
+            # Mark as greeted so we don't greet them later
+            self.mark_as_greeted(key[0], key[1])
     
     def get_help_text(self) -> str:
         mode = "per-channel" if self.per_channel_greetings else "global (once total)"

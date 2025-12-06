@@ -63,6 +63,9 @@ class BotDataViewer:
         # Load configuration
         self.config = self._load_config(config_path)
         
+        # Setup template context processor for global template variables
+        self._setup_template_context()
+        
         # Initialize databases
         self._init_databases()
         
@@ -116,6 +119,25 @@ class BotDataViewer:
             config.read(config_path)
         return config
     
+    def _setup_template_context(self):
+        """Setup template context processor to inject global variables"""
+        @self.app.context_processor
+        def inject_template_vars():
+            """Inject variables available to all templates"""
+            # Check if greeter is enabled, defaulting to False if section doesn't exist
+            try:
+                greeter_enabled = self.config.getboolean('Greeter_Command', 'enabled', fallback=False)
+            except (configparser.NoSectionError, configparser.NoOptionError):
+                greeter_enabled = False
+            
+            # Check if feed manager is enabled, defaulting to False if section doesn't exist
+            try:
+                feed_manager_enabled = self.config.getboolean('Feed_Manager', 'feed_manager_enabled', fallback=False)
+            except (configparser.NoSectionError, configparser.NoOptionError):
+                feed_manager_enabled = False
+            
+            return dict(greeter_enabled=greeter_enabled, feed_manager_enabled=feed_manager_enabled)
+    
     def _init_databases(self):
         """Initialize database connections"""
         try:
@@ -151,12 +173,13 @@ class BotDataViewer:
     
     def _init_packet_stream_table(self):
         """Initialize the packet_stream table in bot_data.db"""
+        conn = None
         try:
             # Get database path from config
             db_path = self.config.get('Database', 'path', fallback='bot_data.db')
             
             # Connect to database and create table if it doesn't exist
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect(db_path, timeout=30)
             cursor = conn.cursor()
             
             # Create packet_stream table with schema matching the INSERT statements
@@ -182,13 +205,18 @@ class BotDataViewer:
             ''')
             
             conn.commit()
-            conn.close()
             
             self.logger.info(f"Initialized packet_stream table in {db_path}")
             
         except Exception as e:
             self.logger.error(f"Failed to initialize packet_stream table: {e}")
             # Don't raise - allow web viewer to continue even if table init fails
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception as e:
+                    self.logger.debug(f"Error closing init connection: {e}")
     
     def _get_db_connection(self):
         """Get database connection - create new connection for each request to avoid threading issues"""
@@ -233,6 +261,16 @@ class BotDataViewer:
         def greeter():
             """Greeter management page"""
             return render_template('greeter.html')
+        
+        @self.app.route('/feeds')
+        def feeds():
+            """Feed management page"""
+            return render_template('feeds.html')
+        
+        @self.app.route('/radio')
+        def radio():
+            """Radio settings page"""
+            return render_template('radio.html')
         
         
         # API Routes
@@ -338,6 +376,7 @@ class BotDataViewer:
         @self.app.route('/api/recent_commands')
         def api_recent_commands():
             """API endpoint to get recent commands from database"""
+            conn = None
             try:
                 import sqlite3
                 import json
@@ -349,7 +388,7 @@ class BotDataViewer:
                 # Get database path
                 db_path = self.config.get('Database', 'path', fallback='bot_data.db')
                 
-                conn = sqlite3.connect(db_path)
+                conn = sqlite3.connect(db_path, timeout=30)
                 cursor = conn.cursor()
                 
                 cursor.execute('''
@@ -360,7 +399,6 @@ class BotDataViewer:
                 ''', (cutoff_time,))
                 
                 rows = cursor.fetchall()
-                conn.close()
                 
                 # Parse and return commands
                 commands = []
@@ -376,6 +414,12 @@ class BotDataViewer:
             except Exception as e:
                 self.logger.error(f"Error getting recent commands: {e}")
                 return jsonify({'error': str(e)}), 500
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception as e:
+                        self.logger.debug(f"Error closing recent_commands connection: {e}")
         
         @self.app.route('/api/geocode-contact', methods=['POST'])
         def api_geocode_contact():
@@ -876,6 +920,358 @@ class BotDataViewer:
             except Exception as e:
                 self.logger.error(f"Error ungreeting user: {e}", exc_info=True)
                 return jsonify({'success': False, 'error': str(e)}), 500
+        
+        # Feed management API endpoints
+        @self.app.route('/api/feeds')
+        def api_feeds():
+            """Get all feed subscriptions with statistics"""
+            try:
+                feeds = self._get_feed_subscriptions()
+                return jsonify(feeds)
+            except Exception as e:
+                self.logger.error(f"Error getting feeds: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/<int:feed_id>')
+        def api_feed_detail(feed_id):
+            """Get detailed information about a specific feed"""
+            try:
+                feed = self._get_feed_subscription(feed_id)
+                if not feed:
+                    return jsonify({'error': 'Feed not found'}), 404
+                
+                # Get activity and errors
+                activity = self._get_feed_activity(feed_id)
+                errors = self._get_feed_errors(feed_id)
+                
+                feed['activity'] = activity
+                feed['errors'] = errors
+                
+                return jsonify(feed)
+            except Exception as e:
+                self.logger.error(f"Error getting feed detail: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds', methods=['POST'])
+        def api_create_feed():
+            """Create a new feed subscription"""
+            try:
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'No data provided'}), 400
+                
+                feed_id = self._create_feed_subscription(data)
+                return jsonify({'success': True, 'id': feed_id})
+            except Exception as e:
+                self.logger.error(f"Error creating feed: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/<int:feed_id>', methods=['PUT'])
+        def api_update_feed(feed_id):
+            """Update an existing feed subscription"""
+            try:
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'No data provided'}), 400
+                
+                success = self._update_feed_subscription(feed_id, data)
+                if not success:
+                    return jsonify({'error': 'Feed not found'}), 404
+                
+                return jsonify({'success': True})
+            except Exception as e:
+                self.logger.error(f"Error updating feed: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/<int:feed_id>', methods=['DELETE'])
+        def api_delete_feed(feed_id):
+            """Delete a feed subscription"""
+            try:
+                success = self._delete_feed_subscription(feed_id)
+                if not success:
+                    return jsonify({'error': 'Feed not found'}), 404
+                
+                return jsonify({'success': True})
+            except Exception as e:
+                self.logger.error(f"Error deleting feed: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/default-format', methods=['GET'])
+        def api_get_default_format():
+            """Get the default output format from config"""
+            try:
+                default_format = self.config.get('Feed_Manager', 'default_output_format', 
+                                                fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
+                return jsonify({'default_format': default_format})
+            except Exception as e:
+                self.logger.error(f"Error getting default format: {e}")
+                return jsonify({'default_format': '{emoji} {body|truncate:100} - {date}\n{link|truncate:50}'})
+        
+        @self.app.route('/api/feeds/preview', methods=['POST'])
+        def api_preview_feed():
+            """Preview feed items with custom output format"""
+            try:
+                data = request.get_json()
+                if not data or 'feed_url' not in data:
+                    return jsonify({'error': 'feed_url is required'}), 400
+                
+                feed_url = data['feed_url']
+                feed_type = data.get('feed_type', 'rss')
+                output_format = data.get('output_format', '')
+                api_config = data.get('api_config', {})
+                filter_config = data.get('filter_config')
+                sort_config = data.get('sort_config')
+                
+                # Get default format from config if not provided
+                if not output_format:
+                    output_format = self.config.get('Feed_Manager', 'default_output_format', 
+                                                   fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
+                
+                # Fetch and format feed items
+                preview_items = self._preview_feed_items(feed_url, feed_type, output_format, api_config, filter_config, sort_config)
+                
+                return jsonify({
+                    'success': True,
+                    'items': preview_items
+                })
+            except Exception as e:
+                self.logger.error(f"Error previewing feed: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/test', methods=['POST'])
+        def api_test_feed():
+            """Test a feed URL and return preview of recent items"""
+            try:
+                data = request.get_json()
+                if not data or 'url' not in data:
+                    return jsonify({'error': 'URL is required'}), 400
+                
+                # This would require feed_manager - for now just validate URL
+                from urllib.parse import urlparse
+                url = data['url']
+                result = urlparse(url)
+                if not all([result.scheme in ['http', 'https'], result.netloc]):
+                    return jsonify({'error': 'Invalid URL format'}), 400
+                
+                return jsonify({'success': True, 'message': 'URL validated (full test requires feed manager)'})
+            except Exception as e:
+                self.logger.error(f"Error testing feed: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/stats')
+        def api_feed_stats():
+            """Get aggregate feed statistics"""
+            try:
+                stats = self._get_feed_statistics()
+                return jsonify(stats)
+            except Exception as e:
+                self.logger.error(f"Error getting feed stats: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/<int:feed_id>/activity')
+        def api_feed_activity(feed_id):
+            """Get activity log for a specific feed"""
+            try:
+                activity = self._get_feed_activity(feed_id, limit=50)
+                return jsonify({'activity': activity})
+            except Exception as e:
+                self.logger.error(f"Error getting feed activity: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/<int:feed_id>/errors')
+        def api_feed_errors(feed_id):
+            """Get error history for a specific feed"""
+            try:
+                errors = self._get_feed_errors(feed_id, limit=20)
+                return jsonify({'errors': errors})
+            except Exception as e:
+                self.logger.error(f"Error getting feed errors: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/feeds/<int:feed_id>/refresh', methods=['POST'])
+        def api_refresh_feed(feed_id):
+            """Manually trigger a feed check"""
+            try:
+                # This would trigger feed_manager to poll this feed immediately
+                # For now, just acknowledge the request
+                return jsonify({'success': True, 'message': 'Feed refresh queued'})
+            except Exception as e:
+                self.logger.error(f"Error refreshing feed: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        # Channel management API endpoints
+        @self.app.route('/api/channels')
+        def api_channels():
+            """Get all configured channels"""
+            try:
+                channels = self._get_channels()
+                return jsonify({'channels': channels})
+            except Exception as e:
+                self.logger.error(f"Error getting channels: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/channels', methods=['POST'])
+        def api_create_channel():
+            """Create a new channel (hashtag or custom)"""
+            try:
+                data = request.get_json()
+                if not data or 'name' not in data:
+                    return jsonify({'error': 'Channel name is required'}), 400
+                
+                channel_name = data.get('name', '').strip()
+                channel_idx = data.get('channel_idx')
+                channel_key = data.get('channel_key', '').strip()
+                
+                if not channel_name:
+                    return jsonify({'error': 'Channel name cannot be empty'}), 400
+                
+                # If channel_idx not provided, find the lowest available index
+                if channel_idx is None:
+                    channel_idx = self._get_lowest_available_channel_index()
+                    if channel_idx is None:
+                        return jsonify({'error': 'No available channel slots. All 40 channels are in use.'}), 400
+                
+                # Determine if it's a hashtag channel
+                is_hashtag = channel_name.startswith('#')
+                
+                # Validate custom channel has key
+                if not is_hashtag and not channel_key:
+                    return jsonify({'error': 'Channel key is required for custom channels (channels without # prefix)'}), 400
+                
+                # Validate key format if provided
+                if channel_key:
+                    if len(channel_key) != 32:
+                        return jsonify({'error': 'Channel key must be exactly 32 hexadecimal characters'}), 400
+                    if not all(c in '0123456789abcdefABCDEF' for c in channel_key):
+                        return jsonify({'error': 'Channel key must contain only hexadecimal characters (0-9, a-f, A-F)'}), 400
+                
+                # Try to create channel via bot's channel manager
+                result = self._add_channel_for_web(channel_idx, channel_name, channel_key if not is_hashtag else None)
+                
+                if result.get('success'):
+                    if result.get('pending'):
+                        # Operation is queued, return operation_id for polling
+                        return jsonify({
+                            'success': True,
+                            'pending': True,
+                            'operation_id': result.get('operation_id'),
+                            'message': result.get('message', 'Channel operation queued')
+                        })
+                    else:
+                        return jsonify({'success': True, 'message': 'Channel created successfully'})
+                else:
+                    return jsonify({'error': result.get('error', 'Failed to create channel')}), 500
+                    
+            except Exception as e:
+                self.logger.error(f"Error creating channel: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/channels/<int:channel_idx>', methods=['DELETE'])
+        def api_delete_channel(channel_idx):
+            """Remove a channel"""
+            try:
+                result = self._remove_channel_for_web(channel_idx)
+                if result.get('success'):
+                    if result.get('pending'):
+                        # Operation is queued, return operation_id for polling
+                        return jsonify({
+                            'success': True,
+                            'pending': True,
+                            'operation_id': result.get('operation_id'),
+                            'message': result.get('message', 'Channel operation queued')
+                        })
+                    else:
+                        return jsonify({'success': True, 'message': 'Channel deleted successfully'})
+                else:
+                    return jsonify({'error': result.get('error', 'Failed to delete channel')}), 500
+            except Exception as e:
+                self.logger.error(f"Error deleting channel: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/channel-operations/<int:operation_id>', methods=['GET'])
+        def api_get_operation_status(operation_id):
+            """Get status of a channel operation"""
+            try:
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT status, error_message, result_data, processed_at
+                    FROM channel_operations
+                    WHERE id = ?
+                ''', (operation_id,))
+                
+                result = cursor.fetchone()
+                conn.close()
+                
+                if not result:
+                    return jsonify({'error': 'Operation not found'}), 404
+                
+                status, error_msg, result_data, processed_at = result
+                
+                return jsonify({
+                    'operation_id': operation_id,
+                    'status': status,
+                    'error_message': error_msg,
+                    'processed_at': processed_at,
+                    'result_data': json.loads(result_data) if result_data else None
+                })
+            except Exception as e:
+                self.logger.error(f"Error getting operation status: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/channels/validate', methods=['POST'])
+        def api_validate_channel():
+            """Validate if a channel exists or can be created"""
+            try:
+                data = request.get_json()
+                if not data or 'name' not in data:
+                    return jsonify({'error': 'Channel name is required'}), 400
+                
+                channel_name = data['name']
+                # Check if channel exists
+                channel_num = self._get_channel_number(channel_name)
+                
+                return jsonify({
+                    'exists': channel_num is not None,
+                    'channel_num': channel_num
+                })
+            except Exception as e:
+                self.logger.error(f"Error validating channel: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/channels/<int:channel_idx>', methods=['PUT'])
+        def api_update_channel(channel_idx):
+            """Update channel name or configuration"""
+            try:
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'No data provided'}), 400
+                
+                # This would use channel_manager
+                return jsonify({'success': True, 'message': 'Channel update requires bot connection'})
+            except Exception as e:
+                self.logger.error(f"Error updating channel: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/channels/stats')
+        def api_channel_stats():
+            """Get channel statistics and usage data"""
+            try:
+                stats = self._get_channel_statistics()
+                return jsonify(stats)
+            except Exception as e:
+                self.logger.error(f"Error getting channel stats: {e}")
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/channels/<int:channel_idx>/feeds')
+        def api_channel_feeds(channel_idx):
+            """Get all feed subscriptions for a specific channel"""
+            try:
+                feeds = self._get_feeds_by_channel(channel_idx)
+                return jsonify({'feeds': feeds})
+            except Exception as e:
+                self.logger.error(f"Error getting channel feeds: {e}")
+                return jsonify({'error': str(e)}), 500
     
     def _setup_socketio_handlers(self):
         """Setup SocketIO event handlers using modern patterns"""
@@ -979,7 +1375,11 @@ class BotDataViewer:
         
         def poll_database():
             last_timestamp = 0
+            consecutive_errors = 0
+            max_consecutive_errors = 10
+            
             while True:
+                conn = None
                 try:
                     import time
                     import sqlite3
@@ -988,8 +1388,8 @@ class BotDataViewer:
                     # Get database path
                     db_path = self.config.get('Database', 'path', fallback='bot_data.db')
                     
-                    # Connect to database
-                    conn = sqlite3.connect(db_path)
+                    # Connect to database with timeout to prevent hanging
+                    conn = sqlite3.connect(db_path, timeout=30)
                     cursor = conn.cursor()
                     
                     # Get new data since last poll
@@ -1000,7 +1400,6 @@ class BotDataViewer:
                     ''', (last_timestamp,))
                     
                     rows = cursor.fetchall()
-                    conn.close()
                     
                     # Process new data
                     for timestamp, data_json, data_type in rows:
@@ -1016,18 +1415,50 @@ class BotDataViewer:
                                 self._handle_packet_data(data)  # Treat routing as packet data
                                 
                         except Exception as e:
-                            self.logger.debug(f"Error processing database data: {e}")
+                            self.logger.warning(f"Error processing database data: {e}")
                     
                     # Update last timestamp
                     if rows:
                         last_timestamp = rows[-1][0]
                     
+                    # Reset error counter on success
+                    consecutive_errors = 0
+                    
                     # Sleep before next poll
                     time.sleep(0.5)  # Poll every 500ms
                     
+                except sqlite3.OperationalError as e:
+                    consecutive_errors += 1
+                    error_msg = str(e)
+                    
+                    # Log at appropriate level based on error frequency
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.logger.error(f"Database polling persistent error (attempt {consecutive_errors}): {error_msg}")
+                        # Exponential backoff for persistent errors
+                        time.sleep(min(60, 2 ** min(consecutive_errors - max_consecutive_errors, 5)))
+                    elif consecutive_errors > 3:
+                        self.logger.warning(f"Database polling error (attempt {consecutive_errors}): {error_msg}")
+                        time.sleep(5)  # Wait longer on repeated errors
+                    else:
+                        self.logger.debug(f"Database polling error (attempt {consecutive_errors}): {error_msg}")
+                        time.sleep(1)  # Wait longer on error
+                    
                 except Exception as e:
-                    self.logger.debug(f"Database polling error: {e}")
-                    time.sleep(1)  # Wait longer on error
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.logger.error(f"Database polling unexpected error (attempt {consecutive_errors}): {e}", exc_info=True)
+                        time.sleep(min(60, 2 ** min(consecutive_errors - max_consecutive_errors, 5)))
+                    else:
+                        self.logger.warning(f"Database polling unexpected error (attempt {consecutive_errors}): {e}")
+                        time.sleep(2)
+                
+                finally:
+                    # Always close connection, even on error
+                    if conn:
+                        try:
+                            conn.close()
+                        except Exception as e:
+                            self.logger.debug(f"Error closing database connection: {e}")
         
         # Start polling thread
         polling_thread = threading.Thread(target=poll_database, daemon=True)
@@ -1059,6 +1490,7 @@ class BotDataViewer:
     
     def _cleanup_old_data(self, days_to_keep: int = 7):
         """Clean up old packet stream data to prevent database bloat"""
+        conn = None
         try:
             import sqlite3
             import time
@@ -1068,7 +1500,8 @@ class BotDataViewer:
             # Get database path
             db_path = self.config.get('Database', 'path', fallback='bot_data.db')
             
-            conn = sqlite3.connect(db_path)
+            # Use timeout to prevent hanging
+            conn = sqlite3.connect(db_path, timeout=30)
             cursor = conn.cursor()
             
             # Clean up old packet stream data
@@ -1076,13 +1509,18 @@ class BotDataViewer:
             deleted_count = cursor.rowcount
             
             conn.commit()
-            conn.close()
             
             if deleted_count > 0:
                 self.logger.info(f"Cleaned up {deleted_count} old packet stream entries (older than {days_to_keep} days)")
             
         except Exception as e:
             self.logger.error(f"Error cleaning up old packet stream data: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception as e:
+                    self.logger.debug(f"Error closing cleanup connection: {e}")
     
     def _get_database_stats(self, top_users_window='all', top_commands_window='all', 
                            top_paths_window='all', top_channels_window='all'):
@@ -1902,6 +2340,1148 @@ class BotDataViewer:
             return {'error': str(e)}
     
     
+    def _get_feed_subscriptions(self, channel_filter=None):
+        """Get all feed subscriptions, optionally filtered by channel"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            if channel_filter:
+                cursor.execute('''
+                    SELECT * FROM feed_subscriptions
+                    WHERE channel_name = ?
+                    ORDER BY id
+                ''', (channel_filter,))
+            else:
+                cursor.execute('''
+                    SELECT * FROM feed_subscriptions
+                    ORDER BY id
+                ''')
+            
+            rows = cursor.fetchall()
+            feeds = []
+            for row in rows:
+                feed = dict(row)
+                # Get feed count for this channel
+                cursor.execute('''
+                    SELECT COUNT(*) FROM feed_activity
+                    WHERE feed_id = ?
+                ''', (feed['id'],))
+                feed['item_count'] = cursor.fetchone()[0]
+                
+                # Get error count
+                cursor.execute('''
+                    SELECT COUNT(*) FROM feed_errors
+                    WHERE feed_id = ? AND resolved_at IS NULL
+                ''', (feed['id'],))
+                feed['error_count'] = cursor.fetchone()[0]
+                
+                feeds.append(feed)
+            
+            return {'feeds': feeds, 'total': len(feeds)}
+        except Exception as e:
+            self.logger.error(f"Error getting feed subscriptions: {e}")
+            return {'feeds': [], 'total': 0, 'error': str(e)}
+        finally:
+            if conn:
+                conn.close()
+    
+    def _get_feed_subscription(self, feed_id):
+        """Get a single feed subscription by ID"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM feed_subscriptions WHERE id = ?', (feed_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            self.logger.error(f"Error getting feed subscription: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+    
+    def _create_feed_subscription(self, data):
+        """Create a new feed subscription"""
+        import sqlite3
+        import json
+        conn = None
+        try:
+            feed_type = data.get('feed_type')
+            feed_url = data.get('feed_url')
+            channel_name = data.get('channel_name')
+            feed_name = data.get('feed_name')
+            check_interval = data.get('check_interval_seconds', 300)
+            api_config = data.get('api_config')
+            output_format = data.get('output_format')
+            message_send_interval = data.get('message_send_interval_seconds')
+            
+            if not all([feed_type, feed_url, channel_name]):
+                raise ValueError("feed_type, feed_url, and channel_name are required")
+            
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            api_config_str = json.dumps(api_config) if api_config else None
+            
+            cursor.execute('''
+                INSERT INTO feed_subscriptions 
+                (feed_type, feed_url, channel_name, feed_name, check_interval_seconds, api_config, output_format, message_send_interval_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (feed_type, feed_url, channel_name, feed_name, check_interval, api_config_str, output_format, message_send_interval))
+            
+            conn.commit()
+            return cursor.lastrowid
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+    
+    def _update_feed_subscription(self, feed_id, data):
+        """Update a feed subscription"""
+        import sqlite3
+        import json
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            updates = []
+            params = []
+            
+            if 'feed_name' in data:
+                updates.append('feed_name = ?')
+                params.append(data['feed_name'])
+            
+            if 'check_interval_seconds' in data:
+                updates.append('check_interval_seconds = ?')
+                params.append(data['check_interval_seconds'])
+            
+            if 'enabled' in data:
+                updates.append('enabled = ?')
+                params.append(1 if data['enabled'] else 0)
+            
+            if 'api_config' in data:
+                updates.append('api_config = ?')
+                params.append(json.dumps(data['api_config']) if data['api_config'] else None)
+            
+            if 'output_format' in data:
+                updates.append('output_format = ?')
+                params.append(data['output_format'] if data['output_format'] else None)
+            
+            if 'message_send_interval_seconds' in data:
+                updates.append('message_send_interval_seconds = ?')
+                params.append(float(data['message_send_interval_seconds']) if data['message_send_interval_seconds'] else None)
+            
+            if 'filter_config' in data:
+                updates.append('filter_config = ?')
+                params.append(json.dumps(data['filter_config']) if data['filter_config'] else None)
+            
+            if 'sort_config' in data:
+                updates.append('sort_config = ?')
+                params.append(json.dumps(data['sort_config']) if data['sort_config'] else None)
+            
+            if 'message_send_interval_seconds' in data:
+                updates.append('message_send_interval_seconds = ?')
+                params.append(data['message_send_interval_seconds'])
+            
+            if not updates:
+                return True  # Nothing to update
+            
+            updates.append('updated_at = CURRENT_TIMESTAMP')
+            params.append(feed_id)
+            
+            query = f'UPDATE feed_subscriptions SET {", ".join(updates)} WHERE id = ?'
+            cursor.execute(query, params)
+            conn.commit()
+            
+            return cursor.rowcount > 0
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+    
+    def _delete_feed_subscription(self, feed_id):
+        """Delete a feed subscription"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM feed_subscriptions WHERE id = ?', (feed_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+    
+    def _get_feed_activity(self, feed_id, limit=50):
+        """Get activity log for a feed"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM feed_activity
+                WHERE feed_id = ?
+                ORDER BY processed_at DESC
+                LIMIT ?
+            ''', (feed_id, limit))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error getting feed activity: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+    
+    def _get_feed_errors(self, feed_id, limit=20):
+        """Get error history for a feed"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM feed_errors
+                WHERE feed_id = ?
+                ORDER BY occurred_at DESC
+                LIMIT ?
+            ''', (feed_id, limit))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error getting feed errors: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+    
+    def _get_feed_statistics(self):
+        """Get aggregate feed statistics"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            stats = {}
+            
+            # Total subscriptions
+            cursor.execute('SELECT COUNT(*) FROM feed_subscriptions')
+            stats['total_subscriptions'] = cursor.fetchone()[0]
+            
+            # Enabled subscriptions
+            cursor.execute('SELECT COUNT(*) FROM feed_subscriptions WHERE enabled = 1')
+            stats['enabled_subscriptions'] = cursor.fetchone()[0]
+            
+            # Items processed in last 24h
+            cursor.execute('''
+                SELECT COUNT(*) FROM feed_activity
+                WHERE processed_at > datetime('now', '-24 hours')
+            ''')
+            stats['items_24h'] = cursor.fetchone()[0]
+            
+            # Items processed in last 7d
+            cursor.execute('''
+                SELECT COUNT(*) FROM feed_activity
+                WHERE processed_at > datetime('now', '-7 days')
+            ''')
+            stats['items_7d'] = cursor.fetchone()[0]
+            
+            # Error count
+            cursor.execute('''
+                SELECT COUNT(*) FROM feed_errors
+                WHERE resolved_at IS NULL
+            ''')
+            stats['active_errors'] = cursor.fetchone()[0]
+            
+            # Most active channels
+            cursor.execute('''
+                SELECT channel_name, COUNT(*) as feed_count
+                FROM feed_subscriptions
+                WHERE enabled = 1
+                GROUP BY channel_name
+                ORDER BY feed_count DESC
+                LIMIT 10
+            ''')
+            stats['top_channels'] = [{'channel': row[0], 'count': row[1]} for row in cursor.fetchall()]
+            
+            return stats
+        except Exception as e:
+            self.logger.error(f"Error getting feed statistics: {e}")
+            return {'error': str(e)}
+        finally:
+            if conn:
+                conn.close()
+    
+    def _get_feeds_by_channel(self, channel_idx):
+        """Get all feeds for a specific channel index"""
+        # First get channel name from index
+        # This would require channel_manager access
+        # For now, return empty list
+        return []
+    
+    def _get_channels(self):
+        """Get all configured channels from database"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT channel_idx, channel_name, channel_type, channel_key_hex, last_updated
+                FROM channels
+                ORDER BY channel_idx
+            ''')
+            
+            rows = cursor.fetchall()
+            channels = []
+            for row in rows:
+                channels.append({
+                    'channel_idx': row['channel_idx'],
+                    'index': row['channel_idx'],  # Alias for compatibility
+                    'name': row['channel_name'],
+                    'channel_name': row['channel_name'],  # Alias for compatibility
+                    'type': row['channel_type'] or 'hashtag',
+                    'key_hex': row['channel_key_hex'],
+                    'last_updated': row['last_updated']
+                })
+            
+            return channels
+        except Exception as e:
+            self.logger.error(f"Error getting channels: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+    
+    def _get_channel_number(self, channel_name):
+        """Get channel number from channel name"""
+        # This would use channel_manager
+        # For now, return None
+        return None
+    
+    def _get_lowest_available_channel_index(self):
+        """Get the lowest available channel index (0-39)"""
+        try:
+            channels = self._get_channels()
+            used_indices = {c['channel_idx'] for c in channels}
+            
+            # Find the lowest available index
+            for i in range(40):
+                if i not in used_indices:
+                    return i
+            
+            # All channels are used
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting lowest available channel index: {e}")
+            return None
+    
+    def _get_channel_statistics(self):
+        """Get channel statistics"""
+        import sqlite3
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            # Get feed count per channel
+            cursor.execute('''
+                SELECT channel_name, COUNT(*) as feed_count
+                FROM feed_subscriptions
+                WHERE enabled = 1
+                GROUP BY channel_name
+            ''')
+            
+            channel_feeds = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            return {
+                'channels_with_feeds': len(channel_feeds),
+                'channel_feed_counts': channel_feeds
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting channel statistics: {e}")
+            return {'error': str(e)}
+        finally:
+            if conn:
+                conn.close()
+    
+    def _preview_feed_items(self, feed_url: str, feed_type: str, output_format: str, api_config: dict = None, filter_config: dict = None, sort_config: dict = None) -> List[Dict[str, Any]]:
+        """Preview feed items with custom output format (standalone, doesn't require bot)"""
+        import feedparser
+        import requests
+        import html
+        import re
+        from datetime import datetime, timezone
+        
+        try:
+            items = []
+            
+            if feed_type == 'rss':
+                # Fetch RSS feed
+                response = requests.get(feed_url, timeout=30, headers={'User-Agent': 'MeshCoreBot/1.0 FeedManager'})
+                response.raise_for_status()
+                parsed = feedparser.parse(response.text)
+                
+                # Get items (we'll filter and limit later)
+                for entry in parsed.entries[:20]:  # Fetch more items to account for filtering
+                    # Parse published date
+                    published = None
+                    if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                        try:
+                            published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                        except Exception:
+                            pass
+                    
+                    items.append({
+                        'title': entry.get('title', 'Untitled'),
+                        'description': entry.get('description', ''),
+                        'link': entry.get('link', ''),
+                        'published': published
+                    })
+            
+            elif feed_type == 'api':
+                # Fetch API feed
+                method = api_config.get('method', 'GET').upper()
+                headers = api_config.get('headers', {})
+                params = api_config.get('params', {})
+                body = api_config.get('body')
+                parser_config = api_config.get('response_parser', {})
+                
+                if method == 'POST':
+                    response = requests.post(feed_url, headers=headers, params=params, json=body, timeout=30)
+                else:
+                    response = requests.get(feed_url, headers=headers, params=params, timeout=30)
+                response.raise_for_status()
+                
+                # Try to parse JSON, handle cases where response might be a string
+                try:
+                    data = response.json()
+                except ValueError:
+                    # If JSON parsing fails, try to get text and see if it's an error message
+                    text = response.text
+                    raise Exception(f"API returned non-JSON response: {text[:200]}")
+                
+                # Check if response is an error message (string)
+                if isinstance(data, str):
+                    raise Exception(f"API returned error message: {data[:200]}")
+                
+                # Ensure data is a dict or list
+                if not isinstance(data, (dict, list)):
+                    raise Exception(f"API response is not a valid JSON object or array: {type(data).__name__} - {str(data)[:200]}")
+                
+                # Extract items using parser config
+                items_path = parser_config.get('items_path', '')
+                if items_path:
+                    parts = items_path.split('.')
+                    items_data = data
+                    for part in parts:
+                        if isinstance(items_data, dict):
+                            items_data = items_data.get(part, [])
+                        else:
+                            raise Exception(f"Cannot navigate path '{items_path}': expected dict at '{part}', got {type(items_data).__name__}")
+                else:
+                    # If no items_path, data should be a list or we wrap it
+                    if isinstance(data, list):
+                        items_data = data
+                    elif isinstance(data, dict):
+                        # If it's a dict, try to find common array fields
+                        items_data = data.get('items', data.get('data', data.get('results', [data])))
+                    else:
+                        items_data = [data]
+                
+                # Ensure items_data is a list
+                if not isinstance(items_data, list):
+                    items_data = [items_data]
+                
+                # Get items (we'll filter and limit later)
+                id_field = parser_config.get('id_field', 'id')
+                title_field = parser_config.get('title_field', 'title')
+                description_field = parser_config.get('description_field', 'description')
+                timestamp_field = parser_config.get('timestamp_field', 'created_at')
+                
+                # Helper function to get nested values
+                def get_nested_value(data, path, default=''):
+                    if not path or not data:
+                        return default
+                    parts = path.split('.')
+                    value = data
+                    for part in parts:
+                        if isinstance(value, dict):
+                            value = value.get(part)
+                        elif isinstance(value, list):
+                            try:
+                                idx = int(part)
+                                if 0 <= idx < len(value):
+                                    value = value[idx]
+                                else:
+                                    return default
+                            except (ValueError, TypeError):
+                                return default
+                        else:
+                            return default
+                        if value is None:
+                            return default
+                    return value if value is not None else default
+                
+                for item_data in items_data[:20]:  # Fetch more items to account for filtering
+                    # Ensure item_data is a dict
+                    if not isinstance(item_data, dict):
+                        # If it's not a dict, try to convert or skip
+                        if isinstance(item_data, str):
+                            # If it's a string, create a simple dict
+                            item_data = {'title': item_data, 'description': item_data}
+                        else:
+                            # Try to convert to dict or skip
+                            continue
+                    
+                    # Parse timestamp if available - support nested paths
+                    published = None
+                    if timestamp_field:
+                        ts_value = get_nested_value(item_data, timestamp_field)
+                        if ts_value:
+                            try:
+                                if isinstance(ts_value, (int, float)):
+                                    published = datetime.fromtimestamp(ts_value, tz=timezone.utc)
+                                elif isinstance(ts_value, str):
+                                    # Try Microsoft date format first
+                                    if ts_value.startswith('/Date('):
+                                        published = self._parse_microsoft_date(ts_value)
+                                    else:
+                                        # Try ISO format
+                                        try:
+                                            published = datetime.fromisoformat(ts_value.replace('Z', '+00:00'))
+                                        except ValueError:
+                                            # Try common formats
+                                            for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                                                try:
+                                                    published = datetime.strptime(ts_value, fmt)
+                                                    if published.tzinfo is None:
+                                                        published = published.replace(tzinfo=timezone.utc)
+                                                    break
+                                                except ValueError:
+                                                    continue
+                            except Exception:
+                                pass
+                    
+                    # Get description - support nested paths
+                    description = ''
+                    if description_field:
+                        desc_value = get_nested_value(item_data, description_field)
+                        if desc_value:
+                            description = str(desc_value)
+                    
+                    items.append({
+                        'title': get_nested_value(item_data, title_field, 'Untitled'),
+                        'description': description,
+                        'link': item_data.get('link', '') if isinstance(item_data, dict) else '',
+                        'published': published,
+                        'raw': item_data  # Store raw data for format string access
+                    })
+            
+            # Apply sorting if configured
+            if sort_config:
+                items = self._sort_items_preview(items, sort_config)
+            
+            # Apply filter if configured
+            if filter_config:
+                items = [item for item in items if self._should_include_item(item, filter_config)]
+            
+            # Limit to first 3 items after filtering
+            items = items[:3]
+            
+            # Format items using output format
+            formatted_items = []
+            for item in items:
+                formatted = self._format_feed_item(item, output_format, feed_name='')
+                formatted_items.append({
+                    'original': item,
+                    'formatted': formatted
+                })
+            
+            return formatted_items
+            
+        except Exception as e:
+            self.logger.error(f"Error previewing feed: {e}")
+            raise
+    
+    def _should_include_item(self, item: Dict[str, Any], filter_config: dict) -> bool:
+        """Check if an item should be included based on filter configuration (standalone version for preview)"""
+        import json
+        import re
+        
+        if not filter_config:
+            return True
+        
+        try:
+            filter_config_dict = json.loads(filter_config) if isinstance(filter_config, str) else filter_config
+        except (json.JSONDecodeError, TypeError):
+            return True
+        
+        conditions = filter_config_dict.get('conditions', [])
+        if not conditions:
+            return True
+        
+        logic = filter_config_dict.get('logic', 'AND').upper()
+        
+        # Get raw data for field access
+        raw_data = item.get('raw', {})
+        
+        # Helper to get nested values
+        def get_nested_value(data, path, default=''):
+            if not path or not data:
+                return default
+            parts = path.split('.')
+            value = data
+            for part in parts:
+                if isinstance(value, dict):
+                    value = value.get(part)
+                elif isinstance(value, list):
+                    try:
+                        idx = int(part)
+                        if 0 <= idx < len(value):
+                            value = value[idx]
+                        else:
+                            return default
+                    except (ValueError, TypeError):
+                        return default
+                else:
+                    return default
+                if value is None:
+                    return default
+            return value if value is not None else default
+        
+        # Evaluate each condition
+        results = []
+        for condition in conditions:
+            field_path = condition.get('field')
+            operator = condition.get('operator', 'equals')
+            
+            if not field_path:
+                continue
+            
+            # Get field value using nested access
+            field_value = get_nested_value(raw_data, field_path, '')
+            if not field_value and field_path.startswith('raw.'):
+                field_value = get_nested_value(raw_data, field_path[4:], '')
+            
+            if not field_value:
+                field_value = get_nested_value(item, field_path, '')
+            
+            # Convert to string for comparison
+            field_value_str = str(field_value).lower() if field_value is not None else ''
+            
+            # Evaluate condition
+            result = False
+            if operator == 'equals':
+                compare_value = str(condition.get('value', '')).lower()
+                result = field_value_str == compare_value
+            elif operator == 'not_equals':
+                compare_value = str(condition.get('value', '')).lower()
+                result = field_value_str != compare_value
+            elif operator == 'in':
+                values = [str(v).lower() for v in condition.get('values', [])]
+                result = field_value_str in values
+            elif operator == 'not_in':
+                values = [str(v).lower() for v in condition.get('values', [])]
+                result = field_value_str not in values
+            elif operator == 'matches':
+                pattern = condition.get('pattern', '')
+                if pattern:
+                    try:
+                        result = bool(re.search(pattern, str(field_value), re.IGNORECASE))
+                    except re.error:
+                        result = False
+            elif operator == 'not_matches':
+                pattern = condition.get('pattern', '')
+                if pattern:
+                    try:
+                        result = not bool(re.search(pattern, str(field_value), re.IGNORECASE))
+                    except re.error:
+                        result = True
+            elif operator == 'contains':
+                compare_value = str(condition.get('value', '')).lower()
+                result = compare_value in field_value_str
+            elif operator == 'not_contains':
+                compare_value = str(condition.get('value', '')).lower()
+                result = compare_value not in field_value_str
+            else:
+                result = True  # Default to allowing if operator is unknown
+            
+            results.append(result)
+        
+        # Apply logic (AND or OR)
+        if logic == 'OR':
+            return any(results)
+        else:  # AND (default)
+            return all(results)
+    
+    def _parse_microsoft_date(self, date_str: str) -> Optional[datetime]:
+        """Parse Microsoft JSON date format: /Date(timestamp-offset)/"""
+        import re
+        from datetime import timezone
+        
+        if not date_str or not isinstance(date_str, str):
+            return None
+        
+        # Match /Date(timestamp-offset)/ format
+        match = re.match(r'/Date\((\d+)([+-]\d+)?\)/', date_str)
+        if match:
+            timestamp_ms = int(match.group(1))
+            offset_str = match.group(2) if match.group(2) else '+0000'
+            
+            # Convert milliseconds to seconds
+            timestamp = timestamp_ms / 1000.0
+            
+            # Parse offset (format: +0800 or -0800)
+            try:
+                offset_hours = int(offset_str[:3])
+                offset_mins = int(offset_str[3:5])
+                offset_seconds = (offset_hours * 3600) + (offset_mins * 60)
+                if offset_str[0] == '-':
+                    offset_seconds = -offset_seconds
+                
+                # Create timezone-aware datetime
+                tz = timezone.utc
+                if offset_seconds != 0:
+                    from datetime import timedelta
+                    tz = timezone(timedelta(seconds=offset_seconds))
+                
+                return datetime.fromtimestamp(timestamp, tz=tz)
+            except (ValueError, IndexError):
+                # Fallback to UTC if offset parsing fails
+                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        
+        return None
+    
+    def _sort_items_preview(self, items: List[Dict[str, Any]], sort_config: dict) -> List[Dict[str, Any]]:
+        """Sort items based on sort configuration (standalone version for preview)"""
+        if not sort_config or not items:
+            return items
+        
+        field_path = sort_config.get('field')
+        order = sort_config.get('order', 'desc').lower()
+        
+        if not field_path:
+            return items
+        
+        # Helper to get nested values
+        def get_nested_value(data, path, default=''):
+            if not path or not data:
+                return default
+            parts = path.split('.')
+            value = data
+            for part in parts:
+                if isinstance(value, dict):
+                    value = value.get(part)
+                elif isinstance(value, list):
+                    try:
+                        idx = int(part)
+                        if 0 <= idx < len(value):
+                            value = value[idx]
+                        else:
+                            return default
+                    except (ValueError, TypeError):
+                        return default
+                else:
+                    return default
+                if value is None:
+                    return default
+            return value if value is not None else default
+        
+        def get_sort_value(item):
+            """Get the sort value for an item"""
+            # Try raw data first
+            raw_data = item.get('raw', {})
+            value = get_nested_value(raw_data, field_path, '')
+            
+            if not value and field_path.startswith('raw.'):
+                value = get_nested_value(raw_data, field_path[4:], '')
+            
+            if not value:
+                value = get_nested_value(item, field_path, '')
+            
+            # Handle Microsoft date format
+            if isinstance(value, str) and value.startswith('/Date('):
+                dt = self._parse_microsoft_date(value)
+                if dt:
+                    return dt.timestamp()
+            
+            # Handle datetime objects
+            if isinstance(value, datetime):
+                return value.timestamp()
+            
+            # Handle numeric values
+            if isinstance(value, (int, float)):
+                return float(value)
+            
+            # Handle string timestamps
+            if isinstance(value, str):
+                # Try to parse as ISO format
+                try:
+                    dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                    return dt.timestamp()
+                except ValueError:
+                    pass
+                
+                # Try common date formats
+                for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                    try:
+                        dt = datetime.strptime(value, fmt)
+                        return dt.timestamp()
+                    except ValueError:
+                        continue
+            
+            # For strings, use lexicographic comparison
+            return str(value)
+        
+        # Sort items
+        try:
+            sorted_items = sorted(items, key=get_sort_value, reverse=(order == 'desc'))
+            return sorted_items
+        except Exception as e:
+            self.logger.warning(f"Error sorting items in preview: {e}")
+            return items
+    
+    def _format_feed_item(self, item: Dict[str, Any], format_str: str, feed_name: str = '') -> str:
+        """Format a feed item using the output format (standalone version)"""
+        import html
+        import re
+        from datetime import datetime, timezone
+        
+        # Extract field values
+        title = item.get('title', 'Untitled')
+        body = item.get('description', '') or item.get('body', '')
+        
+        # Clean HTML from body if present
+        if body:
+            body = html.unescape(body)
+            # Convert line break tags to newlines before stripping other HTML
+            # Handle <br>, <br/>, <br />, <BR>, etc.
+            body = re.sub(r'<br\s*/?>', '\n', body, flags=re.IGNORECASE)
+            # Convert paragraph tags to newlines (with spacing)
+            body = re.sub(r'</p>', '\n\n', body, flags=re.IGNORECASE)
+            body = re.sub(r'<p[^>]*>', '', body, flags=re.IGNORECASE)
+            # Remove remaining HTML tags
+            body = re.sub(r'<[^>]+>', '', body)
+            # Clean up whitespace (preserve intentional line breaks)
+            # Replace multiple newlines with double newline, then normalize spaces within lines
+            body = re.sub(r'\n\s*\n\s*\n+', '\n\n', body)  # Multiple newlines -> double newline
+            lines = body.split('\n')
+            body = '\n'.join(' '.join(line.split()) for line in lines)  # Normalize spaces per line
+            body = body.strip()
+        
+        link = item.get('link', '')
+        published = item.get('published')
+        
+        # Format timestamp
+        date_str = ""
+        if published:
+            try:
+                if published.tzinfo:
+                    now = datetime.now(timezone.utc)
+                else:
+                    now = datetime.now()
+                
+                diff = now - published
+                minutes = int(diff.total_seconds() / 60)
+                
+                if minutes < 1:
+                    date_str = "now"
+                elif minutes < 60:
+                    date_str = f"{minutes}m ago"
+                elif minutes < 1440:
+                    hours = minutes // 60
+                    mins = minutes % 60
+                    date_str = f"{hours}h {mins}m ago"
+                else:
+                    days = minutes // 1440
+                    date_str = f"{days}d ago"
+            except Exception:
+                pass
+        
+        # Choose emoji
+        emoji = "📢"
+        feed_name_lower = feed_name.lower()
+        if 'emergency' in feed_name_lower or 'alert' in feed_name_lower:
+            emoji = "🚨"
+        elif 'warning' in feed_name_lower:
+            emoji = "⚠️"
+        elif 'info' in feed_name_lower or 'news' in feed_name_lower:
+            emoji = "ℹ️"
+        
+        # Build replacements
+        replacements = {
+            'title': title,
+            'body': body,
+            'date': date_str,
+            'link': link,
+            'emoji': emoji
+        }
+        
+        # Get raw API data if available (for preview, we don't have raw data, so this will be empty)
+        raw_data = item.get('raw', {})
+        
+        # Helper to get nested values
+        def get_nested_value(data, path, default=''):
+            if not path or not data:
+                return default
+            parts = path.split('.')
+            value = data
+            for part in parts:
+                if isinstance(value, dict):
+                    value = value.get(part)
+                elif isinstance(value, list):
+                    try:
+                        idx = int(part)
+                        if 0 <= idx < len(value):
+                            value = value[idx]
+                        else:
+                            return default
+                    except (ValueError, TypeError):
+                        return default
+                else:
+                    return default
+                if value is None:
+                    return default
+            return value if value is not None else default
+        
+        # Apply shortening, parsing, and conditional functions
+        def apply_shortening(text: str, function: str) -> str:
+            if not text:
+                return ""
+            
+            if function.startswith('truncate:'):
+                try:
+                    max_len = int(function.split(':', 1)[1])
+                    if len(text) <= max_len:
+                        return text
+                    return text[:max_len] + "..."
+                except (ValueError, IndexError):
+                    return text
+            elif function.startswith('word_wrap:'):
+                try:
+                    max_len = int(function.split(':', 1)[1])
+                    if len(text) <= max_len:
+                        return text
+                    truncated = text[:max_len]
+                    last_space = truncated.rfind(' ')
+                    if last_space > max_len * 0.7:
+                        return truncated[:last_space] + "..."
+                    return truncated + "..."
+                except (ValueError, IndexError):
+                    return text
+            elif function.startswith('first_words:'):
+                try:
+                    num_words = int(function.split(':', 1)[1])
+                    words = text.split()
+                    if len(words) <= num_words:
+                        return text
+                    return ' '.join(words[:num_words]) + "..."
+                except (ValueError, IndexError):
+                    return text
+            elif function.startswith('regex:'):
+                try:
+                    # Parse regex pattern and optional group number
+                    # Format: regex:pattern:group or regex:pattern
+                    # Need to handle patterns that contain colons, so split from the right
+                    remaining = function[6:]  # Skip 'regex:' prefix
+                    
+                    # Try to find the last colon that's followed by a number (the group number)
+                    # Look for pattern like :N at the end
+                    last_colon_idx = remaining.rfind(':')
+                    pattern = remaining
+                    group_num = None
+                    
+                    if last_colon_idx > 0:
+                        # Check if what's after the last colon is a number
+                        potential_group = remaining[last_colon_idx + 1:]
+                        if potential_group.isdigit():
+                            pattern = remaining[:last_colon_idx]
+                            group_num = int(potential_group)
+                    
+                    if not pattern:
+                        return text
+                    
+                    # Apply regex
+                    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        if group_num is not None:
+                            # Use specified group (0 = whole match, 1 = first group, etc.)
+                            if 0 <= group_num <= len(match.groups()):
+                                return match.group(group_num) if group_num > 0 else match.group(0)
+                        else:
+                            # Use first capture group if available, otherwise whole match
+                            if match.groups():
+                                return match.group(1)
+                            else:
+                                return match.group(0)
+                    return ""  # No match found
+                except (ValueError, IndexError, re.error) as e:
+                    # Silently fail on regex errors in preview
+                    return text
+            elif function.startswith('if_regex:'):
+                try:
+                    # Parse: if_regex:pattern:then:else
+                    # Split by ':' but need to handle regex patterns that contain ':'
+                    parts = function[9:].split(':', 2)  # Skip 'if_regex:' prefix, split into [pattern, then, else]
+                    if len(parts) < 3:
+                        return text
+                    
+                    pattern = parts[0]
+                    then_value = parts[1]
+                    else_value = parts[2]
+                    
+                    if not pattern:
+                        return text
+                    
+                    # Check if pattern matches
+                    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        return then_value
+                    else:
+                        return else_value
+                except (ValueError, IndexError, re.error) as e:
+                    # Silently fail on regex errors in preview
+                    return text
+            elif function.startswith('switch:'):
+                try:
+                    # Parse: switch:value1:result1:value2:result2:...:default
+                    # Example: switch:highest:🔴:high:🟠:medium:🟡:low:⚪:⚪
+                    parts = function[7:].split(':')  # Skip 'switch:' prefix
+                    if len(parts) < 2:
+                        return text
+                    
+                    # Pairs of value:result, last one is default
+                    text_lower = text.lower().strip()
+                    for i in range(0, len(parts) - 1, 2):
+                        if i + 1 < len(parts):
+                            value = parts[i].lower()
+                            result = parts[i + 1]
+                            if text_lower == value:
+                                return result
+                    
+                    # Return last part as default if no match
+                    return parts[-1] if parts else text
+                except (ValueError, IndexError) as e:
+                    # Silently fail on switch errors in preview
+                    return text
+            elif function.startswith('regex_cond:'):
+                try:
+                    # Parse: regex_cond:extract_pattern:check_pattern:then:group
+                    parts = function[11:].split(':', 3)  # Skip 'regex_cond:' prefix
+                    if len(parts) < 4:
+                        return text
+                    
+                    extract_pattern = parts[0]
+                    check_pattern = parts[1]
+                    then_value = parts[2]
+                    else_group = int(parts[3]) if parts[3].isdigit() else 1
+                    
+                    if not extract_pattern:
+                        return text
+                    
+                    # Extract using extract_pattern
+                    match = re.search(extract_pattern, text, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        # Get the captured group
+                        if match.groups():
+                            extracted = match.group(else_group) if else_group <= len(match.groups()) else match.group(1)
+                            # Strip whitespace from extracted text
+                            extracted = extracted.strip()
+                        else:
+                            extracted = match.group(0).strip()
+                        
+                        # Check if extracted text matches check_pattern (exact match or contains)
+                        if check_pattern:
+                            # Try exact match first, then substring match
+                            if extracted.lower() == check_pattern.lower() or re.search(check_pattern, extracted, re.IGNORECASE):
+                                return then_value
+                        
+                        return extracted
+                    return ""  # No match found
+                except (ValueError, IndexError, re.error) as e:
+                    # Silently fail on regex errors in preview
+                    return text
+            return text
+        
+        # Process format string
+        def replace_placeholder(match):
+            content = match.group(1)
+            if '|' in content:
+                field_name, function = content.split('|', 1)
+                field_name = field_name.strip()
+                function = function.strip()
+                
+                # Check if it's a raw field access
+                if field_name.startswith('raw.'):
+                    value = str(get_nested_value(raw_data, field_name[4:], ''))
+                else:
+                    value = replacements.get(field_name, '')
+                
+                return apply_shortening(value, function)
+            else:
+                field_name = content.strip()
+                
+                # Check if it's a raw field access
+                if field_name.startswith('raw.'):
+                    value = get_nested_value(raw_data, field_name[4:], '')
+                    if value is None:
+                        return ''
+                    elif isinstance(value, (dict, list)):
+                        try:
+                            import json
+                            return json.dumps(value)
+                        except Exception:
+                            return str(value)
+                    else:
+                        return str(value)
+                else:
+                    return replacements.get(field_name, '')
+        
+        message = re.sub(r'\{([^}]+)\}', replace_placeholder, format_str)
+        
+        # Final truncation (130 char limit)
+        max_length = 130
+        if len(message) > max_length:
+            lines = message.split('\n')
+            if len(lines) > 1:
+                total_length = sum(len(line) + 1 for line in lines[:-1])
+                remaining = max_length - total_length - 3
+                if remaining > 20:
+                    lines[-1] = lines[-1][:remaining] + "..."
+                    message = '\n'.join(lines)
+                else:
+                    message = message[:max_length - 3] + "..."
+            else:
+                message = message[:max_length - 3] + "..."
+        
+        return message
+    
     def _get_bot_uptime(self):
         """Get bot uptime in seconds from database"""
         try:
@@ -1927,6 +3507,92 @@ class BotDataViewer:
         except Exception as e:
             self.logger.debug(f"Could not get bot start time from database: {e}")
             return 0
+    
+    def _add_channel_for_web(self, channel_idx, channel_name, channel_key_hex=None):
+        """
+        Add a channel by queuing it in the database for the bot to process
+        
+        Args:
+            channel_idx: Channel index (0-39)
+            channel_name: Channel name (with or without # prefix)
+            channel_key_hex: Optional hex key for custom channels (32 chars)
+            
+        Returns:
+            dict with 'success' and optional 'error' key
+        """
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            # Insert operation into queue
+            cursor.execute('''
+                INSERT INTO channel_operations 
+                (operation_type, channel_idx, channel_name, channel_key_hex, status)
+                VALUES (?, ?, ?, ?, 'pending')
+            ''', ('add', channel_idx, channel_name, channel_key_hex))
+            
+            operation_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"Queued channel add operation: {channel_name} at index {channel_idx} (operation_id: {operation_id})")
+            
+            # Return immediately with operation_id - let frontend poll for status
+            return {
+                'success': True,
+                'pending': True,
+                'operation_id': operation_id,
+                'message': 'Channel operation queued successfully'
+            }
+                
+        except Exception as e:
+            self.logger.error(f"Error in _add_channel_for_web: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def _remove_channel_for_web(self, channel_idx):
+        """
+        Remove a channel by queuing it in the database for the bot to process
+        
+        Args:
+            channel_idx: Channel index to remove
+            
+        Returns:
+            dict with 'success' and optional 'error' key
+        """
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            # Insert operation into queue
+            cursor.execute('''
+                INSERT INTO channel_operations 
+                (operation_type, channel_idx, status)
+                VALUES (?, ?, 'pending')
+            ''', ('remove', channel_idx))
+            
+            operation_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"Queued channel remove operation: index {channel_idx} (operation_id: {operation_id})")
+            
+            # Return immediately with operation_id - let frontend poll for status
+            return {
+                'success': True,
+                'pending': True,
+                'operation_id': operation_id,
+                'message': 'Channel operation queued successfully'
+            }
+                
+        except Exception as e:
+            self.logger.error(f"Error in _remove_channel_for_web: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
     
     def run(self, host='127.0.0.1', port=8080, debug=False):
         """Run the modern web viewer"""

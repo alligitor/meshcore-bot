@@ -1562,9 +1562,29 @@ class MessageHandler:
         # This allows greeter to work on its own configured channels even if not in monitor_channels
         if 'greeter' in self.bot.command_manager.commands:
             greeter_command = self.bot.command_manager.commands['greeter']
+            # First, check if this message should cancel a pending greeting (human greeting detection)
+            if greeter_command:
+                greeter_command.check_message_for_human_greeting(message)
+            # Then check if we should greet this user
             if greeter_command and greeter_command.should_execute(message):
                 try:
-                    await greeter_command.execute(message)
+                    success = await greeter_command.execute(message)
+                    
+                    # Small delay to ensure send_response has completed
+                    await asyncio.sleep(0.1)
+                    
+                    # Determine if a response was sent
+                    response_sent = False
+                    if hasattr(greeter_command, 'last_response') and greeter_command.last_response:
+                        response_sent = True
+                    elif hasattr(self.bot.command_manager, '_last_response') and self.bot.command_manager._last_response:
+                        response_sent = True
+                    
+                    # Record command execution in stats database
+                    if 'stats' in self.bot.command_manager.commands:
+                        stats_command = self.bot.command_manager.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, 'greeter', response_sent)
                 except Exception as e:
                     self.logger.error(f"Error executing greeter command: {e}")
         
@@ -1593,15 +1613,6 @@ class MessageHandler:
                 else:
                     self.logger.info(f"Keyword '{keyword}' matched, responding")
                 
-                # Record command execution in stats database
-                if 'stats' in self.bot.command_manager.commands:
-                    stats_command = self.bot.command_manager.commands['stats']
-                    if stats_command:
-                        stats_command.record_command(message, keyword, response is not None)
-                
-                # Note: Command data capture is handled in command_manager.py after execution
-                # to avoid duplicate messages to web viewer
-                
                 # Track if this is a help response
                 if keyword == 'help':
                     help_response_sent = True
@@ -1611,8 +1622,20 @@ class MessageHandler:
                     plugin_command_with_response_matched = True
                 
                 # Skip commands that handle their own responses (response is None)
+                # These will be recorded when they execute via execute_commands
                 if response is None:
                     continue
+                
+                # Record command execution in stats database for keyword-matched commands with responses
+                # Commands without responses (response is None) are recorded in execute_commands to avoid double-counting
+                if 'stats' in self.bot.command_manager.commands:
+                    stats_command = self.bot.command_manager.commands['stats']
+                    if stats_command:
+                        # response is not None here, so we know a response will be sent
+                        stats_command.record_command(message, keyword, True)
+                
+                # Note: Command data capture is handled in command_manager.py after execution
+                # to avoid duplicate messages to web viewer
                 
                 # Send response
                 if message.is_dm:
