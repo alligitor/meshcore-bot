@@ -154,6 +154,9 @@ class MeshCoreBot:
         # Advert tracking
         self.last_advert_time = None
         
+        # Clock sync tracking
+        self.last_clock_sync_time = None
+        
         self.logger.info(f"MeshCore Bot initialized: {self.config.get('Bot', 'bot_name')}")
     
     def load_config(self):
@@ -654,6 +657,9 @@ use_zulu_time = false
                 # Setup message event handlers
                 await self.setup_message_handlers()
                 
+                # Set radio clock if needed
+                await self.set_radio_clock()
+                
                 return True
             else:
                 self.logger.error("Failed to connect to MeshCore node")
@@ -661,6 +667,46 @@ use_zulu_time = false
                 
         except Exception as e:
             self.logger.error(f"Connection failed: {e}")
+            return False
+    
+    async def set_radio_clock(self) -> bool:
+        """Set radio clock only if device time is earlier than current system time"""
+        try:
+            if not self.meshcore or not self.meshcore.is_connected:
+                self.logger.warning("Cannot set radio clock - not connected to device")
+                return False
+            
+            # Get current device time
+            self.logger.info("Checking device time...")
+            time_result = await self.meshcore.commands.get_time()
+            if time_result.type == EventType.ERROR:
+                self.logger.warning("Device does not support time commands")
+                return False
+            
+            device_time = time_result.payload.get('time', 0)
+            current_time = int(time.time())
+            
+            self.logger.info(f"Device time: {device_time}, System time: {current_time}")
+            
+            # Only set time if device time is earlier than current time
+            if device_time < current_time:
+                time_diff = current_time - device_time
+                self.logger.info(f"Device time is {time_diff} seconds behind, updating...")
+                
+                result = await self.meshcore.commands.set_time(current_time)
+                if result.type == EventType.OK:
+                    self.logger.info(f"✓ Radio clock updated to: {current_time}")
+                    self.last_clock_sync_time = current_time
+                    return True
+                else:
+                    self.logger.warning(f"Failed to update radio clock: {result}")
+                    return False
+            else:
+                self.logger.info("Device time is current or ahead - no update needed")
+                return True
+                
+        except Exception as e:
+            self.logger.warning(f"Error checking/setting radio clock: {e}")
             return False
     
     async def wait_for_contacts(self):
