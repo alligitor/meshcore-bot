@@ -264,6 +264,75 @@
             border-color: #146c43;
             color: #d1e7dd;
         }
+
+        /* Dark mode modal styling */
+        [data-theme="dark"] .modal-content {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+            border-color: var(--border-color);
+        }
+
+        [data-theme="dark"] .modal-header {
+            background-color: var(--card-header-bg);
+            border-bottom-color: var(--border-color);
+            color: var(--text-color);
+        }
+
+        [data-theme="dark"] .modal-title {
+            color: var(--text-color);
+        }
+
+        [data-theme="dark"] .modal-body {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+        }
+
+        [data-theme="dark"] .modal-footer {
+            background-color: var(--card-bg);
+            border-top-color: var(--border-color);
+        }
+
+        [data-theme="dark"] .modal-backdrop {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+
+        /* Dark mode code/pre elements in modals */
+        [data-theme="dark"] .modal pre,
+        [data-theme="dark"] .modal code {
+            background-color: var(--bg-tertiary);
+            color: var(--text-color);
+            border-color: var(--border-color);
+        }
+
+        [data-theme="dark"] .modal .bg-light {
+            background-color: var(--bg-tertiary) !important;
+            color: var(--text-color) !important;
+        }
+
+        /* Dark mode accordion styling */
+        [data-theme="dark"] .accordion-item {
+            background-color: var(--card-bg);
+            border-color: var(--border-color);
+        }
+
+        [data-theme="dark"] .accordion-button {
+            background-color: var(--card-header-bg);
+            color: var(--text-color);
+        }
+
+        [data-theme="dark"] .accordion-button:not(.collapsed) {
+            background-color: var(--bg-tertiary);
+            color: var(--text-color);
+        }
+
+        [data-theme="dark"] .accordion-button:focus {
+            box-shadow: 0 0 0 0.25rem rgba(0, 123, 255, 0.25);
+        }
+
+        [data-theme="dark"] .accordion-body {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+        }
     </style>
     
     {% block extra_css %}{% endblock %}

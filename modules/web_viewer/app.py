@@ -1129,7 +1129,8 @@ class BotDataViewer:
                 if channel_idx is None:
                     channel_idx = self._get_lowest_available_channel_index()
                     if channel_idx is None:
-                        return jsonify({'error': 'No available channel slots. All 40 channels are in use.'}), 400
+                        max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
+                        return jsonify({'error': f'No available channel slots. All {max_channels} channels are in use.'}), 400
                 
                 # Determine if it's a hashtag channel
                 is_hashtag = channel_name.startswith('#')
@@ -2723,13 +2724,16 @@ class BotDataViewer:
         return None
     
     def _get_lowest_available_channel_index(self):
-        """Get the lowest available channel index (0-39)"""
+        """Get the lowest available channel index (0 to max_channels-1)"""
         try:
             channels = self._get_channels()
             used_indices = {c['channel_idx'] for c in channels}
             
+            # Get max_channels from config (default 40)
+            max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
+            
             # Find the lowest available index
-            for i in range(40):
+            for i in range(max_channels):
                 if i not in used_indices:
                     return i
             
@@ -2757,9 +2761,13 @@ class BotDataViewer:
             
             channel_feeds = {row[0]: row[1] for row in cursor.fetchall()}
             
+            # Get max_channels from config (default 40)
+            max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
+            
             return {
                 'channels_with_feeds': len(channel_feeds),
-                'channel_feed_counts': channel_feeds
+                'channel_feed_counts': channel_feeds,
+                'max_channels': max_channels
             }
         except Exception as e:
             self.logger.error(f"Error getting channel statistics: {e}")

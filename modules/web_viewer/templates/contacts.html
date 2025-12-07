@@ -920,7 +920,7 @@ class ModernContactsManager {
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
-                            <pre class="bg-light p-3 rounded">${JSON.stringify(contact.raw_advert_data_parsed || contact.raw_advert_data || 'No advertisement data available', null, 2)}</pre>
+                            <pre class="bg-light p-3 rounded" style="background-color: var(--bg-secondary); color: var(--text-color);">${JSON.stringify(contact.raw_advert_data_parsed || contact.raw_advert_data || 'No advertisement data available', null, 2)}</pre>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
