@@ -171,7 +171,7 @@ class MessageScheduler:
             if time.time() - self.last_channel_refresh_time >= channel_refresh_interval:
                 if (hasattr(self.bot, 'channel_manager') and self.bot.channel_manager and 
                     hasattr(self.bot, 'connected') and self.bot.connected):
-                    # Refresh channels from device
+                    # Refresh channels from device with timeout protection
                     import asyncio
                     try:
                         loop = asyncio.get_event_loop()
@@ -179,10 +179,31 @@ class MessageScheduler:
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                     
-                    # Fetch channels and update database
-                    self.bot.logger.debug("Periodic channel refresh: fetching channels from device")
-                    loop.run_until_complete(self.bot.channel_manager.fetch_all_channels(force_refresh=True))
-                    self.last_channel_refresh_time = time.time()
+                    # Fetch channels and update database with maximum timeout
+                    # Use a reasonable timeout (30 seconds) to prevent blocking the scheduler
+                    max_refresh_timeout = self.bot.config.getint('Bot', 'channel_refresh_timeout_seconds', fallback=30)
+                    self.bot.logger.debug(f"Periodic channel refresh: fetching channels from device (max timeout: {max_refresh_timeout}s)")
+                    
+                    async def fetch_with_timeout():
+                        try:
+                            return await asyncio.wait_for(
+                                self.bot.channel_manager.fetch_all_channels(force_refresh=True),
+                                timeout=max_refresh_timeout
+                            )
+                        except asyncio.TimeoutError:
+                            self.bot.logger.warning(f"Channel refresh timed out after {max_refresh_timeout}s - device may be unresponsive")
+                            return []
+                        except Exception as e:
+                            self.bot.logger.error(f"Error during channel refresh: {e}")
+                            return []
+                    
+                    try:
+                        loop.run_until_complete(fetch_with_timeout())
+                        self.last_channel_refresh_time = time.time()
+                    except Exception as e:
+                        self.bot.logger.error(f"Failed to complete channel refresh: {e}")
+                        # Still update the timestamp to prevent immediate retry
+                        self.last_channel_refresh_time = time.time()
             
             # Process pending channel operations from web viewer (every 5 seconds)
             if not hasattr(self, 'last_channel_ops_check_time'):

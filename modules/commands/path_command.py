@@ -295,7 +295,9 @@ class PathCommand(BaseCommand):
                         # Multiple recent matches - try geographic proximity selection
                         # Only attempt if geographic guessing is enabled
                         if self.geographic_guessing_enabled:
-                            selected_repeater, confidence = self._select_repeater_by_proximity(recent_repeaters, node_id, node_ids)
+                            # Get sender location if available (for first repeater selection)
+                            sender_location = self._get_sender_location()
+                            selected_repeater, confidence = self._select_repeater_by_proximity(recent_repeaters, node_id, node_ids, sender_location)
                             
                             if selected_repeater and confidence >= 0.5:
                                 # High confidence geographic selection
@@ -423,7 +425,38 @@ class PathCommand(BaseCommand):
         return None
     
     
-    def _select_repeater_by_proximity(self, repeaters: List[Dict[str, Any]], node_id: str = None, path_context: List[str] = None) -> Tuple[Optional[Dict[str, Any]], float]:
+    def _get_sender_location(self) -> Optional[Tuple[float, float]]:
+        """Get sender location from current message if available"""
+        try:
+            if not hasattr(self, '_current_message') or not self._current_message:
+                return None
+            
+            sender_pubkey = self._current_message.sender_pubkey
+            if not sender_pubkey:
+                return None
+            
+            # Look up sender location from database (any role, not just repeaters)
+            query = '''
+                SELECT latitude, longitude 
+                FROM complete_contact_tracking 
+                WHERE public_key = ? 
+                AND latitude IS NOT NULL AND longitude IS NOT NULL
+                AND latitude != 0 AND longitude != 0
+                ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
+                LIMIT 1
+            '''
+            
+            results = self.bot.db_manager.execute_query(query, (sender_pubkey,))
+            
+            if results:
+                row = results[0]
+                return (row['latitude'], row['longitude'])
+            return None
+        except Exception as e:
+            self.logger.debug(f"Error getting sender location: {e}")
+            return None
+    
+    def _select_repeater_by_proximity(self, repeaters: List[Dict[str, Any]], node_id: str = None, path_context: List[str] = None, sender_location: Optional[Tuple[float, float]] = None) -> Tuple[Optional[Dict[str, Any]], float]:
         """
         Select the most likely repeater based on geographic proximity.
         
@@ -431,6 +464,7 @@ class PathCommand(BaseCommand):
             repeaters: List of repeaters to choose from
             node_id: The current node ID being processed
             path_context: Full path for context (for path proximity method)
+            sender_location: Optional sender location (for first repeater selection)
         
         Returns:
             Tuple of (selected_repeater, confidence_score)
@@ -459,7 +493,7 @@ class PathCommand(BaseCommand):
         
         # Choose proximity calculation method
         if self.proximity_method == 'path' and path_context and node_id:
-            result = self._select_by_path_proximity(repeaters_with_location, node_id, path_context)
+            result = self._select_by_path_proximity(repeaters_with_location, node_id, path_context, sender_location)
             if result[0] is not None:
                 return result
             elif self.path_proximity_fallback:
@@ -768,7 +802,7 @@ class PathCommand(BaseCommand):
         
         return tied_repeaters[0]
     
-    def _select_by_path_proximity(self, repeaters_with_location: List[Dict[str, Any]], node_id: str, path_context: List[str]) -> Tuple[Optional[Dict[str, Any]], float]:
+    def _select_by_path_proximity(self, repeaters_with_location: List[Dict[str, Any]], node_id: str, path_context: List[str], sender_location: Optional[Tuple[float, float]] = None) -> Tuple[Optional[Dict[str, Any]], float]:
         """Select repeater based on proximity to previous/next nodes in path"""
         try:
             # Filter out repeaters with very low recency scores first
@@ -798,6 +832,14 @@ class PathCommand(BaseCommand):
                 next_node_id = path_context[current_index + 1]
                 next_location = self._get_node_location(next_node_id)
             
+            # For the first repeater in the path, prioritize sender location as the source
+            # The first repeater's primary job is to receive from the sender, so use sender location if available
+            is_first_repeater = (current_index == 0)
+            if is_first_repeater and sender_location:
+                # For first repeater, use sender location only (not averaged with next node)
+                self.logger.debug(f"Using sender location for proximity calculation of first repeater: {sender_location[0]:.4f}, {sender_location[1]:.4f}")
+                return self._select_by_single_proximity(recent_repeaters, sender_location, "sender")
+            
             # For the last repeater in the path, prioritize bot location as the destination
             # The last repeater's primary job is to deliver to the bot, so use bot location only
             is_last_repeater = (current_index == len(path_context) - 1)
@@ -808,7 +850,7 @@ class PathCommand(BaseCommand):
                     self.logger.debug(f"Using bot location for proximity calculation of last repeater: {self.bot_latitude:.4f}, {self.bot_longitude:.4f}")
                     return self._select_by_single_proximity(recent_repeaters, bot_location, "bot")
             
-            # For non-last repeaters, use both previous and next locations if available
+            # For non-first/non-last repeaters, use both previous and next locations if available
             # If we have both previous and next locations, use both for proximity
             if prev_location and next_location:
                 return self._select_by_dual_proximity(recent_repeaters, prev_location, next_location)
@@ -938,10 +980,10 @@ class PathCommand(BaseCommand):
         if not scored_repeaters:
             return None, 0.0  # No recent repeaters found
         
-        # For last repeater (direction="bot"), use 100% proximity (0% recency)
-        # The final hop to the bot should prioritize distance above all else
+        # For last repeater (direction="bot") or first repeater (direction="sender"), use 100% proximity (0% recency)
+        # The final hop to the bot and first hop from sender should prioritize distance above all else
         # Recency still matters for filtering (min_recency_threshold), but not for scoring
-        if direction == "bot":
+        if direction == "bot" or direction == "sender":
             proximity_weight = 1.0
             recency_weight = 0.0
         else:

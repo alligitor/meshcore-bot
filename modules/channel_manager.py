@@ -72,9 +72,16 @@ class ChannelManager:
         
         self.logger.info(f"Fetching all channels (0-{self.max_channels-1}) with optimized sequential method...")
         
+        # Check if device is connected before attempting fetch
+        if not hasattr(self.bot, 'connected') or not self.bot.connected:
+            self.logger.warning("Device not connected, skipping channel fetch")
+            return []
+        
         # Clear cache for fresh fetch
         self._channels_cache.clear()
         valid_channels = []
+        consecutive_timeouts = 0
+        max_consecutive_timeouts = 3  # Abort if first 3 channels all timeout
         
         # Fetch channels sequentially but with optimized logic
         for channel_idx in range(self.max_channels):
@@ -84,19 +91,33 @@ class ChannelManager:
                 if result and result.get("channel_name"):
                     self._channels_cache[channel_idx] = result
                     valid_channels.append(result)
+                    consecutive_timeouts = 0  # Reset timeout counter on success
                     self.logger.debug(f"Found channel {channel_idx}: {result.get('channel_name')}")
                 elif result and not result.get("channel_name"):
                     # Empty channel - log but don't stop
+                    consecutive_timeouts = 0  # Reset timeout counter (device responded)
                     self.logger.debug(f"Channel {channel_idx} is empty")
                 else:
                     # No response - channel doesn't exist
+                    consecutive_timeouts += 1
                     self.logger.debug(f"Channel {channel_idx} not found")
+                    
+                    # If first few channels all timeout, device is likely unresponsive
+                    if consecutive_timeouts >= max_consecutive_timeouts and channel_idx < max_consecutive_timeouts:
+                        self.logger.warning(f"First {max_consecutive_timeouts} channels all timed out - device may be unresponsive, aborting fetch")
+                        break
                 
                 # Small delay between requests to avoid overwhelming the device
                 await asyncio.sleep(0.1)
                 
             except Exception as e:
+                consecutive_timeouts += 1
                 self.logger.debug(f"Error fetching channel {channel_idx}: {e}")
+                
+                # Abort early if device appears unresponsive
+                if consecutive_timeouts >= max_consecutive_timeouts and channel_idx < max_consecutive_timeouts:
+                    self.logger.warning(f"Multiple consecutive errors fetching channels - device may be unresponsive, aborting fetch")
+                    break
                 continue
         
         self._cache_valid = True
