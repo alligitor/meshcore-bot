@@ -798,6 +798,17 @@ class PathCommand(BaseCommand):
                 next_node_id = path_context[current_index + 1]
                 next_location = self._get_node_location(next_node_id)
             
+            # For the last repeater in the path, prioritize bot location as the destination
+            # The last repeater's primary job is to deliver to the bot, so use bot location only
+            is_last_repeater = (current_index == len(path_context) - 1)
+            if is_last_repeater and self.geographic_guessing_enabled:
+                if self.bot_latitude is not None and self.bot_longitude is not None:
+                    # For last repeater, use bot location only (not averaged with previous node)
+                    bot_location = (self.bot_latitude, self.bot_longitude)
+                    self.logger.debug(f"Using bot location for proximity calculation of last repeater: {self.bot_latitude:.4f}, {self.bot_longitude:.4f}")
+                    return self._select_by_single_proximity(recent_repeaters, bot_location, "bot")
+            
+            # For non-last repeaters, use both previous and next locations if available
             # If we have both previous and next locations, use both for proximity
             if prev_location and next_location:
                 return self._select_by_dual_proximity(recent_repeaters, prev_location, next_location)
@@ -927,8 +938,20 @@ class PathCommand(BaseCommand):
         if not scored_repeaters:
             return None, 0.0  # No recent repeaters found
         
+        # For last repeater (direction="bot"), use 100% proximity (0% recency)
+        # The final hop to the bot should prioritize distance above all else
+        # Recency still matters for filtering (min_recency_threshold), but not for scoring
+        if direction == "bot":
+            proximity_weight = 1.0
+            recency_weight = 0.0
+        else:
+            # Use configurable weighting for other cases (from config: recency_weight, proximity_weight)
+            proximity_weight = self.proximity_weight
+            recency_weight = self.recency_weight
+        
         best_repeater = None
         best_combined_score = 0.0
+        all_scores = []  # For debug logging
         
         for repeater, recency_score in scored_repeaters:
             distance = calculate_distance(
@@ -944,17 +967,25 @@ class PathCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Use configurable weighting (default: 40% recency, 60% proximity)
-            combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
+            # Use appropriate weighting based on direction
+            combined_score = (recency_score * recency_weight) + (proximity_score * proximity_weight)
             
             # Apply star bias multiplier if repeater is starred
             if repeater.get('is_starred', False):
                 combined_score *= self.star_bias_multiplier
                 self.logger.debug(f"Applied star bias ({self.star_bias_multiplier}x) to {repeater.get('name', 'unknown')}")
             
+            all_scores.append((repeater.get('name', 'unknown'), distance, recency_score, proximity_score, combined_score))
+            
             if combined_score > best_combined_score:
                 best_combined_score = combined_score
                 best_repeater = repeater
+        
+        # Debug logging for last repeater selection
+        if direction == "bot" and all_scores:
+            self.logger.debug(f"Last repeater selection scores (proximity_weight={proximity_weight:.1%}, recency_weight={recency_weight:.1%}):")
+            for name, dist, rec, prox, combined in sorted(all_scores, key=lambda x: x[4], reverse=True):
+                self.logger.debug(f"  {name}: distance={dist:.1f}km, recency={rec:.3f}, proximity={prox:.3f}, combined={combined:.3f}")
         
         if best_repeater:
             # Confidence based on combined score
