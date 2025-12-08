@@ -9,6 +9,7 @@ import time
 import subprocess
 import sys
 import os
+import re
 from pathlib import Path
 
 class BotIntegration:
@@ -247,6 +248,9 @@ class BotIntegration:
 class WebViewerIntegration:
     """Integration class for starting/stopping the web viewer with the bot"""
     
+    # Whitelist of allowed host bindings for security
+    ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '0.0.0.0']
+    
     def __init__(self, bot):
         self.bot = bot
         self.logger = bot.logger
@@ -261,6 +265,9 @@ class WebViewerIntegration:
         self.debug = bot.config.getboolean('Web_Viewer', 'debug', fallback=False)
         self.auto_start = bot.config.getboolean('Web_Viewer', 'auto_start', fallback=False)
         
+        # Validate configuration for security
+        self._validate_config()
+        
         # Process monitoring
         self.restart_count = 0
         self.max_restarts = 5
@@ -271,6 +278,32 @@ class WebViewerIntegration:
         
         if self.enabled and self.auto_start:
             self.start_viewer()
+    
+    def _validate_config(self):
+        """Validate web viewer configuration for security"""
+        # Validate host against whitelist
+        if self.host not in self.ALLOWED_HOSTS:
+            raise ValueError(
+                f"Invalid host configuration: {self.host}. "
+                f"Allowed hosts: {', '.join(self.ALLOWED_HOSTS)}"
+            )
+        
+        # Validate port range (avoid privileged ports)
+        if not isinstance(self.port, int) or not (1024 <= self.port <= 65535):
+            raise ValueError(
+                f"Port must be between 1024-65535 (non-privileged), got: {self.port}"
+            )
+        
+        # Security warning for network exposure
+        if self.host == '0.0.0.0':
+            self.logger.warning(
+                "\n" + "="*70 + "\n"
+                "⚠️  SECURITY WARNING: Web viewer binding to all interfaces (0.0.0.0)\n"
+                "This exposes bot data (messages, contacts, routing) to your network\n"
+                "WITHOUT AUTHENTICATION. Ensure you have firewall protection!\n"
+                "For local-only access, use host=127.0.0.1 in config.\n"
+                + "="*70
+            )
     
     def start_viewer(self):
         """Start the web viewer in a separate thread"""
@@ -327,12 +360,26 @@ class WebViewerIntegration:
                 if result.returncode == 0 and result.stdout.strip():
                     pids = result.stdout.strip().split('\n')
                     for pid in pids:
-                        if pid.strip():
-                            try:
-                                subprocess.run(['kill', '-9', pid.strip()], timeout=2)
-                                self.logger.info(f"Killed remaining process {pid} on port {self.port}")
-                            except Exception as e:
-                                self.logger.warning(f"Failed to kill process {pid}: {e}")
+                        pid = pid.strip()
+                        if not pid:
+                            continue
+                        
+                        # Validate PID is numeric only (prevent injection)
+                        if not re.match(r'^\d+$', pid):
+                            self.logger.warning(f"Invalid PID format: {pid}, skipping")
+                            continue
+                        
+                        try:
+                            pid_int = int(pid)
+                            # Safety check: never kill system PIDs
+                            if pid_int < 2:
+                                self.logger.warning(f"Refusing to kill system PID: {pid}")
+                                continue
+                            
+                            subprocess.run(['kill', '-9', str(pid_int)], timeout=2)
+                            self.logger.info(f"Killed remaining process {pid} on port {self.port}")
+                        except (ValueError, subprocess.TimeoutExpired) as e:
+                            self.logger.warning(f"Failed to kill process {pid}: {e}")
             except Exception as e:
                 self.logger.debug(f"Port cleanup check failed: {e}")
             

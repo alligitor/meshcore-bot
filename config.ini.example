@@ -126,13 +126,22 @@ translation_path = translations/
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands
 # Only users with public keys listed here can execute admin commands
-# Format: comma-separated list of public keys (without spaces)
-# Example: 3e14a5fa9c52e7b6b8e14f987cd12ab1e3dc9fb64a2bbf0e19dca85e9f43a120, another key here
+#
+# SECURITY IMPORTANT:
+# - Public keys MUST be exactly 64 hexadecimal characters (ed25519 format)
+# - Invalid formats will be rejected with error logs
+# - Empty or whitespace-only values disable admin access
+# - Keys are case-insensitive (normalized to lowercase)  
+#
+# Format: comma-separated list of 64-character hex public keys (without spaces)
+# Example: f5d2b56d19b24412756933e917d4632e088cdd5daeadc9002feca73bf5d2b56d,1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+#
+# IMPORTANT: Leave blank to disable all admin commands. Set your actual admin pubkey(s) here.
 admin_pubkeys = 
 
 # Commands that require admin access (comma-separated)
 # These commands will only work for users in the admin_pubkeys list
-admin_commands = repeater,webviewer
+admin_commands = repeater,webviewer,webviewer
 
 [Plugin_Overrides]
 # Plugin Overrides - Use alternative plugin implementations
@@ -634,25 +643,37 @@ alert_enabled = false
 
 [Web_Viewer]
 # Enable or disable the web data viewer
+# SECURITY NOTE: Web viewer has NO AUTHENTICATION built-in
+# Only enable if you understand the security implications
 # true: web viewer is available for viewing bot data
-# false: web viewer is disabled
-enabled = true
+# false: web viewer is disabled (RECOMMENDED for production)
+enabled = false
 
 # Web viewer host address
-# 127.0.0.1: Only accessible from localhost
-# 0.0.0.0: Accessible from any network interface
+# SECURITY WARNING:
+# - 127.0.0.1: Only accessible from localhost (SECURE - recommended)
+# - 0.0.0.0: Accessible from any network interface (INSECURE - exposes all bot data to network)
+# 
+# Using 0.0.0.0 will expose:
+# - All messages and their contents
+# - Contact list and repeater information
+# - Real-time packet stream
+# - Bot configuration details
+#
+# WITHOUT ANY AUTHENTICATION OR ENCRYPTION
 host = 127.0.0.1
 
 # Web viewer port
-# Default: 8080 (viewer uses port 8080)
+# Must be between 1024-65535 (non-privileged ports)
+# Default: 8080
 port = 8080
 
 # Enable debug mode for the web viewer
 # true: Enable Flask debug mode (auto-reload on changes)
-# false: Production mode
+# false: Production mode (recommended)
 debug = false
 
 # Auto-start web viewer with bot
 # true: Start web viewer automatically when bot starts
-# false: Start web viewer manually
+# false: Start web viewer manually (recommended)
 auto_start = false
