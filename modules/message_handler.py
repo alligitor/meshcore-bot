@@ -273,8 +273,10 @@ class MessageHandler:
                         break
             
             # Sanitize message content to prevent injection attacks
+            # Note: Firmware enforces 150-char limit at hardware level, so we disable length check
+            # but still strip control characters for security
             message_content = payload.get('text', '')
-            message_content = sanitize_input(message_content, max_length=500, strip_controls=True)
+            message_content = sanitize_input(message_content, max_length=None, strip_controls=True)
             
             # Convert to our message format
             message = MeshMessage(
