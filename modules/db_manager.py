@@ -24,7 +24,6 @@ class DBManager:
         'message_stats',
         'greeted_users',
         'repeater_contacts',
-        'repeater_interactions',
         'complete_contact_tracking',  # Repeater manager
         'daily_stats',  # Repeater manager
         'purging_log',  # Repeater manager
