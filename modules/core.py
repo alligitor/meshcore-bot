@@ -61,8 +61,9 @@ class MeshCoreBot:
         db_path = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
         
         # Validate database path for security (prevent path traversal)
+        # Use explicit bot root directory (where config.ini is located)
         try:
-            db_path = str(validate_safe_path(db_path, base_dir='.', allow_absolute=False))
+            db_path = str(validate_safe_path(db_path, base_dir=str(self.bot_root), allow_absolute=False))
         except ValueError as e:
             self.logger.error(f"Invalid database path: {e}")
             self.logger.error("Using default: meshcore_bot.db")
@@ -166,6 +167,11 @@ class MeshCoreBot:
         
         # Clock sync tracking
         self.last_clock_sync_time = None
+    
+    @property
+    def bot_root(self) -> Path:
+        """Get bot root directory (where config.ini is located)"""
+        return Path(self.config_file).parent.resolve()
         
         self.logger.info(f"MeshCore Bot initialized: {self.config.get('Bot', 'bot_name')}")
     
@@ -562,8 +568,9 @@ use_zulu_time = false
         log_file = self.config.get('Logging', 'log_file', fallback='meshcore_bot.log')
         
         # Validate log file path for security (prevent path traversal)
+        # Use explicit bot root directory (where config.ini is located)
         try:
-            log_file = str(validate_safe_path(log_file, base_dir='.', allow_absolute=False))
+            log_file = str(validate_safe_path(log_file, base_dir=str(self.bot_root), allow_absolute=False))
         except ValueError as e:
             self.logger.warning(f"Invalid log file path: {e}")
             self.logger.warning("Using default: meshcore_bot.log")

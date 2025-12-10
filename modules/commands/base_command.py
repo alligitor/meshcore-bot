@@ -10,6 +10,7 @@ from datetime import datetime
 import pytz
 import re
 from ..models import MeshMessage
+from ..security_utils import validate_pubkey_format
 
 
 class BaseCommand(ABC):
@@ -424,6 +425,7 @@ class BaseCommand(ABC):
         - No fallback to sender_id (prevents spoofing)
         - Whitespace/empty config detection
         - Normalized comparison (lowercase)
+        - Uses centralized validate_pubkey_format() function
         """
         import re # This import is needed for re.match
         if not hasattr(self.bot, 'config'):
@@ -446,7 +448,7 @@ class BaseCommand(ABC):
                     continue
                 
                 # Validate hex format (64 chars for ed25519 public keys)
-                if not re.match(r'^[0-9a-fA-F]{64}$', key):
+                if not validate_pubkey_format(key, expected_length=64):
                     self.logger.error(f"Invalid admin pubkey format in config: {key[:16]}...")
                     continue  # Skip invalid keys but continue checking others
                 
@@ -466,7 +468,7 @@ class BaseCommand(ABC):
                 return False
             
             # Validate sender pubkey format
-            if not re.match(r'^[0-9a-fA-F]{64}$', sender_pubkey):
+            if not validate_pubkey_format(sender_pubkey, expected_length=64):
                 self.logger.warning(
                     f"Invalid sender pubkey format from {message.sender_id}: "
                     f"{sender_pubkey[:16]}... - admin access denied"

@@ -7,6 +7,7 @@ Provides centralized security validation functions to prevent common attacks
 import re
 import ipaddress
 import socket
+import platform
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -15,13 +16,14 @@ import logging
 logger = logging.getLogger('MeshCoreBot.Security')
 
 
-def validate_external_url(url: str, allow_localhost: bool = False) -> bool:
+def validate_external_url(url: str, allow_localhost: bool = False, timeout: float = 2.0) -> bool:
     """
     Validate that URL points to safe external resource (SSRF protection)
     
     Args:
         url: URL to validate
         allow_localhost: Whether to allow localhost/private IPs (default: False)
+        timeout: DNS resolution timeout in seconds (default: 2.0)
     
     Returns:
         True if URL is safe, False otherwise
@@ -42,9 +44,18 @@ def validate_external_url(url: str, allow_localhost: bool = False) -> bool:
             logger.warning(f"URL missing network location: {url}")
             return False
         
-        # Resolve and check if IP is internal/private
+        # Resolve and check if IP is internal/private (with timeout)
         try:
-            ip = socket.gethostbyname(parsed.hostname)
+            # Set socket timeout for DNS resolution
+            # Note: getdefaulttimeout() can return None (no timeout), which is valid
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(timeout)
+            try:
+                ip = socket.gethostbyname(parsed.hostname)
+            finally:
+                # Restore original timeout (None means no timeout, which is correct)
+                socket.setdefaulttimeout(old_timeout)
+            
             ip_obj = ipaddress.ip_address(ip)
             
             # If localhost is not allowed, reject private/internal IPs
@@ -61,6 +72,9 @@ def validate_external_url(url: str, allow_localhost: bool = False) -> bool:
         
         except socket.gaierror as e:
             logger.warning(f"Failed to resolve hostname {parsed.hostname}: {e}")
+            return False
+        except socket.timeout:
+            logger.warning(f"DNS resolution timeout for {parsed.hostname}")
             return False
         
         return True
@@ -100,10 +114,37 @@ def validate_safe_path(file_path: str, base_dir: str = '.', allow_absolute: bool
                     f"Path traversal detected: {file_path} is not within {base_dir}"
                 )
         
-        # Reject certain dangerous system paths
-        dangerous_prefixes = ['/etc', '/sys', '/proc', '/dev', '/bin', '/sbin', '/boot']
-        target_str = str(target)
-        if any(target_str.startswith(prefix) for prefix in dangerous_prefixes):
+        # Reject certain dangerous system paths (OS-specific)
+        system = platform.system()
+        if system == 'Windows':
+            dangerous_prefixes = [
+                'C:\\Windows\\System32',
+                'C:\\Windows\\SysWOW64',
+                'C:\\Program Files',
+                'C:\\ProgramData',
+                'C:\\Windows\\System',
+            ]
+            # Check against both forward and backslash paths
+            target_str = str(target).lower()
+            dangerous = any(target_str.startswith(prefix.lower()) for prefix in dangerous_prefixes)
+        elif system == 'Darwin':  # macOS
+            dangerous_prefixes = [
+                '/System',
+                '/Library',
+                '/private',
+                '/usr/bin',
+                '/usr/sbin',
+                '/sbin',
+                '/bin',
+            ]
+            target_str = str(target)
+            dangerous = any(target_str.startswith(prefix) for prefix in dangerous_prefixes)
+        else:  # Linux and other Unix-like systems
+            dangerous_prefixes = ['/etc', '/sys', '/proc', '/dev', '/bin', '/sbin', '/boot']
+            target_str = str(target)
+            dangerous = any(target_str.startswith(prefix) for prefix in dangerous_prefixes)
+        
+        if dangerous:
             raise ValueError(f"Access to system directory denied: {file_path}")
         
         return target
@@ -112,25 +153,32 @@ def validate_safe_path(file_path: str, base_dir: str = '.', allow_absolute: bool
         raise ValueError(f"Invalid or unsafe file path: {file_path} - {e}")
 
 
-def sanitize_input(content: str, max_length: int = 500, strip_controls: bool = True) -> str:
+def sanitize_input(content: str, max_length: Optional[int] = 500, strip_controls: bool = True) -> str:
     """
     Sanitize user input to prevent injection attacks
     
     Args:
         content: Input string to sanitize
-        max_length: Maximum allowed length (default: 500 chars)
+        max_length: Maximum allowed length (default: 500 chars, None to disable length check)
         strip_controls: Whether to remove control characters (default: True)
     
     Returns:
         Sanitized string
+    
+    Raises:
+        ValueError: If max_length is negative
     """
     if not isinstance(content, str):
         content = str(content)
     
-    # Limit length to prevent DoS
-    if len(content) > max_length:
-        content = content[:max_length]
-        logger.debug(f"Input truncated to {max_length} characters")
+    # Validate max_length if provided
+    if max_length is not None:
+        if max_length < 0:
+            raise ValueError(f"max_length must be non-negative, got {max_length}")
+        # Limit length to prevent DoS
+        if len(content) > max_length:
+            content = content[:max_length]
+            logger.debug(f"Input truncated to {max_length} characters")
     
     # Remove control characters except newline, carriage return, tab
     if strip_controls:
