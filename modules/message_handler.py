@@ -14,6 +14,7 @@ from meshcore import EventType
 from .models import MeshMessage
 from .enums import PayloadType, PayloadVersion, RouteType, AdvertFlags, DeviceRole
 from .utils import calculate_packet_hash
+from .security_utils import sanitize_input
 
 
 class MessageHandler:
@@ -251,28 +252,36 @@ class MessageHandler:
             
             # Look up contact name from pubkey prefix
             sender_id = payload.get('pubkey_prefix', '')
+            sender_name = sender_id  # Default to sender_id
             if hasattr(self.bot.meshcore, 'contacts') and self.bot.meshcore.contacts:
                 for contact_key, contact_data in self.bot.meshcore.contacts.items():
                     if contact_data.get('public_key', '').startswith(sender_id):
                         # Use the contact name if available, otherwise use adv_name
                         contact_name = contact_data.get('name', contact_data.get('adv_name', sender_id))
-                        sender_id = contact_name
+                        sender_name = contact_name
                         break
             
             # Get the full public key from contacts if available
             sender_pubkey = payload.get('pubkey_prefix', '')
+            sender_pubkey = sender_id  # Default to sender_id
             if hasattr(self.bot.meshcore, 'contacts') and self.bot.meshcore.contacts:
                 for contact_key, contact_data in self.bot.meshcore.contacts.items():
-                    if contact_data.get('public_key', '').startswith(sender_pubkey):
+                    if contact_data.get('public_key', '').startswith(sender_id):
                         # Use the full public key from the contact
-                        sender_pubkey = contact_data.get('public_key', sender_pubkey)
-                        self.logger.debug(f"Found full public key for {sender_id}: {sender_pubkey[:16]}...")
+                        sender_pubkey = contact_data.get('public_key', sender_id)
+                        self.logger.debug(f"Found full public key for {sender_name}: {sender_pubkey[:16]}...")
                         break
+            
+            # Sanitize message content to prevent injection attacks
+            # Note: Firmware enforces 150-char limit at hardware level, so we disable length check
+            # but still strip control characters for security
+            message_content = payload.get('text', '')
+            message_content = sanitize_input(message_content, max_length=None, strip_controls=True)
             
             # Convert to our message format
             message = MeshMessage(
-                content=payload.get('text', ''),
-                sender_id=sender_id,
+                content=message_content,
+                sender_id=sender_name,
                 sender_pubkey=sender_pubkey,
                 is_dm=True,
                 timestamp=timestamp,

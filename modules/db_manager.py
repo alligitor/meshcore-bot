@@ -6,6 +6,7 @@ Provides common database operations and table management for the MeshCore Bot
 
 import sqlite3
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
@@ -13,6 +14,20 @@ from pathlib import Path
 
 class DBManager:
     """Generalized database manager for common operations"""
+    
+    # Whitelist of allowed tables for security
+    ALLOWED_TABLES = {
+        'geocoding_cache',
+        'generic_cache', 
+        'bot_metadata',
+        'packet_stream',
+        'message_stats',
+        'greeted_users',
+        'repeater_contacts',
+        'complete_contact_tracking',  # Repeater manager
+        'daily_stats',  # Repeater manager
+        'purging_log',  # Repeater manager
+    }
     
     def __init__(self, bot, db_path: str = "meshcore_bot.db"):
         self.bot = bot
@@ -217,13 +232,18 @@ class DBManager:
     def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 720):
         """Cache geocoding result for future use (default: 30 days)"""
         try:
+            # Validate cache_hours to prevent SQL injection
+            if not isinstance(cache_hours, int) or cache_hours < 1 or cache_hours > 87600:  # Max 10 years
+                raise ValueError(f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Use parameter binding instead of string formatting
                 cursor.execute('''
                     INSERT OR REPLACE INTO geocoding_cache 
                     (query, latitude, longitude, expires_at) 
-                    VALUES (?, ?, ?, datetime('now', '+{} hours'))
-                '''.format(cache_hours), (query, latitude, longitude))
+                    VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'))
+                ''', (query, latitude, longitude, cache_hours))
                 conn.commit()
         except Exception as e:
             self.logger.error(f"Error caching geocoding: {e}")
@@ -249,13 +269,18 @@ class DBManager:
     def cache_value(self, cache_key: str, cache_value: str, cache_type: str, cache_hours: int = 24):
         """Cache a value for future use"""
         try:
+            # Validate cache_hours to prevent SQL injection
+            if not isinstance(cache_hours, int) or cache_hours < 1 or cache_hours > 87600:  # Max 10 years
+                raise ValueError(f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Use parameter binding instead of string formatting
                 cursor.execute('''
                     INSERT OR REPLACE INTO generic_cache 
                     (cache_key, cache_value, cache_type, expires_at) 
-                    VALUES (?, ?, ?, datetime('now', '+{} hours'))
-                '''.format(cache_hours), (cache_key, cache_value, cache_type))
+                    VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'))
+                ''', (cache_key, cache_value, cache_type, cache_hours))
                 conn.commit()
         except Exception as e:
             self.logger.error(f"Error caching value: {e}")
@@ -363,26 +388,49 @@ class DBManager:
     
     # Table management methods
     def create_table(self, table_name: str, schema: str):
-        """Create a custom table with the given schema"""
+        """Create a custom table with the given schema (whitelist-protected)"""
         try:
+            # Validate table name against whitelist
+            if table_name not in self.ALLOWED_TABLES:
+                raise ValueError(f"Table name '{table_name}' not in allowed tables whitelist")
+            
+            # Additional validation: ensure table name follows safe naming convention
+            if not re.match(r'^[a-z_][a-z0-9_]*$', table_name):
+                raise ValueError(f"Invalid table name format: {table_name}")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Table names cannot be parameterized, but we've validated against whitelist
                 cursor.execute(f'CREATE TABLE IF NOT EXISTS {table_name} ({schema})')
                 conn.commit()
                 self.logger.info(f"Created table: {table_name}")
         except Exception as e:
             self.logger.error(f"Error creating table {table_name}: {e}")
+            raise
     
     def drop_table(self, table_name: str):
-        """Drop a table (use with caution)"""
+        """Drop a table (whitelist-protected, use with extreme caution)"""
         try:
+            # Validate table name against whitelist
+            if table_name not in self.ALLOWED_TABLES:
+                raise ValueError(f"Table name '{table_name}' not in allowed tables whitelist")
+            
+            # Additional validation: ensure table name follows safe naming convention
+            if not re.match(r'^[a-z_][a-z0-9_]*$', table_name):
+                raise ValueError(f"Invalid table name format: {table_name}")
+            
+            # Extra safety: log critical action
+            self.logger.warning(f"CRITICAL: Dropping table '{table_name}'")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Table names cannot be parameterized, but we've validated against whitelist
                 cursor.execute(f'DROP TABLE IF EXISTS {table_name}')
                 conn.commit()
                 self.logger.info(f"Dropped table: {table_name}")
         except Exception as e:
             self.logger.error(f"Error dropping table {table_name}: {e}")
+            raise
     
     def execute_query(self, query: str, params: Tuple = ()) -> List[Dict]:
         """Execute a custom query and return results as list of dictionaries"""

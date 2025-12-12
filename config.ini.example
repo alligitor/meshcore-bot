@@ -58,8 +58,8 @@ bot_tx_rate_limit_seconds = 1.0
 
 # Transmission delay in milliseconds before sending messages
 # Helps prevent message collisions on the mesh network
-# Recommended: 400-800ms for busy networks, 100 for quiet networks
-tx_delay_ms = 400
+# Recommended: 100-500ms for busy networks, 0 for quiet networks
+tx_delay_ms = 250
 
 # DM retry settings for improved reliability (meshcore-2.1.6+)
 # Maximum number of retry attempts for failed DM sends
@@ -90,12 +90,6 @@ bot_longitude = -74.0060
 # Set to a lower value if you want to limit channel fetching for performance
 max_channels = 12
 
-# Channel refresh interval in seconds
-# How often to refresh channel list from device to prevent stale data in database
-# Default: 3600 (1 hour). Set to 0 to disable periodic refresh (channels only refreshed on startup)
-# This ensures the database stays in sync if channels are changed on the device directly
-channel_refresh_interval_seconds = 3600
-
 # Interval-based advertising settings
 # Send periodic flood adverts at specified intervals
 # 0: Disabled (default)
@@ -112,7 +106,7 @@ startup_advert = false
 # device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
 # bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
 # false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = bot
+auto_manage_contacts = false
 
 [Localization]
 # Language code for bot responses (en, es, es-MX, es-ES, fr, de, ja, etc.)
@@ -132,8 +126,17 @@ translation_path = translations/
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands
 # Only users with public keys listed here can execute admin commands
-# Format: comma-separated list of public keys (without spaces)
-# Example: 3e14a5fa9c52e7b6b8e14f987cd12ab1e3dc9fb64a2bbf0e19dca85e9f43a120, another key here
+#
+# SECURITY IMPORTANT:
+# - Public keys MUST be exactly 64 hexadecimal characters (ed25519 format)
+# - Invalid formats will be rejected with error logs
+# - Empty or whitespace-only values disable admin access
+# - Keys are case-insensitive (normalized to lowercase)  
+#
+# Format: comma-separated list of 64-character hex public keys (without spaces)
+# Example: f5d2b56d19b24412756933e917d4632e088cdd5daeadc9002feca73bf5d2b56d,1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+#
+# IMPORTANT: Leave blank to disable all admin commands. Set your actual admin pubkey(s) here.
 admin_pubkeys = 
 
 # Commands that require admin access (comma-separated)
@@ -272,7 +275,6 @@ meshcore_log_level = INFO
 # "t phrase" works the same as "test phrase" - both use the test response format
 # Example: "t hello world" -> "ack {sender}: hello world | {connection_info}"
 
-
 [External_Data]
 # Weather API key (future feature)
 weather_api_key = 
@@ -310,55 +312,6 @@ repeater_prefix_api_url =
 # How long to cache prefix data before refreshing from API
 # Recommended: 1-6 hours (data doesn't change frequently)
 repeater_prefix_cache_hours = 1
-
-[Feed_Manager]
-# Enable feed manager functionality
-# true: Feed manager is enabled and will poll feeds
-# false: Feed manager is disabled
-feed_manager_enabled = false
-
-# Default check interval in seconds (5 minutes)
-# How often to check feeds for new items
-# Individual feeds can override this with their own interval
-default_check_interval_seconds = 300
-
-# Maximum number of items to process per feed per check
-# Prevents overwhelming channels with too many items at once
-max_items_per_check = 10
-
-# Default output format for feed messages
-# Placeholders: {title}, {body}, {date}, {link}, {emoji}
-# Shortening functions: {field|truncate:N}, {field|word_wrap:N}, {field|first_words:N}
-# Example: "{emoji} {body|truncate:100} - {date}\n{link|truncate:50}"
-# Default uses body instead of title for main content
-default_output_format = {emoji} {body|truncate:100} - {date}\n{link|truncate:50}
-
-# Default message send interval in seconds
-# How long to wait between sending queued messages from the same feed
-# Prevents rate limiting by spacing out message sends
-# Individual feeds can override this with their own interval
-default_message_send_interval_seconds = 2.0
-
-# Request timeout in seconds
-# Maximum time to wait for feed requests
-feed_request_timeout = 30
-
-# User-Agent string for HTTP requests
-# Identifies the bot when fetching feeds
-feed_user_agent = MeshCoreBot/1.0 FeedManager
-
-# Rate limiting: minimum seconds between requests to same domain
-# Prevents overwhelming feed sources
-feed_rate_limit_seconds = 5
-
-# Maximum message length (mesh limit is 130)
-# Messages longer than this will be truncated
-max_message_length = 130
-
-# Enable/disable feed command
-# true: Feed command is available (admin only)
-# false: Feed command is disabled
-feed_command_enabled = true
 
 [Prefix_Command]
 # Enable or disable repeater geolocation in prefix command
@@ -579,7 +532,7 @@ low_confidence_symbol = ❓
 # Enable "p" shortcut for path command (similar to "t" for test command)
 # true: Respond to just "p" or "p <path_data>" as a shortcut for "path"
 # false: Only respond to "path", "decode", or "route" keywords (default)
-enable_p_shortcut = true
+enable_p_shortcut = false
 
 [Hacker_Command]
 # Enable or disable the hacker command
@@ -597,53 +550,6 @@ hacker_enabled = false
 # Leave empty to use default format
 # Example: "Found {path_count} unique path(s) for @[{sender}]:\n{paths}"
 response_format = 
-
-[Alert_Command]
-# Enable or disable the alert command
-# true: Alert command is available
-# false: Alert command is disabled
-alert_enabled = false
-
-# PulsePoint agency IDs by county/region
-# Format: agency.<county_name> = comma-separated agency IDs
-# Get agency IDs from: https://web.pulsepoint.org/ or PulsePoint searchagencies API
-# You can use any naming convention that makes sense for your region
-# Examples: agency.county1, agency.city1, agency.region1, etc.
-
-# Example: County agencies
-# agency.county1 = 
-
-# Example: City agencies (can have multiple entries for the same region)
-# agency.city1 = 
-# agency.city1_alias = 
-
-# Example: Combined region (all counties/agencies)
-# agency.region_all = 
-
-[Web_Viewer]
-# Enable or disable the web data viewer
-# true: web viewer is available for viewing bot data
-# false: web viewer is disabled
-enabled = true
-
-# Web viewer host address
-# 127.0.0.1: Only accessible from localhost
-# 0.0.0.0: Accessible from any network interface
-host = 127.0.0.1
-
-# Web viewer port
-# Default: 8080 (viewer uses port 8080)
-port = 8080
-
-# Enable debug mode for the web viewer
-# true: Enable Flask debug mode (auto-reload on changes)
-# false: Production mode
-debug = false
-
-# Auto-start web viewer with bot
-# true: Start web viewer automatically when bot starts
-# false: Start web viewer manually
-auto_start = false
 
 [Greeter_Command]
 # Enable or disable the greeter command
@@ -712,26 +618,61 @@ auto_backfill = false
 # Example: 0 = mark all users who have ever posted (all time)
 backfill_lookback_days = 30
 
-# Dead air delay in seconds
-# Wait this many seconds before sending a greeting to a new user
-# This allows time for other users to greet the new user first
-# Set to 0 to send greetings immediately (default behavior)
-# Example: 30 = wait 30 seconds before greeting
-dead_air_delay_seconds = 0
+[Alert_Command]
+# Enable or disable the alert command
+# true: Alert command is available
+# false: Alert command is disabled
+alert_enabled = false
 
-# Defer to human greeting
-# If enabled and dead_air_delay_seconds > 0, the bot will not send a greeting
-# if another user mentions the new user's name within the dead air delay period
-# true: Check for human greetings and defer if found
-# false: Always send bot greeting after delay (default)
-# Note: Only effective when dead_air_delay_seconds > 0
-defer_to_human_greeting = false
+# PulsePoint agency IDs by county/region
+# Format: agency.<county_name> = comma-separated agency IDs
+# Get agency IDs from: https://web.pulsepoint.org/ or PulsePoint searchagencies API
+# You can use any naming convention that makes sense for your region
+# Examples: agency.county1, agency.city1, agency.region1, etc.
 
-# Levenshtein distance for name matching
-# Maximum edit distance allowed when checking if a user has been greeted before
-# Prevents duplicate greetings for users who make small changes to their name
-# Set to 0 to disable fuzzy matching (exact name match only, default)
-# Example: 2 = "John" and "Jon" (distance 1) or "John" and "Jhon" (distance 1) would match
-# Example: 3 = "Alice" and "Alicia" (distance 2) would match
-# Recommended: 1-3 for most use cases
-levenshtein_distance = 0
+# Example: County agencies
+# agency.county1 = 
+
+# Example: City agencies (can have multiple entries for the same region)
+# agency.city1 = 
+# agency.city1_alias = 
+
+# Example: Combined region (all counties/agencies)
+# agency.region_all = 
+
+[Web_Viewer]
+# Enable or disable the web data viewer
+# SECURITY NOTE: Web viewer has NO AUTHENTICATION built-in
+# Only enable if you understand the security implications
+# true: web viewer is available for viewing bot data
+# false: web viewer is disabled (RECOMMENDED for production)
+enabled = false
+
+# Web viewer host address
+# SECURITY WARNING:
+# - 127.0.0.1: Only accessible from localhost (SECURE - recommended)
+# - 0.0.0.0: Accessible from any network interface (INSECURE - exposes all bot data to network)
+# 
+# Using 0.0.0.0 will expose:
+# - All messages and their contents
+# - Contact list and repeater information
+# - Real-time packet stream
+# - Bot configuration details
+#
+# WITHOUT ANY AUTHENTICATION OR ENCRYPTION
+host = 127.0.0.1
+
+# Web viewer port
+# Must be between 1024-65535 (non-privileged ports)
+# Default: 8080
+port = 8080
+
+# Enable debug mode for the web viewer
+# true: Enable Flask debug mode (auto-reload on changes)
+# false: Production mode (recommended)
+debug = false
+
+# Auto-start web viewer with bot
+# true: Start web viewer automatically when bot starts
+# false: Start web viewer manually (recommended)
+auto_start = false

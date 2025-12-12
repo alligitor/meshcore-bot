@@ -36,6 +36,7 @@ from .i18n import Translator
 from .solar_conditions import set_config
 from .web_viewer.integration import WebViewerIntegration
 from .feed_manager import FeedManager
+from .security_utils import validate_safe_path
 
 
 class MeshCoreBot:
@@ -58,6 +59,16 @@ class MeshCoreBot:
         
         # Initialize database manager first (needed by plugins)
         db_path = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
+        
+        # Validate database path for security (prevent path traversal)
+        # Use explicit bot root directory (where config.ini is located)
+        try:
+            db_path = str(validate_safe_path(db_path, base_dir=str(self.bot_root), allow_absolute=False))
+        except ValueError as e:
+            self.logger.error(f"Invalid database path: {e}")
+            self.logger.error("Using default: meshcore_bot.db")
+            db_path = 'meshcore_bot.db'
+        
         self.logger.info(f"Initializing database manager with database: {db_path}")
         try:
             self.db_manager = DBManager(self, db_path)
@@ -156,6 +167,11 @@ class MeshCoreBot:
         
         # Clock sync tracking
         self.last_clock_sync_time = None
+    
+    @property
+    def bot_root(self) -> Path:
+        """Get bot root directory (where config.ini is located)"""
+        return Path(self.config_file).parent.resolve()
         
         self.logger.info(f"MeshCore Bot initialized: {self.config.get('Bot', 'bot_name')}")
     
@@ -550,6 +566,16 @@ use_zulu_time = false
         
         # File handler
         log_file = self.config.get('Logging', 'log_file', fallback='meshcore_bot.log')
+        
+        # Validate log file path for security (prevent path traversal)
+        # Use explicit bot root directory (where config.ini is located)
+        try:
+            log_file = str(validate_safe_path(log_file, base_dir=str(self.bot_root), allow_absolute=False))
+        except ValueError as e:
+            self.logger.warning(f"Invalid log file path: {e}")
+            self.logger.warning("Using default: meshcore_bot.log")
+            log_file = 'meshcore_bot.log'
+        
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
