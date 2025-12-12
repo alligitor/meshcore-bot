@@ -304,8 +304,7 @@ forecast_solar_api_key =
 
 # Repeater prefix API URL for prefix command
 # Leave empty to disable prefix command functionality
-# Example: https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
-# Note: w0z.is is regionally available - configure your own regional API
+# Configure your own regional API endpoint
 repeater_prefix_api_url = 
 
 # Repeater prefix cache duration in hours
@@ -339,7 +338,7 @@ prefix_heard_days = 7
 # Number of days to look back when determining which prefixes are "free"
 # Only repeaters heard within this window will be considered as using a prefix
 # Repeaters not heard in this window will be excluded from used prefixes list
-prefix_free_days = 30
+prefix_free_days = 7
 
 # Maximum range for prefix filtering (kilometers)
 # Repeaters beyond this distance from bot location will be excluded from prefix lookups

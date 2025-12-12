@@ -420,8 +420,7 @@ airnow_api_key =
 
 # Repeater prefix API URL for prefix command
 # Leave empty to disable prefix command functionality
-# Example: https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
-# Note: w0z.is is regionally available - configure your own regional API
+# Configure your own regional API endpoint
 repeater_prefix_api_url = 
 
 # Repeater prefix cache duration in hours
