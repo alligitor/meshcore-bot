@@ -263,73 +263,6 @@ colored_output = true
 # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 meshcore_log_level = INFO
 
-[Greeter_Command]
-# Enable or disable the greeter command
-# true: Bot will greet users on their first public channel message
-# false: Greeter is disabled
-enabled = false
-
-# Channels where greetings should occur (comma-separated)
-# IMPORTANT: Leave commented out (or omit entirely) to use global monitor_channels (default behavior)
-# If uncommented with empty value (channels = ), command will be DM-only
-# Comma-separated list to restrict to specific channels (only greeter command works there)
-# Example: channels = general,welcome,newbies
-# If not specified, uses the channels from [Channels] monitor_channels setting
-# channels = 
-
-# Greeting message template (default for all channels)
-# Available fields: {sender} - the user's name/ID
-# For multi-part greetings, separate messages with pipe (|)
-# Example (single): "Welcome to the mesh, @[{sender}]!"
-# Example (multi-part): "Welcome to the mesh, @[{sender}]!|This is a great place to chat.|Use !help for commands."
-greeting_message = Welcome to the mesh, @[{sender}]!
-
-# Channel-specific greeting messages (optional)
-# Format: channel_name:greeting_message,channel_name2:greeting_message2
-# If a channel has a specific greeting, it will be used instead of the default greeting_message
-# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
-# Multi-part greetings are supported per channel using pipe (|) separator
-# Leave empty to use greeting_message for all channels
-channel_greetings = 
-
-# Per-channel greetings (tracking behavior)
-# false: Greet each user only once globally (default - user gets one greeting total)
-# true: Greet each user once per channel (user can be greeted on each channel separately)
-# Note: This controls tracking, not the greeting message itself. Use channel_greetings for different messages.
-per_channel_greetings = false
-
-# Include mesh network information in greeting
-# true: Add mesh statistics to greeting (total contacts, repeaters, etc.)
-# false: Only send the greeting message
-include_mesh_info = true
-
-# Mesh info format template
-# Available fields: {total_contacts}, {repeaters}, {companions}, {recent_activity_24h}
-# Example: "\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters"
-# Note: Mesh info is appended to the last greeting message part
-mesh_info_format = \n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters, {recent_activity_24h} active in last 24h
-
-# Rollout period in days
-# When greeter is first enabled on an active mesh, this sets how many days
-# to listen and mark all active users as already greeted before beginning
-# to greet new users. This prevents greeting everyone on an established mesh.
-# Set to 0 to disable rollout (will greet all new users immediately)
-# Note: Use auto_backfill to mark historical users and shorten/eliminate rollout period
-rollout_days = 7
-
-# Auto-backfill from historical message_stats data
-# true: Automatically mark all users who have posted on public channels in the past
-# false: Only mark users during rollout period (default)
-# This allows shortening or eliminating the rollout period by using existing data
-auto_backfill = false
-
-# Backfill lookback period in days
-# Number of days to look back when auto-backfilling (0 = all time)
-# Only used if auto_backfill = true
-# Example: 30 = only mark users who posted in last 30 days
-# Example: 0 = mark all users who have ever posted (all time)
-backfill_lookback_days = 30
-
 [Custom_Syntax]
 # Custom syntax patterns for special message formats
 # Format: pattern = "response_format"
@@ -341,7 +274,6 @@ backfill_lookback_days = 30
 # Note: The "t" command is now handled by the test command as an alias
 # "t phrase" works the same as "test phrase" - both use the test response format
 # Example: "t hello world" -> "ack {sender}: hello world | {connection_info}"
-
 
 [External_Data]
 # Weather API key (future feature)
@@ -618,6 +550,73 @@ hacker_enabled = false
 # Leave empty to use default format
 # Example: "Found {path_count} unique path(s) for @[{sender}]:\n{paths}"
 response_format = 
+
+[Greeter_Command]
+# Enable or disable the greeter command
+# true: Bot will greet users on their first public channel message
+# false: Greeter is disabled
+enabled = false
+
+# Channels where greetings should occur (comma-separated)
+# IMPORTANT: Leave commented out (or omit entirely) to use global monitor_channels (default behavior)
+# If uncommented with empty value (channels = ), command will be DM-only
+# Comma-separated list to restrict to specific channels (only greeter command works there)
+# Example: channels = general,welcome,newbies
+# If not specified, uses the channels from [Channels] monitor_channels setting
+# channels = 
+
+# Greeting message template (default for all channels)
+# Available fields: {sender} - the user's name/ID
+# For multi-part greetings, separate messages with pipe (|)
+# Example (single): "Welcome to the mesh, @[{sender}]!"
+# Example (multi-part): "Welcome to the mesh, @[{sender}]!|This is a great place to chat.|Use !help for commands."
+greeting_message = Welcome to the mesh, @[{sender}]!
+
+# Channel-specific greeting messages (optional)
+# Format: channel_name:greeting_message,channel_name2:greeting_message2
+# If a channel has a specific greeting, it will be used instead of the default greeting_message
+# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
+# Multi-part greetings are supported per channel using pipe (|) separator
+# Leave empty to use greeting_message for all channels
+channel_greetings = 
+
+# Per-channel greetings (tracking behavior)
+# false: Greet each user only once globally (default - user gets one greeting total)
+# true: Greet each user once per channel (user can be greeted on each channel separately)
+# Note: This controls tracking, not the greeting message itself. Use channel_greetings for different messages.
+per_channel_greetings = false
+
+# Include mesh network information in greeting
+# true: Add mesh statistics to greeting (total contacts, repeaters, etc.)
+# false: Only send the greeting message
+include_mesh_info = true
+
+# Mesh info format template
+# Available fields: {total_contacts}, {repeaters}, {companions}, {recent_activity_24h}
+# Example: "\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters"
+# Note: Mesh info is appended to the last greeting message part
+mesh_info_format = \n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters, {recent_activity_24h} active in last 24h
+
+# Rollout period in days
+# When greeter is first enabled on an active mesh, this sets how many days
+# to listen and mark all active users as already greeted before beginning
+# to greet new users. This prevents greeting everyone on an established mesh.
+# Set to 0 to disable rollout (will greet all new users immediately)
+# Note: Use auto_backfill to mark historical users and shorten/eliminate rollout period
+rollout_days = 7
+
+# Auto-backfill from historical message_stats data
+# true: Automatically mark all users who have posted on public channels in the past
+# false: Only mark users during rollout period (default)
+# This allows shortening or eliminating the rollout period by using existing data
+auto_backfill = false
+
+# Backfill lookback period in days
+# Number of days to look back when auto-backfilling (0 = all time)
+# Only used if auto_backfill = true
+# Example: 30 = only mark users who posted in last 30 days
+# Example: 0 = mark all users who have ever posted (all time)
+backfill_lookback_days = 30
 
 [Alert_Command]
 # Enable or disable the alert command
