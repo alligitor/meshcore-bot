@@ -582,6 +582,30 @@ class BotDataViewer:
                 self.logger.error(f"Error toggling star status: {e}", exc_info=True)
                 return jsonify({'error': str(e)}), 500
         
+        @self.app.route('/api/decode-path', methods=['POST'])
+        def api_decode_path():
+            """Decode path hex string to repeater names (similar to path command)"""
+            try:
+                data = request.get_json()
+                if not data or 'path_hex' not in data:
+                    return jsonify({'error': 'path_hex is required'}), 400
+                
+                path_hex = data['path_hex']
+                if not path_hex:
+                    return jsonify({'error': 'path_hex cannot be empty'}), 400
+                
+                # Decode the path
+                decoded_path = self._decode_path_hex(path_hex)
+                
+                return jsonify({
+                    'success': True,
+                    'path': decoded_path
+                })
+                
+            except Exception as e:
+                self.logger.error(f"Error decoding path: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+        
         @self.app.route('/api/delete-contact', methods=['POST'])
         def api_delete_contact():
             """Delete a contact from the complete contact tracking database"""
@@ -2102,7 +2126,7 @@ class BotDataViewer:
                        snr, hop_count, first_heard, last_heard,
                        advert_count, is_currently_tracked,
                        raw_advert_data, signal_strength,
-                       is_starred,
+                       is_starred, out_path, out_path_len,
                        COUNT(*) as total_messages,
                        MAX(last_advert_timestamp) as last_message
                 FROM complete_contact_tracking 
@@ -2110,7 +2134,8 @@ class BotDataViewer:
                          latitude, longitude, city, state, country,
                          snr, hop_count, first_heard, last_heard,
                          advert_count, is_currently_tracked,
-                         raw_advert_data, signal_strength, is_starred
+                         raw_advert_data, signal_strength, is_starred,
+                         out_path, out_path_len
                 ORDER BY last_heard DESC
             """)
             
@@ -2153,7 +2178,9 @@ class BotDataViewer:
                     'total_messages': row['total_messages'],
                     'last_message': row['last_message'],
                     'distance': distance,
-                    'is_starred': bool(row['is_starred'] if row['is_starred'] is not None else 0)
+                    'is_starred': bool(row['is_starred'] if row['is_starred'] is not None else 0),
+                    'out_path': row['out_path'] if row['out_path'] is not None else '',
+                    'out_path_len': row['out_path_len'] if row['out_path_len'] is not None else -1
                 })
             
             # Get server statistics for daily tracking using direct database queries
@@ -3639,6 +3666,81 @@ class BotDataViewer:
                 'success': False,
                 'error': str(e)
             }
+    
+    def _decode_path_hex(self, path_hex: str) -> List[Dict[str, Any]]:
+        """
+        Decode hex path string to repeater names.
+        Returns a list of dictionaries with node_id and repeater info.
+        """
+        import re
+        
+        # Parse the path input - handle various formats
+        # Examples: "11,98,a4,49,cd,5f,01" or "11 98 a4 49 cd 5f 01" or "1198a449cd5f01"
+        path_input = path_hex.replace(',', ' ').replace(':', ' ')
+        
+        # Extract hex values using regex
+        hex_pattern = r'[0-9a-fA-F]{2}'
+        hex_matches = re.findall(hex_pattern, path_input)
+        
+        if not hex_matches:
+            return []
+        
+        # Convert to uppercase for consistency
+        node_ids = [match.upper() for match in hex_matches]
+        
+        # Look up repeater names for each node ID
+        decoded_path = []
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            for node_id in node_ids:
+                # Query for all repeaters with matching prefix to detect collisions
+                cursor.execute('''
+                    SELECT name, public_key, device_type, role, 
+                           COALESCE(last_advert_timestamp, last_heard) as last_seen
+                    FROM complete_contact_tracking 
+                    WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
+                    ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
+                ''', (f"{node_id}%",))
+                
+                results = cursor.fetchall()
+                
+                if results:
+                    # Check if there are multiple matches (collision)
+                    has_collision = len(results) > 1
+                    
+                    # Use the first result (most recent/starred)
+                    result = results[0]
+                    decoded_path.append({
+                        'node_id': node_id,
+                        'name': result['name'],
+                        'public_key': result['public_key'],
+                        'device_type': result['device_type'],
+                        'role': result['role'],
+                        'found': True,
+                        'geographic_guess': has_collision,  # Mark as guess if collision exists
+                        'collision': has_collision,
+                        'matches': len(results) if has_collision else 1
+                    })
+                else:
+                    decoded_path.append({
+                        'node_id': node_id,
+                        'name': None,
+                        'found': False
+                    })
+        except Exception as e:
+            self.logger.error(f"Error decoding path: {e}")
+            return []
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+        
+        return decoded_path
     
     def run(self, host='127.0.0.1', port=8080, debug=False):
         """Run the modern web viewer"""

@@ -407,12 +407,41 @@ class MessageHandler:
                 if 'hops' in packet_info:
                     signal_info['hops'] = packet_info['hops']
                 
-                # Extract packet_hash if available (from routing_info or packet_info)
+                # Extract packet_hash and path information if available (from routing_info or packet_info)
                 packet_hash = None
+                out_path = ''
+                out_path_len = -1
+                
                 if 'routing_info' in packet_info and packet_info['routing_info']:
-                    packet_hash = packet_info['routing_info'].get('packet_hash')
+                    routing_info = packet_info['routing_info']
+                    packet_hash = routing_info.get('packet_hash')
+                    # Extract path information from routing_info
+                    path_hex = routing_info.get('path_hex', '')
+                    path_length = routing_info.get('path_length', 0)
+                    if path_hex and path_length > 0:
+                        out_path = path_hex
+                        out_path_len = path_length
+                    elif path_length == 0:
+                        # Direct connection
+                        out_path = ''
+                        out_path_len = 0
                 elif 'packet_hash' in packet_info:
                     packet_hash = packet_info['packet_hash']
+                
+                # Also check packet_info directly for path information (fallback)
+                if out_path_len == -1:
+                    if 'path_hex' in packet_info:
+                        out_path = packet_info.get('path_hex', '')
+                        out_path_len = packet_info.get('path_len', -1)
+                    elif 'path_len' in packet_info:
+                        out_path_len = packet_info.get('path_len', -1)
+                        if out_path_len == 0:
+                            out_path = ''
+                
+                # Add path information to advert_data so it gets saved to the database
+                if out_path_len >= 0:
+                    advert_data['out_path'] = out_path
+                    advert_data['out_path_len'] = out_path_len
                 
                 # Track this advertisement in the complete database
                 if hasattr(self.bot, 'repeater_manager'):
@@ -1719,7 +1748,7 @@ class MessageHandler:
             if metadata:
                 signal_info.update(metadata)
             
-            # Try to get signal data and packet_hash from recent RF data correlation
+            # Try to get signal data, packet_hash, and path information from recent RF data correlation
             # Only collect RSSI/SNR for zero-hop (direct) advertisements
             packet_hash = None
             try:
@@ -1734,8 +1763,20 @@ class MessageHandler:
                             # Extract packet_hash if available
                             packet_hash = routing_info.get('packet_hash') or rf_entry.get('packet_hash')
                             
-                            # Only collect signal data for direct (zero-hop) advertisements
+                            # Extract path information from routing_info
+                            path_hex = routing_info.get('path_hex', '')
                             path_length = routing_info.get('path_length', 0)
+                            
+                            # Add path information to contact_data if not already present
+                            if 'out_path' not in contact_data or not contact_data.get('out_path'):
+                                if path_hex and path_length > 0:
+                                    contact_data['out_path'] = path_hex
+                                    contact_data['out_path_len'] = path_length
+                                elif path_length == 0:
+                                    contact_data['out_path'] = ''
+                                    contact_data['out_path_len'] = 0
+                            
+                            # Only collect signal data for direct (zero-hop) advertisements
                             if path_length == 0:
                                 # Direct advertisement - collect signal data
                                 if 'snr' in rf_entry:
