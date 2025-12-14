@@ -1910,23 +1910,36 @@ class BotDataViewer:
                 avg_signal = cursor.fetchone()[0]
                 stats['avg_signal_strength_24h'] = round(avg_signal, 1) if avg_signal else 0
             
-            # Geographic distribution
+            # Geographic distribution - only count currently tracked contacts heard in the last 30 days
+            # Normalize country names to avoid duplicates (e.g., "United States" vs "United States of America")
             if 'complete_contact_tracking' in tables:
                 cursor.execute("""
-                    SELECT COUNT(DISTINCT country) FROM complete_contact_tracking 
+                    SELECT COUNT(DISTINCT 
+                        CASE 
+                            WHEN country IN ('United States', 'United States of America', 'US', 'USA') 
+                            THEN 'United States'
+                            ELSE country
+                        END
+                    ) FROM complete_contact_tracking 
                     WHERE country IS NOT NULL AND country != ''
+                    AND last_heard > datetime('now', '-30 days')
+                    AND is_currently_tracked = 1
                 """)
                 stats['countries'] = cursor.fetchone()[0]
                 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT state) FROM complete_contact_tracking 
                     WHERE state IS NOT NULL AND state != ''
+                    AND last_heard > datetime('now', '-30 days')
+                    AND is_currently_tracked = 1
                 """)
                 stats['states'] = cursor.fetchone()[0]
                 
                 cursor.execute("""
                     SELECT COUNT(DISTINCT city) FROM complete_contact_tracking 
                     WHERE city IS NOT NULL AND city != ''
+                    AND last_heard > datetime('now', '-30 days')
+                    AND is_currently_tracked = 1
                 """)
                 stats['cities'] = cursor.fetchone()[0]
             
