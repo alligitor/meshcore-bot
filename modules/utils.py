@@ -6,6 +6,8 @@ Shared helper functions used across multiple modules
 
 import re
 import hashlib
+import socket
+import asyncio
 from typing import Optional, Tuple, Dict
 
 
@@ -963,3 +965,60 @@ def geocode_city_sync(bot, city: str, default_state: str = None,
     except Exception as e:
         bot.logger.error(f"Error geocoding city {city}: {e}")
         return None, None, None
+
+
+def check_internet_connectivity(host: str = "8.8.8.8", port: int = 53, timeout: float = 3.0) -> bool:
+    """
+    Check if internet connectivity is available by attempting to connect to a reliable host.
+    
+    This is a lightweight check that attempts to connect to a well-known DNS server.
+    It's faster than making a full HTTP request and doesn't require DNS resolution.
+    
+    Args:
+        host: Host to connect to (default: 8.8.8.8, Google's public DNS)
+        port: Port to connect to (default: 53, DNS port)
+        timeout: Connection timeout in seconds (default: 3.0)
+        
+    Returns:
+        True if connection successful, False otherwise
+    """
+    try:
+        socket.setdefaulttimeout(timeout)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, port))
+        sock.close()
+        return True
+    except (socket.error, OSError, socket.timeout):
+        return False
+    finally:
+        socket.setdefaulttimeout(None)  # Reset to default
+
+
+async def check_internet_connectivity_async(host: str = "8.8.8.8", port: int = 53, timeout: float = 3.0) -> bool:
+    """
+    Async version of check_internet_connectivity.
+    
+    Checks if internet connectivity is available by attempting to connect to a reliable host.
+    
+    Args:
+        host: Host to connect to (default: 8.8.8.8, Google's public DNS)
+        port: Port to connect to (default: 53, DNS port)
+        timeout: Connection timeout in seconds (default: 3.0)
+        
+    Returns:
+        True if connection successful, False otherwise
+    """
+    try:
+        # Use asyncio.open_connection for proper async socket handling
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=timeout
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except (asyncio.TimeoutError, OSError, socket.error, ConnectionError):
+            return False
+    except Exception:
+        return False

@@ -27,6 +27,7 @@ class SolarforecastCommand(BaseCommand):
     description = "Get solar panel production forecast (usage: sf <location|repeater_name|coordinates|zipcode> [panel_size] [azimuth, 0=south] [angle])"
     category = "solar"
     cooldown_seconds = 10  # 10 second cooldown per user
+    requires_internet = True  # Requires internet access for Forecast.Solar API and geocoding
     
     # Error constants - will use translations instead
     ERROR_FETCHING_DATA = "Error fetching forecast"  # Deprecated - use translate

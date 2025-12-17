@@ -37,6 +37,7 @@ class SportsCommand(BaseCommand):
     description = "Get sports scores and schedules (usage: sports [team/league])"
     category = "sports"
     cooldown_seconds = 3  # 3 second cooldown per user to prevent API abuse
+    requires_internet = True  # Requires internet access for ESPN API
     
     # ESPN API base URL
     ESPN_BASE_URL = "http://site.api.espn.com/apis/site/v2/sports"

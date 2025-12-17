@@ -21,6 +21,7 @@ class BaseCommand(ABC):
     keywords: List[str] = []  # All trigger words for this command (including name and aliases)
     description: str = ""
     requires_dm: bool = False
+    requires_internet: bool = False  # Set to True if command needs internet access
     cooldown_seconds: int = 0
     category: str = "general"
     
@@ -219,6 +220,7 @@ class BaseCommand(ABC):
             'keywords': self.keywords,
             'description': self.description,
             'requires_dm': self.requires_dm,
+            'requires_internet': self.requires_internet,
             'cooldown_seconds': self.cooldown_seconds,
             'category': self.category,
             'class_name': self.__class__.__name__,

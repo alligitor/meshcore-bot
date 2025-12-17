@@ -22,6 +22,7 @@ class FeedCommand(BaseCommand):
     category = "admin"
     requires_dm = True
     cooldown_seconds = 2
+    requires_internet = True  # Requires internet access for RSS/API feed fetching
     
     def __init__(self, bot):
         super().__init__(bot)

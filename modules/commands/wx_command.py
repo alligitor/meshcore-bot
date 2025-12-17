@@ -27,6 +27,7 @@ class WxCommand(BaseCommand):
     description = "Get weather information for a zip code (usage: wx 12345)"
     category = "weather"
     cooldown_seconds = 5  # 5 second cooldown per user to prevent API abuse
+    requires_internet = True  # Requires internet access for NOAA API and geocoding
     
     # Error constants
     NO_DATA_NOGPS = "No GPS data available"

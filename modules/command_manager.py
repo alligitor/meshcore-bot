@@ -15,6 +15,7 @@ from meshcore import EventType
 from .models import MeshMessage
 from .plugin_loader import PluginLoader
 from .commands.base_command import BaseCommand
+from .utils import check_internet_connectivity_async
 
 
 class CommandManager:
@@ -33,6 +34,11 @@ class CommandManager:
         # Initialize plugin loader and load all plugins
         self.plugin_loader = PluginLoader(bot)
         self.commands = self.plugin_loader.load_all_plugins()
+        
+        # Cache for internet connectivity status to avoid checking on every command
+        # Format: {'has_internet': bool, 'timestamp': float}
+        self._internet_status_cache = None
+        self._internet_cache_duration = 30  # Cache for 30 seconds
         
         self.logger.info(f"CommandManager initialized with {len(self.commands)} plugins")
     
@@ -174,6 +180,14 @@ class CommandManager:
                 # Check if command can execute (includes channel access check)
                 if not command.can_execute(message):
                     continue  # Skip this command if it can't execute (wrong channel, cooldown, etc.)
+                
+                # Check network connectivity for commands that require internet
+                if command.requires_internet:
+                    has_internet = self._check_internet_cached()
+                    if not has_internet:
+                        self.logger.warning(f"Command '{command_name}' requires internet but network is unavailable")
+                        # Skip this command - don't add to matches
+                        continue
                 
                 # Get response format and generate response
                 response_format = command.get_response_format()
@@ -588,6 +602,25 @@ class CommandManager:
                     
                     return
                 
+                # Check network connectivity for commands that require internet
+                if command.requires_internet:
+                    has_internet = await self._check_internet_cached_async()
+                    if not has_internet:
+                        self.logger.warning(f"Command '{command_name}' requires internet but network is unavailable")
+                        # Try to get translated error message, fallback to default
+                        error_msg = command.translate('errors.no_internet', command=command_name)
+                        # If translation returns the key itself (translation not found), use fallback
+                        if error_msg == 'errors.no_internet':
+                            error_msg = f"{command_name} unavailable: No internet connection available"
+                        await self.send_response(message, error_msg)
+                        
+                        # Record command execution in stats database (error response was sent)
+                        if 'stats' in self.commands:
+                            stats_command = self.commands['stats']
+                            if stats_command:
+                                stats_command.record_command(message, command_name, True)
+                        return
+                
                 try:
                     # Record execution time for cooldown tracking
                     if hasattr(command, '_record_execution') and callable(command._record_execution):
@@ -658,6 +691,63 @@ class CommandManager:
                         except Exception as capture_error:
                             self.logger.debug(f"Failed to capture failed command data: {capture_error}")
                 return
+    
+    def _check_internet_cached(self) -> bool:
+        """
+        Check internet connectivity with caching to avoid checking on every command.
+        Uses synchronous check for keyword matching.
+        
+        Returns:
+            True if internet is available, False otherwise
+        """
+        current_time = time.time()
+        
+        # Check if we have a valid cached result
+        if self._internet_status_cache is not None:
+            cache_age = current_time - self._internet_status_cache['timestamp']
+            if cache_age < self._internet_cache_duration:
+                # Return cached result
+                return self._internet_status_cache['has_internet']
+        
+        # Cache expired or doesn't exist - perform actual check
+        from .utils import check_internet_connectivity
+        has_internet = check_internet_connectivity()
+        
+        # Update cache
+        self._internet_status_cache = {
+            'has_internet': has_internet,
+            'timestamp': current_time
+        }
+        
+        return has_internet
+    
+    async def _check_internet_cached_async(self) -> bool:
+        """
+        Check internet connectivity with caching to avoid checking on every command.
+        Uses async check for command execution.
+        
+        Returns:
+            True if internet is available, False otherwise
+        """
+        current_time = time.time()
+        
+        # Check if we have a valid cached result
+        if self._internet_status_cache is not None:
+            cache_age = current_time - self._internet_status_cache['timestamp']
+            if cache_age < self._internet_cache_duration:
+                # Return cached result
+                return self._internet_status_cache['has_internet']
+        
+        # Cache expired or doesn't exist - perform actual check
+        has_internet = await check_internet_connectivity_async()
+        
+        # Update cache
+        self._internet_status_cache = {
+            'has_internet': has_internet,
+            'timestamp': current_time
+        }
+        
+        return has_internet
     
     def get_plugin_by_keyword(self, keyword: str) -> Optional[BaseCommand]:
         """Get a plugin by keyword"""

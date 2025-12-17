@@ -25,11 +25,16 @@ class PrefixCommand(BaseCommand):
     category = "meshcore_info"
     requires_dm = False
     cooldown_seconds = 2
+    requires_internet = False  # Will be set to True in __init__ if API is configured
     
     def __init__(self, bot):
         super().__init__(bot)
         # Get API URL from config, no fallback to regional API
         self.api_url = self.bot.config.get('External_Data', 'repeater_prefix_api_url', fallback="")
+        
+        # Only require internet if API is configured
+        if self.api_url and self.api_url.strip():
+            self.requires_internet = True
         self.cache_data = {}
         self.cache_timestamp = 0
         # Get cache duration from config, with fallback to 1 hour
