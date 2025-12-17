@@ -145,19 +145,26 @@ class WxCommand(BaseCommand):
         
         # Parse the command to extract location and forecast type
         # Support formats: "wx 12345", "wx seattle", "wx paris, tx", "weather everett", "wxa bellingham"
-        # New formats: "wx 12345 tomorrow", "wx 12345 7", "wx 12345 7day"
+        # New formats: "wx 12345 tomorrow", "wx 12345 7", "wx 12345 7day", "wx 12345 alerts"
         parts = content.split()
         if len(parts) < 2:
             await self.send_response(message, self.translate('commands.wx.usage'))
             return True
         
+        # Check for "alerts" keyword first (special handling)
+        show_full_alerts = False
+        if len(parts) > 2 and parts[-1].lower() == "alerts":
+            show_full_alerts = True
+            location_parts = parts[1:-1]  # Remove "alerts" from location
+        else:
+            location_parts = parts[1:]
+        
         # Check for forecast type options: "tomorrow", or a number 2-7
         forecast_type = "default"
         num_days = 7  # Default for multi-day forecast
-        location_parts = parts[1:]
         
-        # Check last part for forecast type
-        if len(location_parts) > 0:
+        # Check last part for forecast type (only if not "alerts")
+        if len(location_parts) > 0 and not show_full_alerts:
             last_part = location_parts[-1].lower()
             if last_part == "tomorrow":
                 forecast_type = "tomorrow"
@@ -196,6 +203,29 @@ class WxCommand(BaseCommand):
             # Record execution for this user
             self._record_execution(message.sender_id)
             
+            # Special handling for "alerts" command
+            if show_full_alerts:
+                # Get alerts only (no weather forecast)
+                lat, lon = None, None
+                if location_type == "zipcode":
+                    lat, lon = self.zipcode_to_lat_lon(location)
+                    if lat is None or lon is None:
+                        await self.send_response(message, self.translate('commands.wx.no_location_zipcode', location=location))
+                        return True
+                else:  # city
+                    result = self.city_to_lat_lon(location)
+                    if len(result) == 3:
+                        lat, lon, address_info = result
+                    else:
+                        lat, lon = result
+                    if lat is None or lon is None:
+                        await self.send_response(message, self.translate('commands.wx.no_location_city', location=location, state=self.default_state))
+                        return True
+                
+                # Get and display full alert list
+                await self._send_full_alert_list(message, lat, lon)
+                return True
+            
             # Get weather data for the location
             weather_data = await self.get_weather_for_location(location, location_type, forecast_type, num_days)
             
@@ -211,10 +241,10 @@ class WxCommand(BaseCommand):
                 sleep_time = max(rate_limit + 1.0, 2.0)  # At least 2 seconds, or rate_limit + 1 second
                 await asyncio.sleep(sleep_time)
                 
-                # Send the special weather statement
+                # Send the special weather statement (already formatted with prioritization)
                 alert_text = weather_data[2]
                 alert_count = weather_data[3]
-                await self.send_response(message, f"{alert_count} alerts: {alert_text}")
+                await self.send_response(message, alert_text)
             elif forecast_type == "multiday":
                 # Use message splitting for multi-day forecasts
                 await self._send_multiday_forecast(message, weather_data)
@@ -329,7 +359,7 @@ class WxCommand(BaseCommand):
             
             # Get weather alerts (only for default forecast type to avoid cluttering)
             if forecast_type == "default":
-                alerts_result = self.get_weather_alerts_noaa(lat, lon)
+                alerts_result = self.get_weather_alerts_noaa(lat, lon, return_full_data=False)
                 if alerts_result == self.ERROR_FETCHING_DATA:
                     alerts_info = None
                 elif alerts_result == self.NO_ALERTS:
@@ -337,9 +367,19 @@ class WxCommand(BaseCommand):
                 else:
                     full_alert_text, abbreviated_alert_text, alert_count = alerts_result
                     if alert_count > 0:
+                        # Get full alert data for prioritized formatting
+                        alerts_full_result = self.get_weather_alerts_noaa(lat, lon, return_full_data=True)
+                        if alerts_full_result not in [self.ERROR_FETCHING_DATA, self.NO_ALERTS]:
+                            alerts_list, _ = alerts_full_result
+                            # Format with prioritization and summary
+                            formatted_alert_text = self._format_alerts_compact_summary(alerts_list, alert_count)
+                        else:
+                            # Fallback to old format
+                            formatted_alert_text = full_alert_text
+                        
                         # Always send weather first, then alerts in separate message
                         self.logger.info(f"Found {alert_count} alerts - using two-message mode")
-                        return ("multi_message", f"{location_prefix}{weather}", full_alert_text, alert_count)
+                        return ("multi_message", f"{location_prefix}{weather}", formatted_alert_text, alert_count)
             
             return f"{location_prefix}{weather}"
             
@@ -1335,8 +1375,18 @@ class WxCommand(BaseCommand):
         if current_message:
             await self.send_response(message, current_message)
     
-    def get_weather_alerts_noaa(self, lat: float, lon: float) -> tuple:
-        """Get weather alerts from NOAA"""
+    def get_weather_alerts_noaa(self, lat: float, lon: float, return_full_data: bool = False) -> tuple:
+        """Get weather alerts from NOAA with full metadata extraction and prioritization
+        
+        Args:
+            lat: Latitude
+            lon: Longitude
+            return_full_data: If True, return list of alert dicts instead of formatted strings
+        
+        Returns:
+            If return_full_data=False: (full_first_alert_text, abbreviated_first_alert_text, alert_count)
+            If return_full_data=True: (list of alert dicts, alert_count)
+        """
         try:
             # Round coordinates to 4 decimal places to avoid API redirects
             lat_rounded = round(lat, 4)
@@ -1353,36 +1403,949 @@ class WxCommand(BaseCommand):
                 self.logger.warning(f"Timeout/connection error fetching weather alerts from NOAA: {e}")
                 return self.ERROR_FETCHING_DATA
             
-            full_alert_titles = []  # Store original full titles
-            abbreviated_alert_titles = []  # Store abbreviated titles for single message mode
+            alerts = []  # Store structured alert data
             alertxml = xml.dom.minidom.parseString(alert_data.text)
             
-            for i in alertxml.getElementsByTagName("entry"):
-                title = i.getElementsByTagName("title")[0].childNodes[0].nodeValue
-                full_alert_titles.append(title)
-                
-                # Abbreviate alert title for brevity (for single message mode)
-                short_title = self.abbreviate_alert_title(title)
-                abbreviated_alert_titles.append(short_title)
+            for entry in alertxml.getElementsByTagName("entry"):
+                try:
+                    # Extract title
+                    title_elem = entry.getElementsByTagName("title")
+                    title = title_elem[0].childNodes[0].nodeValue if title_elem and title_elem[0].childNodes else ""
+                    
+                    # Extract summary/content for additional context (especially useful for Special Statements)
+                    summary = ""
+                    summary_elem = entry.getElementsByTagName("summary")
+                    if summary_elem and summary_elem[0].childNodes:
+                        summary = summary_elem[0].childNodes[0].nodeValue if summary_elem[0].childNodes[0].nodeValue else ""
+                    # Also check for content element
+                    if not summary:
+                        content_elem = entry.getElementsByTagName("content")
+                        if content_elem and content_elem[0].childNodes:
+                            summary = content_elem[0].childNodes[0].nodeValue if content_elem[0].childNodes[0].nodeValue else ""
+                    
+                    # Extract NWS headline parameter (very useful for Special Statements)
+                    # Try both with and without namespace prefix
+                    nws_headline = ""
+                    # Try cap:parameter first
+                    params = entry.getElementsByTagName("cap:parameter")
+                    if not params:
+                        # Try without namespace prefix
+                        params = entry.getElementsByTagName("parameter")
+                    
+                    for param in params:
+                        value_name_elem = param.getElementsByTagName("valueName")
+                        value_elem = param.getElementsByTagName("value")
+                        if value_name_elem and value_elem and value_name_elem[0].childNodes and value_elem[0].childNodes:
+                            value_name = value_name_elem[0].childNodes[0].nodeValue if value_name_elem[0].childNodes[0].nodeValue else ""
+                            if value_name == "NWSheadline":
+                                nws_headline = value_elem[0].childNodes[0].nodeValue if value_elem[0].childNodes[0].nodeValue else ""
+                                break
+                    
+                    # Extract CAP (Common Alerting Protocol) metadata
+                    # These are in the cap namespace, so we need to search by tag name
+                    event = ""
+                    severity = "Unknown"
+                    urgency = "Unknown"
+                    certainty = "Unknown"
+                    effective = ""
+                    expires = ""
+                    area_desc = ""
+                    office = ""
+                    
+                    # Parse title to extract key info (fallback if CAP data not available)
+                    # Title format: "High Wind Warning issued December 16 at 3:12PM PST until December 17 at 6:00AM PST by NWS Seattle WA"
+                    title_lower = title.lower()
+                    
+                    # Extract event type from title
+                    if "warning" in title_lower:
+                        event_type = "Warning"
+                        # Extract event name (e.g., "High Wind Warning" -> "High Wind")
+                        event_match = re.search(r'^([^W]+?)\s+Warning', title, re.IGNORECASE)
+                        if event_match:
+                            event = event_match.group(1).strip()
+                    elif "watch" in title_lower:
+                        event_type = "Watch"
+                        event_match = re.search(r'^([^W]+?)\s+Watch', title, re.IGNORECASE)
+                        if event_match:
+                            event = event_match.group(1).strip()
+                    elif "advisory" in title_lower:
+                        event_type = "Advisory"
+                        event_match = re.search(r'^([^A]+?)\s+Advisory', title, re.IGNORECASE)
+                        if event_match:
+                            event = event_match.group(1).strip()
+                    elif "statement" in title_lower:
+                        event_type = "Statement"
+                        # For statements, try to extract more descriptive info
+                        # Pattern: "Special Weather Statement" or "Hydrologic Statement" etc.
+                        event_match = re.search(r'^([^S]+?)\s+Statement', title, re.IGNORECASE)
+                        if event_match:
+                            event = event_match.group(1).strip()
+                        else:
+                            event = "Special"
+                        
+                        # For Special Statements, try to extract meaningful description from NWS headline or summary
+                        if event.lower() in ["special", "special weather"]:
+                            # First, try NWS headline (most concise and descriptive)
+                            if nws_headline:
+                                headline_lower = nws_headline.lower()
+                                
+                                # Extract the PRIMARY topic - look for the main subject/action
+                                # Strategy: Find the most important noun/topic, prioritizing specific threats
+                                # Order matters - check more specific threats first
+                                
+                                # Very specific threats (highest priority)
+                                if any(phrase in headline_lower for phrase in ['debris flow', 'mudslide']):
+                                    event = "Debris Flow"
+                                elif 'landslide' in headline_lower:
+                                    # Check if there's a more specific context
+                                    if 'burn' in headline_lower or 'burned area' in headline_lower:
+                                        event = "Landslide (Burn)"
+                                    else:
+                                        event = "Landslide"
+                                # Weather phenomena
+                                elif any(phrase in headline_lower for phrase in ['flash flood', 'river flood']):
+                                    event = "Flood"
+                                elif 'flood' in headline_lower or 'flooding' in headline_lower:
+                                    event = "Flood"
+                                elif any(phrase in headline_lower for phrase in ['high wind', 'strong wind', 'damaging wind']):
+                                    event = "Wind"
+                                elif 'wind' in headline_lower or 'gust' in headline_lower:
+                                    event = "Wind"
+                                elif any(phrase in headline_lower for phrase in ['heavy rain', 'excessive rain']):
+                                    event = "Heavy Rain"
+                                elif 'rain' in headline_lower or 'rainfall' in headline_lower or 'precipitation' in headline_lower:
+                                    # If rain is mentioned with another threat, prioritize the other threat
+                                    # But if rain is the main topic, use it
+                                    if not any(word in headline_lower for word in ['landslide', 'flood', 'wind', 'snow']):
+                                        event = "Rainfall"
+                                    # Otherwise, the other threat was already caught above
+                                elif any(phrase in headline_lower for phrase in ['heavy snow', 'blizzard', 'winter storm']):
+                                    event = "Snow"
+                                elif 'snow' in headline_lower or 'winter' in headline_lower:
+                                    event = "Snow"
+                                elif any(phrase in headline_lower for phrase in ['dense fog', 'low visibility']):
+                                    event = "Fog"
+                                elif 'fog' in headline_lower or 'visibility' in headline_lower:
+                                    event = "Visibility"
+                                elif any(phrase in headline_lower for phrase in ['extreme heat', 'excessive heat']):
+                                    event = "Heat"
+                                elif 'heat' in headline_lower or 'temperature' in headline_lower:
+                                    event = "Temperature"
+                                elif any(phrase in headline_lower for phrase in ['storm surge', 'coastal flood']):
+                                    event = "Marine"
+                                elif 'marine' in headline_lower or 'coastal' in headline_lower:
+                                    event = "Marine"
+                                else:
+                                    # Try to extract first meaningful word/phrase from headline
+                                    # Remove common words and extract key terms
+                                    headline_words = headline_lower.split()
+                                    # Skip common words
+                                    skip_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'will', 'lead', 'to', 'an', 'increased', 'threat', 'remains', 'in', 'effect', 'until', 'during', 'last', 'week', 'including', 'today'}
+                                    meaningful_words = [w for w in headline_words if w not in skip_words and len(w) > 3]
+                                    if meaningful_words:
+                                        # Take first meaningful word, capitalize it
+                                        event = meaningful_words[0].capitalize()
+                            
+                            # If still generic, try summary
+                            if event.lower() in ["special", "special weather"] and summary:
+                                summary_lower = summary.lower()
+                                # Look for key phrases in summary that indicate statement type
+                                if any(word in summary_lower for word in ['landslide', 'debris flow', 'mudslide']):
+                                    event = "Landslide"
+                                elif any(word in summary_lower for word in ['hydrologic', 'river', 'flood', 'stream']):
+                                    event = "Hydrologic"
+                                elif any(word in summary_lower for word in ['marine', 'coastal', 'beach', 'surf']):
+                                    event = "Marine"
+                                elif any(word in summary_lower for word in ['avalanche', 'snow', 'mountain']):
+                                    event = "Avalanche"
+                                elif any(word in summary_lower for word in ['air quality', 'smoke', 'pollution']):
+                                    event = "Air Quality"
+                                elif any(word in summary_lower for word in ['wind', 'gust']):
+                                    event = "Wind"
+                                elif any(word in summary_lower for word in ['rain', 'precipitation', 'shower', 'rainfall']):
+                                    event = "Rainfall"
+                                elif any(word in summary_lower for word in ['temperature', 'heat', 'cold', 'freeze']):
+                                    event = "Temperature"
+                                elif any(word in summary_lower for word in ['visibility', 'fog', 'haze']):
+                                    event = "Visibility"
+                            
+                            # If still generic, check if title has "Weather" in it
+                            if event.lower() in ["special", "special weather"]:
+                                if "weather" in title_lower:
+                                    event = "Weather"
+                                else:
+                                    event = "Special"
+                    else:
+                        event_type = "Unknown"
+                        event = title.split()[0] if title else ""
+                    
+                    # Extract times from title
+                    # Pattern: "issued December 16 at 3:12PM PST until December 17 at 6:00AM PST"
+                    issued_match = re.search(r'issued\s+([^u]+?)\s+until\s+(.+?)\s+by', title, re.IGNORECASE)
+                    if issued_match:
+                        effective = issued_match.group(1).strip()
+                        expires = issued_match.group(2).strip()
+                    else:
+                        # Try alternative patterns
+                        until_match = re.search(r'until\s+(.+?)\s+by', title, re.IGNORECASE)
+                        if until_match:
+                            expires = until_match.group(1).strip()
+                    
+                    # Extract office from title
+                    # Pattern: "by NWS Seattle WA"
+                    office_match = re.search(r'by\s+(.+?)$', title, re.IGNORECASE)
+                    if office_match:
+                        office = office_match.group(1).strip()
+                    
+                    # Try to extract CAP elements if available (they may be in different namespaces)
+                    # Look for cap:event, cap:severity, etc. in the XML
+                    # CAP elements might be in namespace like "cap:event" or just "event" in a cap namespace
+                    def get_node_value(node):
+                        """Extract text value from XML node"""
+                        if not node or not node.childNodes:
+                            return ""
+                        # Get all text nodes
+                        text_parts = []
+                        for child in node.childNodes:
+                            if child.nodeType == child.TEXT_NODE:
+                                text_parts.append(child.nodeValue)
+                            elif hasattr(child, 'nodeValue') and child.nodeValue:
+                                text_parts.append(child.nodeValue)
+                        return " ".join(text_parts).strip()
+                    
+                    # Search for CAP elements by tag name (handles namespaces)
+                    for child in entry.childNodes:
+                        if hasattr(child, 'tagName'):
+                            tag_name = child.tagName
+                            tag_lower = tag_name.lower()
+                            
+                            # Handle both "cap:event" and "event" formats
+                            if ('event' in tag_lower or tag_name.endswith(':event')) and not event:
+                                event_val = get_node_value(child)
+                                if event_val:
+                                    event = event_val
+                            elif 'severity' in tag_lower or tag_name.endswith(':severity'):
+                                severity_val = get_node_value(child)
+                                if severity_val:
+                                    severity = severity_val
+                            elif 'urgency' in tag_lower or tag_name.endswith(':urgency'):
+                                urgency_val = get_node_value(child)
+                                if urgency_val:
+                                    urgency = urgency_val
+                            elif 'certainty' in tag_lower or tag_name.endswith(':certainty'):
+                                certainty_val = get_node_value(child)
+                                if certainty_val:
+                                    certainty = certainty_val
+                            elif 'effective' in tag_lower or tag_name.endswith(':effective'):
+                                effective_val = get_node_value(child)
+                                if effective_val:
+                                    effective = effective_val
+                            elif 'expires' in tag_lower or tag_name.endswith(':expires'):
+                                expires_val = get_node_value(child)
+                                if expires_val:
+                                    expires = expires_val
+                            elif ('areadesc' in tag_lower or 'area' in tag_lower or 
+                                  tag_name.endswith(':areadesc') or tag_name.endswith(':area')):
+                                area_val = get_node_value(child)
+                                if area_val:
+                                    area_desc = area_val
+                    
+                    # Also try searching by namespace-aware methods
+                    # Some XML parsers handle namespaces differently
+                    try:
+                        # Try to get elements by local name (ignoring namespace prefix)
+                        for node in entry.getElementsByTagName("*"):
+                            if hasattr(node, 'localName'):
+                                local_name = node.localName.lower()
+                                node_val = get_node_value(node)
+                                if node_val:
+                                    if local_name == 'event' and not event:
+                                        event = node_val
+                                    elif local_name == 'severity' and severity == "Unknown":
+                                        severity = node_val
+                                    elif local_name == 'urgency' and urgency == "Unknown":
+                                        urgency = node_val
+                                    elif local_name == 'certainty' and certainty == "Unknown":
+                                        certainty = node_val
+                                    elif local_name == 'effective' and not effective:
+                                        effective = node_val
+                                    elif local_name == 'expires' and not expires:
+                                        expires = node_val
+                                    elif local_name in ['areadesc', 'area'] and not area_desc:
+                                        area_desc = node_val
+                    except:
+                        pass  # Namespace-aware methods may not be available
+                    
+                    # Infer severity from event type if not found
+                    if severity == "Unknown":
+                        if any(word in event.lower() for word in ['extreme', 'tornado', 'hurricane', 'blizzard']):
+                            severity = "Extreme"
+                        elif any(word in event.lower() for word in ['severe', 'warning']):
+                            severity = "Severe"
+                        elif any(word in event.lower() for word in ['advisory', 'moderate']):
+                            severity = "Moderate"
+                        else:
+                            severity = "Minor"
+                    
+                    # Infer urgency from event type if not found
+                    if urgency == "Unknown":
+                        if event_type == "Warning":
+                            urgency = "Immediate"
+                        elif event_type == "Watch":
+                            urgency = "Expected"
+                        else:
+                            urgency = "Future"
+                    
+                    # Calculate expiration time for prioritization
+                    expires_hours = 999  # Default to far future
+                    if expires:
+                        try:
+                            # Try to parse expiration time
+                            # Format might be "December 17 at 6:00AM PST" or ISO format
+                            if 'at' in expires.lower():
+                                # Parse "December 17 at 6:00AM PST"
+                                from datetime import datetime
+                                now = datetime.now()
+                                # Extract date and time parts
+                                date_match = re.search(r'(\w+\s+\d+)', expires)
+                                time_match = re.search(r'(\d+):?(\d+)?(AM|PM)', expires, re.IGNORECASE)
+                                if date_match and time_match:
+                                    # For simplicity, assume it's within next 7 days
+                                    expires_hours = 24  # Default estimate
+                        except:
+                            pass
+                    
+                    alert_dict = {
+                        'title': title,
+                        'summary': summary,  # Store summary for potential use in formatting
+                        'nws_headline': nws_headline,  # Store NWS headline for Special Statements
+                        'event': event,
+                        'event_type': event_type,
+                        'severity': severity,
+                        'urgency': urgency,
+                        'certainty': certainty,
+                        'effective': effective,
+                        'expires': expires,
+                        'area_desc': area_desc,
+                        'office': office
+                    }
+                    
+                    alerts.append(alert_dict)
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error parsing alert entry: {e}")
+                    # Fallback: just use title
+                    if title:
+                        alerts.append({
+                            'title': title,
+                            'summary': '',
+                            'nws_headline': '',
+                            'event': title.split()[0] if title else "",
+                            'event_type': 'Unknown',
+                            'severity': 'Unknown',
+                            'urgency': 'Unknown',
+                            'certainty': 'Unknown',
+                            'effective': '',
+                            'expires': '',
+                            'area_desc': '',
+                            'office': ''
+                        })
             
-            if not full_alert_titles:
+            if not alerts:
                 return self.NO_ALERTS
             
-            alert_num = len(full_alert_titles)
+            # Post-process alerts to differentiate duplicate Special Statements
+            # If multiple statements have the same event, add distinguishing details
+            alerts = self._differentiate_duplicate_statements(alerts)
             
-            # For multi-message, we need the full first alert title
-            full_first_alert_text = full_alert_titles[0]
+            # Prioritize alerts using hybrid scoring
+            alerts = self._prioritize_alerts(alerts)
             
-            # For single message, we need the abbreviated first alert title, further abbreviated by abbreviate_noaa
-            abbreviated_first_alert_text = self.abbreviate_noaa(abbreviated_alert_titles[0])
+            if return_full_data:
+                return alerts, len(alerts)
             
-            # Return both full and abbreviated versions, along with count
-            return full_first_alert_text, abbreviated_first_alert_text, alert_num
+            # Format for compact display (backward compatibility)
+            # Return first alert formatted, plus count
+            first_alert = alerts[0]
+            full_first_alert_text = self._format_alert_compact(first_alert, include_details=True)
+            abbreviated_first_alert_text = self._format_alert_compact(first_alert, include_details=False)
+            
+            return full_first_alert_text, abbreviated_first_alert_text, len(alerts)
             
         except Exception as e:
             self.logger.error(f"Error fetching NOAA weather alerts: {e}")
             return self.ERROR_FETCHING_DATA
     
+    
+    def _differentiate_duplicate_statements(self, alerts: list) -> list:
+        """Differentiate Special Statements that have the same event type by adding unique details
+        
+        Args:
+            alerts: List of alert dicts
+        
+        Returns:
+            List of alerts with differentiated event names for duplicate statements
+        """
+        # Group alerts by event type and event name
+        statement_groups = {}
+        for alert in alerts:
+            if alert.get('event_type') == 'Statement':
+                event = alert.get('event', 'Special')
+                if event not in statement_groups:
+                    statement_groups[event] = []
+                statement_groups[event].append(alert)
+        
+        # For each group with multiple statements, differentiate them
+        for event, group in statement_groups.items():
+            if len(group) > 1:
+                # Multiple statements with same event - need to differentiate
+                for i, alert in enumerate(group):
+                    nws_headline = alert.get('nws_headline', '')
+                    summary = alert.get('summary', '')
+                    effective = alert.get('effective', '')
+                    expires = alert.get('expires', '')
+                    
+                    # Try to extract unique distinguishing details
+                    distinguishing_detail = ""
+                    
+                    # Strategy 1: Extract unique keywords from headline that aren't in other headlines
+                    if nws_headline:
+                        headline_lower = nws_headline.lower()
+                        # Look for unique time references
+                        if 'today' in headline_lower or 'now' in headline_lower:
+                            distinguishing_detail = " (Today)"
+                        elif 'week' in headline_lower or 'past week' in headline_lower:
+                            distinguishing_detail = " (Week)"
+                        elif 'continues' in headline_lower or 'remains' in headline_lower:
+                            distinguishing_detail = " (Ongoing)"
+                        
+                        # Look for unique severity/impact words
+                        if not distinguishing_detail:
+                            if 'increased' in headline_lower or 'increasing' in headline_lower:
+                                distinguishing_detail = " (Increased)"
+                            elif 'new' in headline_lower:
+                                distinguishing_detail = " (New)"
+                            elif 'update' in headline_lower:
+                                distinguishing_detail = " (Update)"
+                    
+                    # Strategy 2: Use timing to differentiate (morning vs afternoon vs evening)
+                    if not distinguishing_detail and effective:
+                        try:
+                            from datetime import datetime
+                            # Try to parse effective time
+                            if 'T' in effective:
+                                dt = datetime.fromisoformat(effective.replace('Z', '+00:00'))
+                                hour = dt.hour
+                                if 5 <= hour < 12:
+                                    distinguishing_detail = " (AM)"
+                                elif 12 <= hour < 17:
+                                    distinguishing_detail = " (PM)"
+                                elif 17 <= hour < 21:
+                                    distinguishing_detail = " (Eve)"
+                                else:
+                                    distinguishing_detail = " (Night)"
+                        except:
+                            pass
+                    
+                    # Strategy 3: Extract unique topic from summary if headline didn't help
+                    if not distinguishing_detail and summary:
+                        summary_lower = summary.lower()
+                        # Look for secondary topics that might be unique
+                        # Check for specific locations, conditions, or impacts
+                        if 'burn' in summary_lower or 'burned area' in summary_lower:
+                            distinguishing_detail = " (Burn)"
+                        elif 'coastal' in summary_lower:
+                            distinguishing_detail = " (Coastal)"
+                        elif 'urban' in summary_lower:
+                            distinguishing_detail = " (Urban)"
+                        elif 'mountain' in summary_lower or 'cascade' in summary_lower:
+                            distinguishing_detail = " (Mtn)"
+                    
+                    # Strategy 4: Use index as last resort (but make it subtle)
+                    if not distinguishing_detail:
+                        distinguishing_detail = f" ({i+1})"
+                    
+                    # Update the event name with distinguishing detail
+                    alert['event'] = event + distinguishing_detail
+        
+        return alerts
+    
+    def _prioritize_alerts(self, alerts: list) -> list:
+        """Prioritize alerts using hybrid scoring system
+        
+        Scoring:
+        - Severity: Extreme=100, Severe=75, Moderate=50, Minor=25, Unknown=0
+        - Urgency: Immediate=50, Expected=30, Future=10, Past=0
+        - Event Type: Warning=40, Watch=30, Advisory=20, Statement=10
+        - Time: (hours until expiration) * -5 (sooner = higher score)
+        
+        Returns sorted list (highest priority first)
+        """
+        def calculate_score(alert):
+            score = 0
+            
+            # Severity score
+            severity_scores = {
+                'Extreme': 100,
+                'Severe': 75,
+                'Moderate': 50,
+                'Minor': 25,
+                'Unknown': 0
+            }
+            score += severity_scores.get(alert.get('severity', 'Unknown'), 0)
+            
+            # Urgency score
+            urgency_scores = {
+                'Immediate': 50,
+                'Expected': 30,
+                'Future': 10,
+                'Past': 0,
+                'Unknown': 0
+            }
+            score += urgency_scores.get(alert.get('urgency', 'Unknown'), 0)
+            
+            # Event type score
+            event_type_scores = {
+                'Warning': 40,
+                'Watch': 30,
+                'Advisory': 20,
+                'Statement': 10,
+                'Unknown': 0
+            }
+            score += event_type_scores.get(alert.get('event_type', 'Unknown'), 0)
+            
+            # Time urgency (estimate hours until expiration)
+            expires = alert.get('expires', '')
+            expires_hours = 999  # Default to far future
+            if expires:
+                try:
+                    # Try to parse expiration time
+                    if 'at' in expires.lower():
+                        # Rough estimate: if it says "6:00AM" assume it's today or tomorrow
+                        time_match = re.search(r'(\d+):?(\d+)?(AM|PM)', expires, re.IGNORECASE)
+                        if time_match:
+                            # For simplicity, assume alerts expire within 48 hours
+                            expires_hours = 24  # Default estimate
+                except:
+                    pass
+            
+            # Time score: sooner expiration = higher priority
+            # Subtract hours (sooner = higher score)
+            score += max(0, 50 - expires_hours)
+            
+            return score
+        
+        # Sort by score (descending), then by event type, then by title
+        sorted_alerts = sorted(alerts, key=lambda a: (
+            -calculate_score(a),  # Negative for descending
+            {'Warning': 0, 'Watch': 1, 'Advisory': 2, 'Statement': 3, 'Unknown': 4}.get(a.get('event_type', 'Unknown'), 4),
+            a.get('title', '')
+        ))
+        
+        return sorted_alerts
+    
+    def _format_alert_compact(self, alert: dict, include_details: bool = True) -> str:
+        """Format a single alert compactly
+        
+        Args:
+            alert: Alert dict with event, event_type, severity, expires, office, etc.
+            include_details: If True, include expiration time and office
+        
+        Returns:
+            Formatted alert string
+        """
+        event = alert.get('event', '')
+        event_type = alert.get('event_type', '')
+        severity = alert.get('severity', 'Unknown')
+        expires = alert.get('expires', '')
+        office = alert.get('office', '')
+        
+        # Get severity emoji
+        severity_emoji = {
+            'Extreme': '🔴',
+            'Severe': '🟠',
+            'Moderate': '🟡',
+            'Minor': '⚪',
+            'Unknown': '⚪'
+        }.get(severity, '⚪')
+        
+        # Get event type emoji/indicator
+        event_type_indicator = {
+            'Warning': '⚠️',
+            'Watch': '👁️',
+            'Advisory': 'ℹ️',
+            'Statement': '📢'
+        }.get(event_type, '')
+        
+        # Format event type abbreviation
+        event_type_abbrev = {
+            'Warning': 'Warn',
+            'Watch': 'Watch',
+            'Advisory': 'Adv',
+            'Statement': 'Stmt'
+        }.get(event_type, event_type)
+        
+        # Build compact alert string
+        if include_details:
+            # Full format: "🟠High Wind Warn til 6AM by NWS SEA"
+            # Start with emoji directly concatenated to text (no space)
+            result = severity_emoji
+            
+            # Add event and type
+            if event:
+                # Check if event already contains the event type to avoid duplication
+                event_lower = event.lower()
+                event_type_lower = event_type.lower()
+                if event_type_lower in event_lower:
+                    # Event already contains type (e.g., "High Wind Warning"), just use event
+                    event_short = event
+                    if len(event) > 15:
+                        # Take first words
+                        words = event.split()
+                        if len(words) > 2:
+                            event_short = ' '.join(words[:2])
+                        else:
+                            event_short = event[:15]
+                    result += event_short
+                else:
+                    # Event doesn't contain type, add it
+                    event_short = event
+                    if len(event) > 15:
+                        # Take first words
+                        words = event.split()
+                        if len(words) > 2:
+                            event_short = ' '.join(words[:2])
+                        else:
+                            event_short = event[:15]
+                    result += f"{event_short} {event_type_abbrev}"
+            else:
+                result += event_type_abbrev
+            
+            # Add expiration time if available
+            if expires:
+                expires_compact = self.compact_time(expires)
+                # Extract just the time part
+                # "Dec 17 1AM" -> "til 1AM" (prefer just time for compactness)
+                # Check if it's in compact format with month name (from ISO parsing)
+                if any(month in expires_compact for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]):
+                    # Has date, extract just time part for compactness
+                    time_match = re.search(r'(\d+)(AM|PM)', expires_compact, re.IGNORECASE)
+                    if time_match:
+                        hour = time_match.group(1)
+                        am_pm = time_match.group(2)
+                        expires_short = f" til {hour}{am_pm}"
+                    else:
+                        # Fallback: use compact version but limit length
+                        expires_short = f" til {expires_compact[:15]}"
+                else:
+                    # Try to extract time pattern from other formats
+                    time_match = re.search(r'(\d+):?(\d+)?(AM|PM)', expires_compact, re.IGNORECASE)
+                    if time_match:
+                        hour = time_match.group(1)
+                        am_pm = time_match.group(3)
+                        expires_short = f" til {hour}{am_pm}"
+                    else:
+                        # If no time pattern found, use compact version (truncated)
+                        expires_short = f" til {expires_compact[:15]}"
+                result += expires_short
+            
+            # Add office if available (abbreviate city name)
+            if office:
+                # Extract city from office (e.g., "NWS Seattle WA" -> "NWS SEA")
+                office_parts = office.split()
+                if len(office_parts) >= 2:
+                    # Assume format: "NWS Seattle WA" or "NWS Seattle"
+                    office_org = office_parts[0]  # "NWS"
+                    city = office_parts[1] if len(office_parts) > 1 else ""
+                    city_abbrev = self.abbreviate_city_name(city)
+                    office_short = f" by {office_org} {city_abbrev}"
+                else:
+                    office_short = f" by {office[:10]}"  # Truncate
+                result += office_short
+            
+            return result
+        else:
+            # Abbreviated format: just event type and severity
+            return f"{severity_emoji}{event} {event_type_abbrev}" if event else f"{severity_emoji}{event_type_abbrev}"
+    
+    def _format_alerts_compact_summary(self, alerts: list, alert_count: int) -> str:
+        """Format multiple alerts with prioritized first alert and summary of others
+        
+        Args:
+            alerts: List of prioritized alert dicts
+            alert_count: Total number of alerts
+        
+        Returns:
+            Compact formatted string: "4 alerts: 🟠High Wind Warn til 6AM | +3: 🌊Flood Watch, ❄️Freeze Adv, 🌫️Dense Fog Adv"
+        """
+        if not alerts:
+            return f"{alert_count} alerts"
+        
+        # Format first (highest priority) alert with details
+        first_alert = alerts[0]
+        first_alert_text = self._format_alert_compact(first_alert, include_details=True)
+        
+        # If only one alert, return it
+        if alert_count == 1:
+            return f"{alert_count} alert: {first_alert_text}"
+        
+        # Build summary of remaining alerts
+        remaining_alerts = alerts[1:]
+        remaining_count = len(remaining_alerts)
+        
+        # Format remaining alerts as event types only
+        remaining_parts = []
+        for alert in remaining_alerts[:5]:  # Limit to 5 to avoid overflow
+            event = alert.get('event', '')
+            event_type = alert.get('event_type', '')
+            
+            # Get event type abbreviation
+            event_type_abbrev = {
+                'Warning': 'Warn',
+                'Watch': 'Watch',
+                'Advisory': 'Adv',
+                'Statement': 'Stmt'
+            }.get(event_type, event_type)
+            
+            # Get emoji for event type
+            event_emoji = self._get_event_emoji(event, event_type)
+            
+            # Build compact event string
+            if event:
+                # Abbreviate long event names
+                event_short = event
+                if len(event) > 12:
+                    words = event.split()
+                    if len(words) > 1:
+                        event_short = words[0]  # Just first word
+                    else:
+                        event_short = event[:12]
+                remaining_parts.append(f"{event_emoji}{event_short} {event_type_abbrev}")
+            else:
+                remaining_parts.append(f"{event_emoji}{event_type_abbrev}")
+        
+        # Build summary
+        if remaining_count > 5:
+            remaining_summary = f"+{remaining_count}: {', '.join(remaining_parts[:5])}..."
+        else:
+            remaining_summary = f"+{remaining_count}: {', '.join(remaining_parts)}"
+        
+        # Combine: first alert + summary
+        result = f"{alert_count} alerts: {first_alert_text} | {remaining_summary}"
+        
+        # Check if it fits in 130 chars, truncate if needed
+        if self._count_display_width(result) > 130:
+            # Try shorter first alert
+            first_alert_text_short = self._format_alert_compact(first_alert, include_details=False)
+            result = f"{alert_count} alerts: {first_alert_text_short} | {remaining_summary}"
+            
+            # If still too long, truncate remaining summary
+            if self._count_display_width(result) > 130:
+                max_remaining = 3
+                while max_remaining > 0 and self._count_display_width(result) > 130:
+                    if remaining_count > max_remaining:
+                        remaining_summary = f"+{remaining_count}: {', '.join(remaining_parts[:max_remaining])}..."
+                    else:
+                        remaining_summary = f"+{remaining_count}: {', '.join(remaining_parts[:max_remaining])}"
+                    result = f"{alert_count} alerts: {first_alert_text_short} | {remaining_summary}"
+                    max_remaining -= 1
+        
+        return result
+    
+    def _get_event_emoji(self, event: str, event_type: str) -> str:
+        """Get emoji for event type"""
+        event_lower = event.lower() if event else ""
+        
+        # Weather event emojis
+        if any(word in event_lower for word in ['flood', 'flooding']):
+            return '🌊'
+        elif any(word in event_lower for word in ['wind', 'gale']):
+            return '💨'
+        elif any(word in event_lower for word in ['snow', 'winter', 'blizzard']):
+            return '❄️'
+        elif any(word in event_lower for word in ['fog', 'smoke', 'haze']):
+            return '🌫️'
+        elif any(word in event_lower for word in ['heat', 'excessive heat']):
+            return '🌡️'
+        elif any(word in event_lower for word in ['freeze', 'frost']):
+            return '🧊'
+        elif any(word in event_lower for word in ['thunderstorm', 'tornado']):
+            return '⛈️'
+        elif any(word in event_lower for word in ['fire', 'red flag']):
+            return '🔥'
+        elif any(word in event_lower for word in ['hurricane', 'tropical']):
+            return '🌀'
+        elif any(word in event_lower for word in ['tsunami']):
+            return '🌊'
+        else:
+            # Default by event type
+            return {
+                'Warning': '⚠️',
+                'Watch': '👁️',
+                'Advisory': 'ℹ️',
+                'Statement': '📢'
+            }.get(event_type, '⚠️')
+    
+    def _format_alert_full(self, alert: dict, index: int = None) -> str:
+        """Format a single alert with full details for multi-message display
+        
+        Args:
+            alert: Alert dict
+            index: Optional alert number (1-based)
+        
+        Returns:
+            Formatted alert string with start/stop times
+        """
+        event = alert.get('event', '')
+        event_type = alert.get('event_type', '')
+        severity = alert.get('severity', 'Unknown')
+        effective = alert.get('effective', '')
+        expires = alert.get('expires', '')
+        office = alert.get('office', '')
+        
+        # Get severity emoji
+        severity_emoji = {
+            'Extreme': '🔴',
+            'Severe': '🟠',
+            'Moderate': '🟡',
+            'Minor': '⚪',
+            'Unknown': '⚪'
+        }.get(severity, '⚪')
+        
+        # Format event type
+        event_type_abbrev = {
+            'Warning': 'Warn',
+            'Watch': 'Watch',
+            'Advisory': 'Adv',
+            'Statement': 'Stmt'
+        }.get(event_type, event_type)
+        
+        # Build parts
+        parts = []
+        
+        # Add index if provided
+        if index is not None:
+            parts.append(f"{index}.")
+        
+        # Add severity emoji and event
+        if event:
+            # Check if event already contains the event type to avoid duplication
+            event_lower = event.lower()
+            event_type_lower = event_type.lower()
+            if event_type_lower in event_lower:
+                # Event already contains type (e.g., "High Wind Warning"), just use event
+                parts.append(f"{severity_emoji}{event}")
+            else:
+                # Event doesn't contain type, add it
+                parts.append(f"{severity_emoji}{event} {event_type_abbrev}")
+        else:
+            parts.append(f"{severity_emoji}{event_type_abbrev}")
+        
+        # Add times
+        time_parts = []
+        if effective:
+            effective_compact = self.compact_time(effective)
+            # Extract just the essential time info
+            # Try pattern: "December 16 at 3:12PM" or "Dec 16 3:12PM"
+            time_match = re.search(r'(\w+\s+\d+)\s+(?:at\s+)?(\d+):?(\d+)?(AM|PM)', effective_compact, re.IGNORECASE)
+            if time_match:
+                date_part = time_match.group(1)
+                hour = time_match.group(2)
+                am_pm = time_match.group(4)
+                time_parts.append(f"from {date_part} {hour}{am_pm}")
+            else:
+                # Fallback: just use compacted version, truncate if needed
+                effective_short = effective_compact[:25]
+                time_parts.append(f"from {effective_short}")
+        
+        if expires:
+            expires_compact = self.compact_time(expires)
+            # Extract time part
+            # Try pattern: "December 17 at 6:00AM" or "Dec 17 6AM"
+            time_match = re.search(r'(\w+\s+\d+)\s+(?:at\s+)?(\d+):?(\d+)?(AM|PM)', expires_compact, re.IGNORECASE)
+            if time_match:
+                date_part = time_match.group(1)
+                hour = time_match.group(2)
+                am_pm = time_match.group(4)
+                time_parts.append(f"til {date_part} {hour}{am_pm}")
+            else:
+                # Fallback: just use compacted version, truncate if needed
+                expires_short = expires_compact[:25]
+                time_parts.append(f"til {expires_short}")
+        
+        if time_parts:
+            parts.append(" ".join(time_parts))
+        
+        # Add office (abbreviated)
+        if office:
+            office_parts = office.split()
+            if len(office_parts) >= 2:
+                office_org = office_parts[0]
+                city = office_parts[1]
+                city_abbrev = self.abbreviate_city_name(city)
+                parts.append(f"by {office_org} {city_abbrev}")
+            else:
+                parts.append(f"by {office[:15]}")
+        
+        return " ".join(parts)
+    
+    async def _send_full_alert_list(self, message: MeshMessage, lat: float, lon: float):
+        """Send full list of alerts with details, splitting across multiple messages if needed"""
+        import asyncio
+        
+        # Get full alert data
+        alerts_result = self.get_weather_alerts_noaa(lat, lon, return_full_data=True)
+        if alerts_result == self.ERROR_FETCHING_DATA:
+            await self.send_response(message, self.translate('commands.wx.error_fetching'))
+            return
+        elif alerts_result == self.NO_ALERTS:
+            await self.send_response(message, "No weather alerts")
+            return
+        
+        alerts, alert_count = alerts_result
+        
+        if not alerts:
+            await self.send_response(message, "No weather alerts")
+            return
+        
+        # Format each alert with full details
+        alert_lines = []
+        for i, alert in enumerate(alerts, 1):
+            alert_line = self._format_alert_full(alert, index=i)
+            alert_lines.append(alert_line)
+        
+        # Send alerts, splitting into multiple messages if needed
+        rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+        sleep_time = max(rate_limit + 1.0, 2.0)
+        
+        # Group alerts into messages that fit within 130 chars
+        current_message = f"{alert_count} alerts:"
+        messages = []
+        
+        for line in alert_lines:
+            # Check if adding this line would exceed limit
+            test_message = current_message + "\n" + line if current_message else line
+            if self._count_display_width(test_message) > 130:
+                # Current message is full, start new one
+                if current_message:
+                    messages.append(current_message)
+                current_message = line
+            else:
+                # Add to current message
+                if current_message:
+                    current_message += "\n" + line
+                else:
+                    current_message = line
+        
+        # Add last message
+        if current_message:
+            messages.append(current_message)
+        
+        # Send all messages
+        for i, msg in enumerate(messages):
+            await self.send_response(message, msg)
+            if i < len(messages) - 1:
+                await asyncio.sleep(sleep_time)
     
     def abbreviate_alert_title(self, title: str) -> str:
         """Abbreviate alert title for brevity"""
@@ -1447,6 +2410,158 @@ class WxCommand(BaseCommand):
         
         return result
 
+    def abbreviate_city_name(self, city: str) -> str:
+        """Abbreviate city names for compact display (e.g., Seattle -> SEA)"""
+        if not city:
+            return city
+        
+        # Common city abbreviations
+        city_abbrevs = {
+            "Seattle": "SEA",
+            "Portland": "PDX",
+            "San Francisco": "SF",
+            "Los Angeles": "LA",
+            "New York": "NYC",
+            "Chicago": "CHI",
+            "Houston": "HOU",
+            "Phoenix": "PHX",
+            "Philadelphia": "PHL",
+            "San Antonio": "SAT",
+            "San Diego": "SAN",
+            "Dallas": "DAL",
+            "San Jose": "SJC",
+            "Austin": "AUS",
+            "Jacksonville": "JAX",
+            "Columbus": "CMH",
+            "Fort Worth": "FTW",
+            "Charlotte": "CLT",
+            "Denver": "DEN",
+            "Washington": "DC",
+            "Boston": "BOS",
+            "El Paso": "ELP",
+            "Detroit": "DTW",
+            "Nashville": "BNA",
+            "Oklahoma City": "OKC",
+            "Las Vegas": "LAS",
+            "Memphis": "MEM",
+            "Louisville": "SDF",
+            "Baltimore": "BWI",
+            "Milwaukee": "MKE",
+            "Albuquerque": "ABQ",
+            "Tucson": "TUS",
+            "Fresno": "FAT",
+            "Sacramento": "SAC",
+            "Kansas City": "KC",
+            "Mesa": "MSC",
+            "Atlanta": "ATL",
+            "Omaha": "OMA",
+            "Colorado Springs": "COS",
+            "Raleigh": "RDU",
+            "Virginia Beach": "ORF",
+            "Miami": "MIA",
+            "Oakland": "OAK",
+            "Minneapolis": "MSP",
+            "Tulsa": "TUL",
+            "Cleveland": "CLE",
+            "Wichita": "ICT",
+            "Arlington": "ARL",
+            "Tampa": "TPA",
+            "New Orleans": "MSY",
+            "Honolulu": "HNL",
+            "Anchorage": "ANC",
+            "Bellingham": "BLI",
+            "Everett": "EVE",
+            "Spokane": "GEG",
+            "Tacoma": "TAC",
+            "Yakima": "YKM",
+            "Olympia": "OLM",
+            "Vancouver": "YVR",
+            "Victoria": "YYJ"
+        }
+        
+        # Check for exact match first
+        if city in city_abbrevs:
+            return city_abbrevs[city]
+        
+        # Check for partial matches (e.g., "Seattle WA" -> "SEA")
+        for full_name, abbrev in city_abbrevs.items():
+            if full_name in city:
+                return abbrev
+        
+        # If no match, try to create abbreviation from first letters of words
+        words = city.split()
+        if len(words) > 1:
+            # Take first letter of each word, up to 3-4 letters
+            abbrev = ''.join([w[0].upper() for w in words[:3]])
+            if len(abbrev) <= 4:
+                return abbrev
+        
+        # Fallback: return first 3-4 uppercase letters
+        return city[:4].upper() if len(city) >= 4 else city.upper()
+    
+    def compact_time(self, time_str: str) -> str:
+        """Compact time format: '6:00AM' -> '6AM', 'December 16 at 3:12PM' -> 'Dec 16 3:12PM'
+        Also handles ISO format: '2025-12-17T01:00:00-08:00' -> 'Dec 17 1AM'"""
+        if not time_str:
+            return time_str
+        
+        # Check if it's ISO format (contains 'T' and looks like datetime)
+        if 'T' in time_str and re.match(r'\d{4}-\d{2}-\d{2}T', time_str):
+            try:
+                from datetime import datetime
+                # Parse ISO format
+                # Handle various ISO formats: 2025-12-17T01:00:00-08:00, 2025-12-17T01:0, etc.
+                # Try to parse with timezone info first
+                try:
+                    dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                except:
+                    # Try without timezone
+                    dt_str = time_str.split('T')[0] + 'T' + time_str.split('T')[1].split('-')[0].split('+')[0]
+                    dt = datetime.fromisoformat(dt_str)
+                
+                # Format as "Dec 17 1AM"
+                month_abbrevs = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                month = month_abbrevs[dt.month - 1]
+                day = dt.day
+                hour = dt.hour
+                
+                # Convert to 12-hour format
+                if hour == 0:
+                    hour_12 = 12
+                    am_pm = "AM"
+                elif hour < 12:
+                    hour_12 = hour
+                    am_pm = "AM"
+                elif hour == 12:
+                    hour_12 = 12
+                    am_pm = "PM"
+                else:
+                    hour_12 = hour - 12
+                    am_pm = "PM"
+                
+                return f"{month} {day} {hour_12}{am_pm}"
+            except Exception as e:
+                # If parsing fails, fall through to regular processing
+                pass
+        
+        # Remove leading zeros from hours: "6:00AM" -> "6AM", "10:00PM" -> "10PM"
+        time_str = re.sub(r'(\d+):00(AM|PM)', r'\1\2', time_str)
+        
+        # Abbreviate month names
+        month_abbrevs = {
+            "January": "Jan", "February": "Feb", "March": "Mar", "April": "Apr",
+            "May": "May", "June": "Jun", "July": "Jul", "August": "Aug",
+            "September": "Sep", "October": "Oct", "November": "Nov", "December": "Dec"
+        }
+        for full, abbrev in month_abbrevs.items():
+            time_str = time_str.replace(full, abbrev)
+        
+        # Remove "at" before time: "December 16 at 3:12PM" -> "December 16 3:12PM"
+        time_str = re.sub(r'\s+at\s+', ' ', time_str)
+        
+        return time_str
+    
     def abbreviate_wind_direction(self, direction: str) -> str:
         """Abbreviate wind direction to emoji + 2-3 characters"""
         if not direction:

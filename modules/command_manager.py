@@ -232,7 +232,10 @@ class CommandManager:
         # Check user rate limiter (prevents spam from users)
         if not self.bot.rate_limiter.can_send():
             wait_time = self.bot.rate_limiter.time_until_next()
-            self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
+            # Only log warning if there's a meaningful wait time (> 0.1 seconds)
+            # This avoids misleading "Wait 0.0 seconds" messages from timing edge cases
+            if wait_time > 0.1:
+                self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
             return False
         
         # Wait for bot TX rate limiter (prevents network overload)
@@ -325,7 +328,10 @@ class CommandManager:
         # Check user rate limiter (prevents spam from users)
         if not self.bot.rate_limiter.can_send():
             wait_time = self.bot.rate_limiter.time_until_next()
-            self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
+            # Only log warning if there's a meaningful wait time (> 0.1 seconds)
+            # This avoids misleading "Wait 0.0 seconds" messages from timing edge cases
+            if wait_time > 0.1:
+                self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
             return False
         
         # Wait for bot TX rate limiter (prevents network overload)
