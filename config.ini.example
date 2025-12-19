@@ -72,7 +72,7 @@ dm_max_flood_attempts = 2
 dm_flood_after = 2
 
 # Timezone for bot operations
-# Use standard timezone names (e.g., "America/New_York", "Europe/London", "UTC")
+# Use standard timezone names (e.g., America/New_York, Europe/London, UTC)
 # Leave empty to use system timezone
 timezone = 
 
