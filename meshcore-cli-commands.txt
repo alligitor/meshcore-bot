@@ -26,5 +26,7 @@ meshcore-cli -s /dev/ttyUSB0 set_channel 1 \#test 9cd8fcf22a47333b591d96a2b848b7
 
 
 
-
+#location
+meshcore-cli -s /dev/ttyUSB0 set lat 42.477384
+meshcore-cli -s /dev/ttyUSB0 set lon -71.208925  
 
