@@ -11,6 +11,8 @@ import colorlog
 import time
 import threading
 import schedule
+import signal
+import atexit
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -23,12 +25,16 @@ from meshcore import EventType
 from meshcore_cli.meshcore_cli import send_cmd, send_chan_msg
 
 # Import our modules
-from .rate_limiter import RateLimiter, BotTxRateLimiter
+from .rate_limiter import RateLimiter, BotTxRateLimiter, NominatimRateLimiter
 from .message_handler import MessageHandler
 from .command_manager import CommandManager
 from .channel_manager import ChannelManager
 from .scheduler import MessageScheduler
 from .repeater_manager import RepeaterManager
+from .db_manager import DBManager
+from .i18n import Translator
+from .solar_conditions import set_config
+from .web_viewer.integration import WebViewerIntegration
 
 
 class MeshCoreBot:
@@ -46,16 +52,36 @@ class MeshCoreBot:
         self.meshcore = None
         self.connected = False
         
+        # Bot start time for uptime tracking
+        self.start_time = time.time()
+        
         # Initialize database manager first (needed by plugins)
         db_path = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
         self.logger.info(f"Initializing database manager with database: {db_path}")
         try:
-            from .db_manager import DBManager
             self.db_manager = DBManager(self, db_path)
             self.logger.info("Database manager initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize database manager: {e}")
             raise
+        
+        # Store start time in database for web viewer access
+        try:
+            self.db_manager.set_bot_start_time(self.start_time)
+            self.logger.info("Bot start time stored in database")
+        except Exception as e:
+            self.logger.warning(f"Could not store start time in database: {e}")
+        
+        # Initialize web viewer integration (after database manager)
+        try:
+            self.web_viewer_integration = WebViewerIntegration(self)
+            self.logger.info("Web viewer integration initialized")
+            
+            # Register cleanup handler for web viewer
+            atexit.register(self._cleanup_web_viewer)
+        except Exception as e:
+            self.logger.warning(f"Web viewer integration failed: {e}")
+            self.web_viewer_integration = None
         
         # Initialize modules
         self.rate_limiter = RateLimiter(
@@ -64,10 +90,39 @@ class MeshCoreBot:
         self.bot_tx_rate_limiter = BotTxRateLimiter(
             self.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
         )
+        # Nominatim rate limiter: 1.1 seconds between requests (Nominatim policy: max 1 req/sec)
+        self.nominatim_rate_limiter = NominatimRateLimiter(
+            self.config.getfloat('Bot', 'nominatim_rate_limit_seconds', fallback=1.1)
+        )
         self.tx_delay_ms = self.config.getint('Bot', 'tx_delay_ms', fallback=250)
+        
+        # Initialize translator for localization BEFORE CommandManager
+        # This ensures translated keywords are available when commands are loaded
+        try:
+            language = self.config.get('Localization', 'language', fallback='en')
+            translation_path = self.config.get('Localization', 'translation_path', fallback='translations/')
+            self.translator = Translator(language, translation_path)
+            self.logger.info(f"Localization initialized: {language}")
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize translator: {e}")
+            # Create a dummy translator that just returns keys
+            class DummyTranslator:
+                def translate(self, key, **kwargs):
+                    return key
+                def get_value(self, key):
+                    return None
+            self.translator = DummyTranslator()
+        
+        # Initialize solar conditions configuration
+        set_config(self.config)
+        
         self.message_handler = MessageHandler(self)
         self.command_manager = CommandManager(self)
-        self.channel_manager = ChannelManager(self)
+        
+        # Load max_channels from config (default 40, MeshCore supports up to 40 channels)
+        max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
+        self.channel_manager = ChannelManager(self, max_channels=max_channels)
+        
         self.scheduler = MessageScheduler(self)
         
         # Initialize repeater manager
@@ -79,9 +134,12 @@ class MeshCoreBot:
             self.logger.error(f"Failed to initialize repeater manager: {e}")
             raise
         
-        # Initialize solar conditions configuration
-        from .solar_conditions import set_config
-        set_config(self.config)
+        # Reload translated keywords for all commands now that translator is available
+        # This ensures keywords are loaded even if translator wasn't ready during command init
+        if hasattr(self, 'command_manager') and hasattr(self, 'translator'):
+            for cmd_name, cmd_instance in self.command_manager.commands.items():
+                if hasattr(cmd_instance, '_load_translated_keywords'):
+                    cmd_instance._load_translated_keywords()
         
         # Advert tracking
         self.last_advert_time = None
@@ -98,9 +156,10 @@ class MeshCoreBot:
     def create_default_config(self):
         """Create default configuration file"""
         default_config = """[Connection]
-# Connection type: serial or ble
+# Connection type: serial, ble, or tcp
 # serial: Connect via USB serial port
 # ble: Connect via Bluetooth Low Energy
+# tcp: Connect via TCP/IP
 connection_type = serial
 
 # Serial port (for serial connection)
@@ -110,6 +169,11 @@ serial_port = /dev/ttyUSB0
 # BLE device name (for BLE connection)
 # Leave commented out for auto-detection, or specify exact device name
 #ble_device_name = MeshCore
+
+# TCP hostname or IP address (for TCP connection)
+#hostname = 192.168.1.60
+# TCP port (for TCP connection)
+#tcp_port = 5000
 
 # Connection timeout in seconds
 timeout = 30
@@ -169,6 +233,33 @@ dm_flood_after = 2
 # Leave empty to use system timezone
 timezone = 
 
+# Bot location for geographic proximity calculations and astronomical data
+# Default latitude for bot location (decimal degrees)
+# Example: 40.7128 for New York City, 48.50 for Victoria BC
+bot_latitude = 40.7128
+
+# Default longitude for bot location (decimal degrees)
+# Example: -74.0060 for New York City, -123.00 for Victoria BC
+bot_longitude = -74.0060
+
+# Interval-based advertising settings
+# Send periodic flood adverts at specified intervals
+# 0: Disabled (default)
+# >0: Send flood advert every N hours
+advert_interval_hours = 0
+
+# Send startup advert when bot finishes initializing
+# false: No startup advert (default)
+# zero-hop: Send local broadcast advert
+# flood: Send network-wide flood advert
+startup_advert = false
+
+# Auto-manage contact list when new contacts are discovered
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
+auto_manage_contacts = false
+
 [Jokes]
 # Enable or disable the joke command
 # true: Joke command is available
@@ -191,27 +282,29 @@ dadjoke_enabled = true
 # true: Split long jokes into multiple messages
 long_jokes = false
 
-# Send startup advert when bot finishes initializing
-# false: No startup advert (default)
-# zero-hop: Send local broadcast advert
-# flood: Send network-wide flood advert
-startup_advert = false
+[Admin_ACL]
+# Admin Access Control List (ACL) for restricted commands
+# Only users with public keys listed here can execute admin commands
+# Format: comma-separated list of public keys (without spaces)
+# Example: f5d2b56d19b24412756933e917d4632e088cdd5daeadc9002feca73bf5d2b56d,another_key_here
+admin_pubkeys = 
 
-# Auto-manage contact list when new contacts are discovered
-# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
-# bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
-# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = false
+# Commands that require admin access (comma-separated)
+# These commands will only work for users in the admin_pubkeys list
+admin_commands = repeater
 
 [Keywords]
 # Keyword-response pairs (keyword = response format)
-# Available fields: {sender}, {connection_info}, {snr}, {timestamp}, {path}
+# Available fields: {sender}, {connection_info}, {snr}, {rssi}, {timestamp}, {path}, {path_distance}, {firstlast_distance}
 # {sender}: Name/ID of message sender
-# {connection_info}: "Direct connection (0 hops)" or "Routed through X hops"
+# {connection_info}: Path info, SNR, and RSSI combined (e.g., "01,5f (2 hops) | SNR: 15 dB | RSSI: -120 dBm")
 # {snr}: Signal-to-noise ratio in dB
+# {rssi}: Received signal strength indicator in dBm
 # {timestamp}: Message timestamp in HH:MM:SS format
 # {path}: Message routing path (e.g., "01,5f (2 hops)")
-test = "ack {sender}{phrase_part} | {connection_info} | Received at: {timestamp}"
+# {path_distance}: Total distance between all hops in path with locations (e.g., "123.4km (3 segs, 1 no-loc)")
+# {firstlast_distance}: Distance between first and last repeater in path (e.g., "45.6km" or empty if locations missing)
+test = "ack [@{sender}]{phrase_part} | {connection_info} | Received at: {timestamp}"
 ping = "Pong!"
 pong = "Ping!"
 help = "Bot Help: test, ping, help, hello, cmd, advert, t phrase, @string, wx, aqi, sun, moon, solar, hfcond, satpass | Use 'help <command>' for details"
@@ -297,14 +390,43 @@ n2yo_api_key =
 airnow_api_key = 
 
 # Repeater prefix API URL for prefix command
-# Default: w0z.is Seattle region API
-# You can change the region parameter to query different areas
-repeater_prefix_api_url = https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
+# Leave empty to disable prefix command functionality
+# Example: https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
+# Note: w0z.is is regionally available - configure your own regional API
+repeater_prefix_api_url = 
 
 # Repeater prefix cache duration in hours
 # How long to cache prefix data before refreshing from API
 # Recommended: 1-6 hours (data doesn't change frequently)
 repeater_prefix_cache_hours = 1
+
+[Prefix_Command]
+# Enable or disable repeater geolocation in prefix command
+# true: Show city names with repeaters when location data is available
+# false: Show only repeater names without location information
+show_repeater_locations = true
+
+# Use reverse geocoding for coordinates without city names
+# true: Automatically look up city names from GPS coordinates
+# false: Only show coordinates if no city name is available
+use_reverse_geocoding = true
+
+# Hide prefix source information
+# true: Hide "Source: domain.com" line from prefix command output
+# false: Show source information (default)
+hide_source = false
+
+# Prefix heard time window (days)
+# Number of days to look back when showing prefix results (default command behavior)
+# Only repeaters heard within this window will be shown by default
+# Use "prefix XX all" to show all repeaters regardless of time
+prefix_heard_days = 7
+
+# Prefix free time window (days)
+# Number of days to look back when determining which prefixes are "free"
+# Only repeaters heard within this window will be considered as using a prefix
+# Repeaters not heard in this window will be excluded from used prefixes list
+prefix_free_days = 30
 
 [Weather]
 # Default state for city name disambiguation
@@ -312,15 +434,59 @@ repeater_prefix_cache_hours = 1
 # Use 2-letter state abbreviation (e.g., WA, CA, NY, TX)
 default_state = WA
 
+# Default country for city name disambiguation (for international weather plugin)
+# Use 2-letter country code (e.g., US, CA, GB, AU)
+default_country = US
+
+# Temperature unit for weather display
+# Options: fahrenheit, celsius
+# Default: fahrenheit
+temperature_unit = fahrenheit
+
+# Wind speed unit for weather display
+# Options: mph, kmh, ms (meters per second)
+# Default: mph
+wind_speed_unit = mph
+
+# Precipitation unit for weather display
+# Options: inch, mm
+# Default: inch
+precipitation_unit = inch
+
+[Path_Command]
+# Geographic proximity calculation method
+# simple: Use proximity to bot location (default)
+# path: Use proximity to previous/next nodes in the path for more realistic routing
+proximity_method = simple
+
+# Enable path proximity fallback
+# When path proximity can't be calculated (missing location data), fall back to simple proximity
+# true: Fall back to bot location proximity when path data unavailable
+# false: Show collision warning when path proximity unavailable
+path_proximity_fallback = true
+
+# Maximum range for geographic proximity guessing (kilometers)
+# Repeaters beyond this distance will have reduced confidence or be rejected
+# Set to 0 to disable range limiting
+max_proximity_range = 200
+
+# Maximum age for repeater data in path matching (days)
+# Only include repeaters that have been heard within this many days
+# Helps filter out stale or inactive repeaters from path decoding
+# Set to 0 to disable age filtering
+max_repeater_age_days = 14
+
+# Confidence indicator symbols for path command
+# High confidence (>= 0.9): Shows when path decoding is very reliable
+high_confidence_symbol = 🎯
+
+# Medium confidence (>= 0.8): Shows when path decoding is reasonably reliable
+medium_confidence_symbol = 📍
+
+# Low confidence (< 0.8): Shows when path decoding has uncertainty
+low_confidence_symbol = ❓
+
 [Solar_Config]
-# Default latitude for astronomical calculations (decimal degrees)
-# Example: 40.7128 for New York City
-default_latitude = 40.7128
-
-# Default longitude for astronomical calculations (decimal degrees)
-# Example: -74.0060 for New York City
-default_longitude = -74.0060
-
 # URL timeout for external API calls (seconds)
 url_timeout = 10
 
@@ -408,6 +574,33 @@ use_zulu_time = false
         
         # Log the configuration for debugging
         self.logger.info(f"Logging configured - Bot: {logging.getLevelName(log_level)}, MeshCore: {logging.getLevelName(meshcore_log_level)}")
+        
+        # Setup routing info capture for web viewer
+        self._setup_routing_capture()
+        
+        # Setup signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+    
+    def _setup_routing_capture(self):
+        """Setup routing information capture for web viewer"""
+        # Web viewer doesn't need complex routing capture
+        # It uses direct database access instead of complex integration
+        if not (hasattr(self, 'web_viewer_integration') and 
+                self.web_viewer_integration):
+            return
+        
+        self.logger.info("Web viewer routing capture setup complete")
+    
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown"""
+        def signal_handler(signum, frame):
+            self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            self._cleanup_web_viewer()
+            # Let the main loop handle the rest of the shutdown
+        
+        # Register signal handlers
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
     
     async def connect(self) -> bool:
         """Connect to MeshCore node using official package"""
@@ -423,11 +616,20 @@ use_zulu_time = false
                 serial_port = self.config.get('Connection', 'serial_port', fallback='/dev/ttyUSB0')
                 self.logger.info(f"Connecting via serial port: {serial_port}")
                 self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
+            elif connection_type == 'tcp':
+                # Create TCP connection
+                hostname = self.config.get('Connection', 'hostname', fallback=None)
+                tcp_port = self.config.getint('Connection', 'tcp_port', fallback=5000)
+                if not hostname:
+                    self.logger.error("TCP connection requires 'hostname' to be set in config")
+                    return False
+                self.logger.info(f"Connecting via TCP: {hostname}:{tcp_port}")
+                self.meshcore = await meshcore.MeshCore.create_tcp(hostname, tcp_port, debug=False)
             else:
                 # Create BLE connection (default)
                 ble_device_name = self.config.get('Connection', 'ble_device_name', fallback=None)
                 self.logger.info(f"Connecting via BLE" + (f" to device: {ble_device_name}" if ble_device_name else ""))
-                self.meshcore = await meshcore.MeshCore.create_ble(device_name=ble_device_name, debug=False)
+                self.meshcore = await meshcore.MeshCore.create_ble(ble_device_name, debug=False)
             
             if self.meshcore.is_connected:
                 self.connected = True
@@ -513,14 +715,19 @@ use_zulu_time = false
         # Subscribe to RAW_DATA events for full packet data
         self.meshcore.subscribe(EventType.RAW_DATA, on_raw_data)
         
-        # Subscribe to NEW_CONTACT events for automatic contact management
-        self.meshcore.subscribe(EventType.NEW_CONTACT, on_new_contact)
-        
         # Note: Debug mode commands are not available in current meshcore-cli version
         # The meshcore library handles debug output automatically when needed
         
         # Start auto message fetching
         await self.meshcore.start_auto_message_fetching()
+        
+        # Delay NEW_CONTACT subscription to ensure device is fully ready
+        self.logger.info("Delaying NEW_CONTACT subscription to ensure device readiness...")
+        await asyncio.sleep(5)  # Wait 5 seconds for device to be fully ready
+        
+        # Subscribe to NEW_CONTACT events for automatic contact management
+        self.meshcore.subscribe(EventType.NEW_CONTACT, on_new_contact)
+        self.logger.info("NEW_CONTACT subscription active - ready to receive new contact events")
         
         self.logger.info("Message handlers setup complete")
     
@@ -539,6 +746,11 @@ use_zulu_time = false
         # Start scheduler thread
         self.scheduler.start()
         
+        # Start web viewer if enabled
+        if self.web_viewer_integration and self.web_viewer_integration.enabled:
+            self.web_viewer_integration.start_viewer()
+            self.logger.info("Web viewer started")
+        
         # Send startup advert if enabled
         await self.send_startup_advert()
         
@@ -546,7 +758,28 @@ use_zulu_time = false
         self.logger.info("Bot is running. Press Ctrl+C to stop.")
         try:
             while self.connected:
-                await asyncio.sleep(1)
+                # Monitor web viewer process and health
+                if self.web_viewer_integration and self.web_viewer_integration.enabled:
+                    # Check if process died
+                    if (self.web_viewer_integration and 
+                        self.web_viewer_integration.viewer_process and 
+                        self.web_viewer_integration.viewer_process.poll() is not None):
+                        try:
+                            self.logger.warning("Web viewer process died, restarting...")
+                        except (AttributeError, TypeError):
+                            print("Web viewer process died, restarting...")
+                        self.web_viewer_integration.restart_viewer()
+                    
+                    # Simple health check for web viewer
+                    if (self.web_viewer_integration and 
+                        not self.web_viewer_integration.is_viewer_healthy()):
+                        try:
+                            self.logger.warning("Web viewer health check failed, restarting...")
+                            self.web_viewer_integration.restart_viewer()
+                        except (AttributeError, TypeError) as e:
+                            print(f"Web viewer health check failed: {e}")
+                
+                await asyncio.sleep(5)  # Check every 5 seconds
         except KeyboardInterrupt:
             self.logger.info("Received interrupt signal")
         finally:
@@ -554,13 +787,45 @@ use_zulu_time = false
     
     async def stop(self):
         """Stop the bot"""
-        self.logger.info("Stopping MeshCore Bot...")
+        try:
+            self.logger.info("Stopping MeshCore Bot...")
+        except (AttributeError, TypeError):
+            print("Stopping MeshCore Bot...")
+        
         self.connected = False
+        
+        # Stop web viewer with proper shutdown sequence
+        if self.web_viewer_integration:
+            # Web viewer has simpler shutdown
+            self.web_viewer_integration.stop_viewer()
+            try:
+                self.logger.info("Web viewer stopped")
+            except (AttributeError, TypeError):
+                print("Web viewer stopped")
         
         if self.meshcore:
             await self.meshcore.disconnect()
         
-        self.logger.info("Bot stopped")
+        try:
+            self.logger.info("Bot stopped")
+        except (AttributeError, TypeError):
+            print("Bot stopped")
+    
+    def _cleanup_web_viewer(self):
+        """Cleanup web viewer on exit"""
+        try:
+            if hasattr(self, 'web_viewer_integration') and self.web_viewer_integration:
+                # Web viewer has simpler cleanup
+                self.web_viewer_integration.stop_viewer()
+                try:
+                    self.logger.info("Web viewer cleanup completed")
+                except (AttributeError, TypeError):
+                    print("Web viewer cleanup completed")
+        except Exception as e:
+            try:
+                self.logger.error(f"Error during web viewer cleanup: {e}")
+            except (AttributeError, TypeError):
+                print(f"Error during web viewer cleanup: {e}")
     
     async def send_startup_advert(self):
         """Send a startup advert if enabled in config"""

@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.cache.sqlite
 
 # C extensions
 *.so
@@ -55,6 +56,7 @@ coverage.xml
 *.log
 local_settings.py
 db.sqlite3
+.cache.*
 
 # Flask stuff:
 instance/
@@ -119,9 +121,20 @@ Thumbs.db
 *.log
 config.ini
 *.db
+*.db-wal
+*.db-shm
 mctomqtt.py
 bot_cli.py
+bot_start_time.txt
+
+# Test files and development artifacts
+test_*.py
+test_*.db
+test_*.log
+*_test.py
+*_test.db
 
 # Local documentation and development files
 docs/local/
 tests/
+test_scripts/

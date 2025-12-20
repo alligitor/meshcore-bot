@@ -8,6 +8,8 @@ import re
 import time
 import asyncio
 from typing import List, Dict, Tuple, Optional, Any
+from datetime import datetime
+import pytz
 from meshcore import EventType
 
 from .models import MeshMessage
@@ -93,6 +95,46 @@ class CommandManager:
         
         return connection_info
     
+    def format_keyword_response(self, response_format: str, message: MeshMessage) -> str:
+        """Format a keyword response string with message data"""
+        try:
+            connection_info = self.build_enhanced_connection_info(message)
+            
+            # Format timestamp - use bot's local time instead of message timestamp
+            # to avoid issues when sender's clock is wrong
+            try:
+                # Get configured timezone or use system timezone
+                timezone_str = self.bot.config.get('Bot', 'timezone', fallback='')
+                
+                if timezone_str:
+                    try:
+                        # Use configured timezone
+                        tz = pytz.timezone(timezone_str)
+                        dt = datetime.now(tz)
+                    except pytz.exceptions.UnknownTimeZoneError:
+                        # Fallback to system timezone if configured timezone is invalid
+                        dt = datetime.now()
+                else:
+                    # Use system timezone
+                    dt = datetime.now()
+                
+                time_str = dt.strftime("%H:%M:%S")
+            except:
+                time_str = "Unknown"
+            
+            # Format the response with available message data
+            return response_format.format(
+                sender=message.sender_id or "Unknown",
+                connection_info=connection_info,
+                path=message.path or "Unknown",
+                timestamp=time_str,
+                snr=message.snr or "Unknown",
+                rssi=message.rssi or "Unknown"
+            )
+        except (KeyError, ValueError):
+            # If formatting fails (no placeholders), return as-is
+            return response_format
+    
     def check_keywords(self, message: MeshMessage) -> List[tuple]:
         """Check message content for keywords and return matching responses"""
         matches = []
@@ -103,19 +145,36 @@ class CommandManager:
         content_lower = content.lower()
         
         # Check for help requests first (special handling)
-        if content_lower.startswith('help '):
-            command_name = content_lower[5:].strip()  # Remove "help " prefix
-            help_text = self.get_help_for_command(command_name, message)
-            matches.append(('help', help_text))
-            return matches
-        elif content_lower == 'help':
-            help_text = self.get_general_help()
-            matches.append(('help', help_text))
-            return matches
+        # Check both English "help" and translated help keywords
+        help_keywords = ['help']
+        if 'help' in self.commands:
+            help_command = self.commands['help']
+            if hasattr(help_command, 'keywords'):
+                help_keywords = [k.lower() for k in help_command.keywords]
+        
+        # Check if message starts with any help keyword
+        for help_keyword in help_keywords:
+            if content_lower.startswith(help_keyword + ' '):
+                command_name = content_lower[len(help_keyword):].strip()  # Remove help keyword prefix
+                help_text = self.get_help_for_command(command_name, message)
+                # Format the help response with message data (same as other keywords)
+                help_text = self.format_keyword_response(help_text, message)
+                matches.append(('help', help_text))
+                return matches
+            elif content_lower == help_keyword:
+                help_text = self.get_general_help()
+                # Format the help response with message data (same as other keywords)
+                help_text = self.format_keyword_response(help_text, message)
+                matches.append(('help', help_text))
+                return matches
         
         # Check all loaded plugins for matches
         for command_name, command in self.commands.items():
             if command.should_execute(message):
+                # Check if command can execute (includes channel access check)
+                if not command.can_execute(message):
+                    continue  # Skip this command if it can't execute (wrong channel, cooldown, etc.)
+                
                 # Get response format and generate response
                 response_format = command.get_response_format()
                 if response_format:
@@ -134,31 +193,10 @@ class CommandManager:
                 
             if keyword.lower() in content_lower:
                 try:
-                    # Build enhanced connection info with parsed route information
-                    connection_info = self.build_enhanced_connection_info(message)
-                    
-                    # Format timestamp
-                    if message.timestamp and message.timestamp != 'unknown':
-                        try:
-                            from datetime import datetime
-                            dt = datetime.fromtimestamp(message.timestamp)
-                            time_str = dt.strftime("%H:%M:%S")
-                        except:
-                            time_str = str(message.timestamp)
-                    else:
-                        time_str = "Unknown"
-                    
                     # Format the response with available message data
-                    response = response_format.format(
-                        sender=message.sender_id or "Unknown",
-                        connection_info=connection_info,
-                        path=message.path or "Unknown",
-                        timestamp=time_str,
-                        snr=message.snr or "Unknown",
-                        rssi=message.rssi or "Unknown"
-                    )
+                    response = self.format_keyword_response(response_format, message)
                     matches.append((keyword, response))
-                except (KeyError, ValueError) as e:
+                except Exception as e:
                     # Fallback to simple response if formatting fails
                     self.logger.warning(f"Error formatting response for '{keyword}': {e}")
                     matches.append((keyword, response_format))
@@ -283,19 +321,50 @@ class CommandManager:
             # Get channel number from channel name
             channel_num = self.bot.channel_manager.get_channel_number(channel)
             
+            # Check if channel was found (None indicates channel name not found)
+            if channel_num is None:
+                self.logger.error(f"Channel '{channel}' not found. Cannot send message.")
+                return False
+            
             self.logger.info(f"Sending channel message to {channel} (channel {channel_num}): {content}")
             
             # Use meshcore-cli send_chan_msg function
             from meshcore_cli.meshcore_cli import send_chan_msg
             result = await send_chan_msg(self.bot.meshcore, channel_num, content)
             
-            if result and result.type != EventType.ERROR:
-                self.logger.info(f"Successfully sent channel message to {channel} (channel {channel_num})")
-                self.bot.rate_limiter.record_send()
-                self.bot.bot_tx_rate_limiter.record_tx()
-                return True
+            # Check if the result indicates success
+            if result:
+                if hasattr(result, 'type') and result.type == EventType.ERROR:
+                    # Actual error - log and return failure
+                    error_payload = result.payload if result else {}
+                    self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): {error_payload if error_payload else 'Unknown error'}")
+                    return False
+                elif hasattr(result, 'type') and (result.type == EventType.MSG_SENT or result.type == EventType.OK):
+                    # Confirmed success - message was sent (OK or MSG_SENT both indicate success)
+                    self.logger.info(f"Successfully sent channel message to {channel} (channel {channel_num})")
+                    self.bot.rate_limiter.record_send()
+                    self.bot.bot_tx_rate_limiter.record_tx()
+                    return True
+                else:
+                    # Result is not None but doesn't have expected success event type
+                    # This could be a ROUTING_INFO or other intermediate event
+                    event_type_name = result.type.name if hasattr(result, 'type') and hasattr(result.type, 'name') else str(result.type) if hasattr(result, 'type') else 'unknown'
+                    self.logger.warning(f"Channel message to {channel} (channel {channel_num}) returned unexpected event type: {event_type_name}. Message may not have been sent.")
+                    # Check if this is a timeout/no-event-received error
+                    error_payload = result.payload if result else {}
+                    if isinstance(error_payload, dict) and error_payload.get('reason') == 'no_event_received':
+                        # Message likely sent but confirmation timed out - treat as success with warning
+                        self.logger.warning(f"Channel message sent to {channel} (channel {channel_num}) but confirmation event not received (message may have been sent)")
+                        self.bot.rate_limiter.record_send()
+                        self.bot.bot_tx_rate_limiter.record_tx()
+                        return True  # Treat as success since message likely sent
+                    else:
+                        # Unknown event type - log and return failure
+                        self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): Unexpected event type {event_type_name}")
+                        return False
             else:
-                self.logger.error(f"Failed to send channel message: {result.payload if result else 'No result'}")
+                # No result returned - this means send_chan_msg failed
+                self.logger.error(f"Failed to send channel message to {channel} (channel {channel_num}): No result returned from send_chan_msg")
                 return False
                 
         except Exception as e:
@@ -304,6 +373,11 @@ class CommandManager:
     
     def get_help_for_command(self, command_name: str, message: MeshMessage = None) -> str:
         """Get help text for a specific command (LoRa-friendly compact format)"""
+        # Special handling for common help requests
+        if command_name.lower() in ['commands', 'list', 'all']:
+            # User is asking for a list of commands, show general help
+            return self.get_general_help()
+        
         # Map command aliases to their actual command names
         command_aliases = {
             't': 't_phrase',
@@ -325,6 +399,9 @@ class CommandManager:
             except TypeError:
                 # Fallback for commands that don't accept message parameter
                 help_text = command.get_help_text()
+            # Use translator if available
+            if hasattr(self.bot, 'translator'):
+                return self.bot.translator.translate('commands.help.specific', command=command_name, help_text=help_text)
             return f"Help {command_name}: {help_text}"
         
         # If not found, search through all commands and their keywords
@@ -337,16 +414,22 @@ class CommandManager:
                 except TypeError:
                     # Fallback for commands that don't accept message parameter
                     help_text = cmd_instance.get_help_text()
+                # Use translator if available
+                if hasattr(self.bot, 'translator'):
+                    return self.bot.translator.translate('commands.help.specific', command=command_name, help_text=help_text)
                 return f"Help {command_name}: {help_text}"
         
-        # If still not found, return unknown command message
+        # If still not found, return unknown command message with helpful suggestion
         available_commands = []
         for cmd_name, cmd_instance in self.commands.items():
             available_commands.append(cmd_name)
             if hasattr(cmd_instance, 'keywords'):
                 available_commands.extend(cmd_instance.keywords)
         
-        return f"Unknown: {command_name}. Available: {', '.join(sorted(set(available_commands)))}"
+        available_str = ', '.join(sorted(set(available_commands)))
+        if hasattr(self.bot, 'translator'):
+            return self.bot.translator.translate('commands.help.unknown', command=command_name, available=available_str)
+        return f"Unknown: {command_name}. Available: {available_str}. Try 'help' for command list."
     
     def get_general_help(self) -> str:
         """Get general help text from config (LoRa-friendly compact format)"""
@@ -410,6 +493,12 @@ class CommandManager:
     async def send_response(self, message: MeshMessage, content: str) -> bool:
         """Unified method for sending responses to users"""
         try:
+            # Store the response content for web viewer capture
+            if hasattr(self, '_last_response'):
+                self._last_response = content
+            else:
+                self._last_response = content
+            
             if message.is_dm:
                 return await self.send_dm(message.sender_id, content)
             else:
@@ -438,9 +527,19 @@ class CommandManager:
                 self.logger.info(f"Command '{command_name}' matched, executing")
                 
                 # Check if command can execute (cooldown, DM requirements, etc.)
-                if not command.can_execute(message):
+                if not command.can_execute_now(message):
+                    # For DM-only commands in public channels, only show error if channel is allowed
+                    # (i.e., channel is in monitor_channels or command's allowed_channels)
+                    # This prevents prompting users in channels where the command shouldn't work at all
                     if command.requires_dm and not message.is_dm:
-                        await self.send_response(message, f"Command '{command_name}' can only be used in DMs")
+                        # Only prompt if channel is allowed (configured channels)
+                        if command.is_channel_allowed(message):
+                            error_msg = command.translate('errors.dm_only', command=command_name)
+                            await self.send_response(message, error_msg)
+                        # Otherwise, silently ignore (channel not configured for this command)
+                    elif command.requires_admin_access():
+                        error_msg = command.translate('errors.access_denied', command=command_name)
+                        await self.send_response(message, error_msg)
                     elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
                         # Check if it's the per-user version (takes user_id parameter)
                         import inspect
@@ -451,7 +550,8 @@ class CommandManager:
                             remaining = command.get_remaining_cooldown()
                         
                         if remaining > 0:
-                            await self.send_response(message, f"Command '{command_name}' is on cooldown. Wait {remaining} seconds.")
+                            error_msg = command.translate('errors.cooldown', command=command_name, seconds=remaining)
+                            await self.send_response(message, error_msg)
                     return
                 
                 try:
@@ -463,11 +563,49 @@ class CommandManager:
                             command._record_execution(message.sender_id)
                         else:
                             command._record_execution()
-                    await command.execute(message)
+                    
+                    # Execute the command
+                    success = await command.execute(message)
+                    
+                    # Capture command data for web viewer (with small delay to ensure response is set)
+                    if (hasattr(self.bot, 'web_viewer_integration') and 
+                        self.bot.web_viewer_integration and 
+                        self.bot.web_viewer_integration.bot_integration):
+                        try:
+                            # Small delay to ensure send_response has completed
+                            await asyncio.sleep(0.1)
+                            
+                            # Get the response that was sent (if any)
+                            # Prioritize command.last_response (full response) over _last_response (may be split)
+                            # This ensures commands like path that split messages still show full response in webviewer
+                            response = "Command executed"  # Default response
+                            if hasattr(command, 'last_response') and command.last_response:
+                                response = command.last_response
+                            elif hasattr(self, '_last_response') and self._last_response:
+                                response = self._last_response
+                            
+                            self.bot.web_viewer_integration.bot_integration.capture_command(
+                                message, command_name, response, success if success is not None else True
+                            )
+                        except Exception as e:
+                            self.logger.debug(f"Failed to capture command data for web viewer: {e}")
+                    
                 except Exception as e:
                     self.logger.error(f"Error executing command '{command_name}': {e}")
                     # Send error message to user
-                    await self.send_response(message, f"Error executing {command_name}: {e}")
+                    error_msg = command.translate('errors.execution_error', command=command_name, error=str(e))
+                    await self.send_response(message, error_msg)
+                    
+                    # Capture failed command for web viewer
+                    if (hasattr(self.bot, 'web_viewer_integration') and 
+                        self.bot.web_viewer_integration and 
+                        self.bot.web_viewer_integration.bot_integration):
+                        try:
+                            self.bot.web_viewer_integration.bot_integration.capture_command(
+                                message, command_name, f"Error: {e}", False
+                            )
+                        except Exception as capture_error:
+                            self.logger.debug(f"Failed to capture failed command data: {capture_error}")
                 return
     
     def get_plugin_by_keyword(self, keyword: str) -> Optional[BaseCommand]:

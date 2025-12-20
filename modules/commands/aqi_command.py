@@ -10,6 +10,7 @@ import requests_cache
 from retry_requests import retry
 from datetime import datetime
 from geopy.geocoders import Nominatim
+from ..utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder, abbreviate_location, geocode_zipcode_sync, geocode_city_sync
 from .base_command import BaseCommand
 from ..models import MeshMessage
 
@@ -41,8 +42,8 @@ class AqiCommand(BaseCommand):
         # Get timezone from config
         self.timezone = self.bot.config.get('Bot', 'timezone', fallback='America/Los_Angeles')
         
-        # Initialize geocoder
-        self.geolocator = Nominatim(user_agent="meshcore-bot")
+        # Initialize geocoder (will use rate-limited helpers for actual calls)
+        self.geolocator = get_nominatim_geocoder()
         
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
@@ -351,24 +352,9 @@ class AqiCommand(BaseCommand):
                 except ValueError:
                     return f"Invalid coordinates format: {location}. Use format: lat,lon (e.g., 47.6,-122.3)"
             elif location_type == "zipcode":
-                # Handle ZIP code geocoding using structured Nominatim queries
+                # Handle ZIP code geocoding with AQI-specific structured queries
                 try:
-                    # Use the original ZIP code directly
                     zip_code = location.strip()
-                    
-                    # Use structured query approach for better ZIP code handling
-                    # Try different structured approaches based on Nominatim documentation
-                    structured_queries = [
-                        # Direct postalcode search
-                        {"postalcode": zip_code, "country": "US"},
-                        # Postalcode with state
-                        {"postalcode": zip_code, "state": self.default_state, "country": "US"},
-                        # Postalcode with country code
-                        {"postalcode": zip_code, "countrycode": "US"},
-                        # Fallback to text-based search
-                        f"{zip_code} USA",
-                        f"{zip_code} United States"
-                    ]
                     
                     # Check for known problematic ZIP codes that need specific mapping
                     zip_code_mappings = {
@@ -384,24 +370,27 @@ class AqiCommand(BaseCommand):
                         mapped_location = zip_code_mappings[zip_code]
                         self.logger.debug(f"Using specific mapping for ZIP {zip_code}: {mapped_location}")
                         try:
-                            result = self.geolocator.geocode(mapped_location)
+                            result = rate_limited_nominatim_geocode_sync(self.bot, mapped_location, timeout=10)
                             if result and result.address:
                                 location_result = result
                                 self.logger.debug(f"Found mapped location for ZIP {zip_code}: {result.address}")
                         except Exception as e:
                             self.logger.debug(f"Mapping failed for ZIP {zip_code}: {e}")
                     
-                    # If no mapping or mapping failed, try structured queries
+                    # If no mapping, try structured queries (AQI-specific feature for better ZIP handling)
                     if not location_result:
+                        structured_queries = [
+                            # Direct postalcode search
+                            {"postalcode": zip_code, "country": "US"},
+                            # Postalcode with state
+                            {"postalcode": zip_code, "state": self.default_state, "country": "US"},
+                            # Postalcode with country code
+                            {"postalcode": zip_code, "countrycode": "US"},
+                        ]
+                        
                         for query in structured_queries:
                             try:
-                                if isinstance(query, dict):
-                                    # Use structured query
-                                    result = self.geolocator.geocode(query=query)
-                                else:
-                                    # Use text-based query
-                                    result = self.geolocator.geocode(query)
-                                
+                                result = rate_limited_nominatim_geocode_sync(self.bot, query, timeout=10)
                                 if result and result.address:
                                     # Check if it's a US location
                                     if 'united states' in result.address.lower() or 'usa' in result.address.lower():
@@ -419,22 +408,38 @@ class AqiCommand(BaseCommand):
                                 self.logger.debug(f"Structured query failed for {query}: {e}")
                                 continue
                     
-                    if location_result:
+                    # If structured queries didn't work, use shared function as fallback
+                    if not location_result:
+                        lat, lon = geocode_zipcode_sync(self.bot, zip_code, timeout=10)
+                        if lat and lon:
+                            # Use the shared function result directly
+                            pass
+                        else:
+                            lat, lon = None, None
+                    else:
                         lat = location_result.latitude
                         lon = location_result.longitude
+                    
+                    if lat and lon:
                         
-                        # Get detailed address info via reverse geocoding
-                        try:
-                            reverse_location = self.geolocator.reverse(f"{lat}, {lon}")
-                            if reverse_location:
-                                address_info = reverse_location.raw.get('address', {})
-                            else:
+                        # Get detailed address info via reverse geocoding (check cache first)
+                        reverse_cache_key = f"reverse_{lat}_{lon}"
+                        cached_address = self.db_manager.get_cached_json(reverse_cache_key, "geolocation")
+                        if cached_address:
+                            address_info = cached_address
+                        else:
+                            try:
+                                reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{lat}, {lon}", timeout=10)
+                                if reverse_location:
+                                    address_info = reverse_location.raw.get('address', {})
+                                    # Cache the reverse geocoding result
+                                    self.db_manager.cache_json(reverse_cache_key, address_info, "geolocation", cache_hours=720)
+                                else:
+                                    address_info = {}
+                            except:
                                 address_info = {}
-                        except:
-                            address_info = {}
                         
                         # Validate that the found location makes sense for the ZIP code
-                        # Check if the found location is in the expected state or region
                         if address_info:
                             found_state = address_info.get('state', '')
                             found_country = address_info.get('country', '')
@@ -485,7 +490,7 @@ class AqiCommand(BaseCommand):
                     state = address_info.get('state', '')
                     
                     # For US cities, use the state; for international cities, use the country
-                    if country == "United States" or country == "US":
+                    if country == "United States" or country == "US" or country == "United States of America":
                         # US city - use the state
                         actual_state = state or self.default_state
                         # Convert full state name to abbreviation if needed
@@ -496,9 +501,9 @@ class AqiCommand(BaseCommand):
                         actual_state = (country or 
                                       address_info.get('province') or 
                                       self.default_state)
-                        # Abbreviate "United States" to "US" to save characters
-                        if actual_state == "United States":
-                            actual_state = "US"
+                        # Normalize "United States" variants to "USA" to save characters
+                        if actual_state == "United States" or actual_state == "United States of America":
+                            actual_state = "USA"
                     
                     # Also check if the default state needs to be converted for comparison
                     default_state_full = self.default_state
@@ -517,7 +522,9 @@ class AqiCommand(BaseCommand):
             location_prefix = ""
             if location_type == "city" and address_info:
                 # Always try to include city name if there's space
-                city_display = f"{actual_city}, {actual_state}"
+                # Use abbreviate_location to shorten long location strings (e.g., "United States of America" -> "USA")
+                full_location = f"{actual_city}, {actual_state}"
+                city_display = abbreviate_location(full_location, max_length=30)
                 
                 # Check if we have space for the city name
                 test_output = f"{city_display}: {aqi_data}"
@@ -528,7 +535,9 @@ class AqiCommand(BaseCommand):
                     states_different = (actual_state != self.default_state and 
                                       actual_state != default_state_full)
                     if states_different:
-                        location_prefix = f"{actual_city}, {actual_state}: "
+                        # Use abbreviated version for shorter display
+                        city_display_short = abbreviate_location(full_location, max_length=20)
+                        location_prefix = f"{city_display_short}: "
             elif location_type == "zipcode":
                 # Add location info for ZIP codes to confirm geocoding accuracy
                 if address_info:
@@ -558,7 +567,7 @@ class AqiCommand(BaseCommand):
                     country = address_info.get('country', '')
                     state = address_info.get('state', '')
                     
-                    if country == "United States" or country == "US":
+                    if country == "United States" or country == "US" or country == "United States of America":
                         # US city - use the state
                         actual_state = state or self.default_state
                         # Convert full state name to abbreviation if needed
@@ -569,11 +578,13 @@ class AqiCommand(BaseCommand):
                         actual_state = (country or 
                                       address_info.get('province') or 
                                       self.default_state)
-                        # Abbreviate "United States" to "US" to save characters
-                        if actual_state == "United States":
-                            actual_state = "US"
+                        # Normalize "United States" variants to "USA" to save characters
+                        if actual_state == "United States" or actual_state == "United States of America":
+                            actual_state = "USA"
                     
-                    city_display = f"{actual_city}, {actual_state}"
+                    # Use abbreviate_location to shorten long location strings (e.g., "United States of America" -> "USA")
+                    full_location = f"{actual_city}, {actual_state}"
+                    city_display = abbreviate_location(full_location, max_length=30)
                     
                     # Check if we have space for the city name
                     test_output = f"{city_display}: {aqi_data}"
@@ -584,7 +595,9 @@ class AqiCommand(BaseCommand):
                         states_different = (actual_state != self.default_state and 
                                           actual_state != default_state_full)
                         if states_different:
-                            location_prefix = f"{actual_city}, {actual_state}: "
+                            # Use abbreviated version for shorter display
+                            city_display_short = abbreviate_location(full_location, max_length=20)
+                            location_prefix = f"{city_display_short}: "
                 else:
                     # No address info available
                     location_prefix = f"{zip_code}: "
@@ -601,20 +614,6 @@ class AqiCommand(BaseCommand):
     def city_to_lat_lon(self, city: str) -> tuple:
         """Convert city name to latitude and longitude using default state"""
         try:
-            # Check cache first for default state query
-            cache_query = f"{city}, {self.default_state}, USA"
-            cached_lat, cached_lon = self.db_manager.get_cached_geocoding(cache_query)
-            if cached_lat is not None and cached_lon is not None:
-                self.logger.debug(f"Using cached geocoding for {city}")
-                # Still need to do reverse geocoding for address details
-                try:
-                    reverse_location = self.geolocator.reverse(f"{cached_lat}, {cached_lon}")
-                    if reverse_location:
-                        return cached_lat, cached_lon, reverse_location.raw.get('address', {})
-                except:
-                    pass
-                return cached_lat, cached_lon, {}
-            
             # Check if the input contains a comma (city, state/country format)
             if ',' in city:
                 # Parse city, state/country format
@@ -623,121 +622,72 @@ class AqiCommand(BaseCommand):
                     city_name = city_parts[0]
                     state_or_country = city_parts[1]
                     
-                    # Check if it's a country (not a US state)
+                    # AQI-specific: Check if it's a country (not a US state)
                     country_indicators = ['canada', 'mexico', 'uk', 'united kingdom', 'france', 'germany', 'italy', 'spain', 'australia', 'japan', 'china', 'india', 'brazil', 'uae', 'russia', 'korea', 'thailand', 'singapore', 'egypt', 'turkey', 'israel', 'south africa', 'kenya', 'nigeria', 'argentina', 'peru', 'chile', 'colombia', 'venezuela', 'cuba', 'jamaica', 'puerto rico', 'iceland', 'norway', 'sweden', 'denmark', 'finland', 'poland', 'czech republic', 'hungary', 'romania', 'bulgaria', 'croatia', 'serbia', 'greece', 'portugal', 'ireland', 'belgium', 'netherlands', 'switzerland', 'austria', 'monaco', 'andorra', 'san marino', 'vatican', 'luxembourg', 'malta', 'cyprus', 'albania', 'macedonia', 'montenegro', 'bosnia', 'slovenia', 'slovakia', 'lithuania', 'latvia', 'estonia', 'belarus', 'ukraine', 'moldova', 'georgia', 'armenia', 'azerbaijan', 'kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'afghanistan', 'pakistan', 'bangladesh', 'sri lanka', 'nepal', 'bhutan', 'myanmar', 'laos', 'cambodia', 'vietnam', 'malaysia', 'indonesia', 'philippines', 'taiwan', 'north korea', 'mongolia']
                     is_country = state_or_country.lower() in country_indicators
                     
                     if is_country:
-                        # Handle international cities
-                        location = self.geolocator.geocode(f"{city_name}, {state_or_country}")
+                        # Handle international cities explicitly (AQI-specific feature)
+                        location = rate_limited_nominatim_geocode_sync(self.bot, f"{city_name}, {state_or_country}", timeout=10)
                         if location:
                             # Cache the result
                             self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}", location.latitude, location.longitude)
                             
-                            # Use reverse geocoding to get detailed address info
-                            try:
-                                reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                                if reverse_location:
-                                    return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                            except:
-                                pass
+                            # Use reverse geocoding to get detailed address info (check cache first)
+                            reverse_cache_key = f"reverse_{location.latitude}_{location.longitude}"
+                            cached_address = self.db_manager.get_cached_json(reverse_cache_key, "geolocation")
+                            if cached_address:
+                                return location.latitude, location.longitude, cached_address
+                            else:
+                                try:
+                                    reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
+                                    if reverse_location:
+                                        address_info = reverse_location.raw.get('address', {})
+                                        # Cache the reverse geocoding result
+                                        self.db_manager.cache_json(reverse_cache_key, address_info, "geolocation", cache_hours=720)
+                                        return location.latitude, location.longitude, address_info
+                                except:
+                                    pass
                             return location.latitude, location.longitude, location.raw.get('address', {})
-                    else:
-                        # Handle US city, state format
-                        location = self.geolocator.geocode(f"{city_name}, {state_or_country}, USA")
-                    if location:
-                        # Cache the result
-                        self.db_manager.cache_geocoding(f"{city_name}, {state_or_country}, USA", location.latitude, location.longitude)
-                        
-                        # Use reverse geocoding to get detailed address info
-                        try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                            if reverse_location:
-                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                        except:
-                            pass
-                        return location.latitude, location.longitude, location.raw.get('address', {})
             
-            # For common city names, try major cities first to avoid small towns
-            major_city_mappings = {
-                'albany': ['Albany, NY, USA', 'Albany, OR, USA', 'Albany, CA, USA'],
-                'portland': ['Portland, OR, USA', 'Portland, ME, USA'],
-                'boston': ['Boston, MA, USA'],
-                'paris': ['Paris, TX, USA', 'Paris, IL, USA', 'Paris, TN, USA'],
-                'springfield': ['Springfield, IL, USA', 'Springfield, MO, USA', 'Springfield, MA, USA'],
-                'franklin': ['Franklin, TN, USA', 'Franklin, MA, USA'],
-                'georgetown': ['Georgetown, TX, USA', 'Georgetown, SC, USA'],
-                'madison': ['Madison, WI, USA', 'Madison, AL, USA'],
-                'auburn': ['Auburn, AL, USA', 'Auburn, WA, USA'],
-                'troy': ['Troy, NY, USA', 'Troy, MI, USA'],
-                'clinton': ['Clinton, IA, USA', 'Clinton, MS, USA']
-            }
+            # Use shared geocode_city_sync function with address info
+            default_country = self.bot.config.get('Weather', 'default_country', fallback='US')
+            lat, lon, address_info = geocode_city_sync(
+                self.bot, city, default_state=self.default_state,
+                default_country=default_country,
+                include_address_info=True, timeout=10
+            )
             
-            # If it's a major city with multiple locations, try the major ones first
-            if city.lower() in major_city_mappings:
-                for major_city_query in major_city_mappings[city.lower()]:
-                    location = self.geolocator.geocode(major_city_query)
-                    if location:
-                        # Cache the result
-                        self.db_manager.cache_geocoding(major_city_query, location.latitude, location.longitude)
-                        
-                        # Use reverse geocoding to get detailed address info
-                        try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                            if reverse_location:
-                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                        except:
-                            pass
-                        return location.latitude, location.longitude, location.raw.get('address', {})
+            if lat and lon:
+                return lat, lon, address_info or {}
             
-            # First try with default state
-            location = self.geolocator.geocode(f"{city}, {self.default_state}, USA")
-            if location:
-                # Cache the result
-                self.db_manager.cache_geocoding(f"{city}, {self.default_state}, USA", location.latitude, location.longitude)
-                
-                # Use reverse geocoding to get detailed address info
-                try:
-                    reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                    if reverse_location:
-                        return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                except:
-                    pass
-                return location.latitude, location.longitude, location.raw.get('address', {})
-            else:
-                # Try neighborhood-specific queries for major cities
-                neighborhood_queries = self.get_neighborhood_queries(city)
+            # AQI-specific fallback: Try neighborhood-specific queries for major cities
+            neighborhood_queries = self.get_neighborhood_queries(city)
+            if neighborhood_queries:
                 for query in neighborhood_queries:
-                    location = self.geolocator.geocode(query)
+                    location = rate_limited_nominatim_geocode_sync(self.bot, query, timeout=10)
                     if location:
                         # Cache the result
                         self.db_manager.cache_geocoding(query, location.latitude, location.longitude)
                         
-                        # Use reverse geocoding to get detailed address info
-                        try:
-                            reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                            if reverse_location:
-                                return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                        except:
-                            pass
-                        return location.latitude, location.longitude, location.raw.get('address', {})
-                
-                # Try without state as final fallback
-                location = self.geolocator.geocode(f"{city}, USA")
-                if location:
-                    # Cache the result
-                    self.db_manager.cache_geocoding(f"{city}, USA", location.latitude, location.longitude)
-                    
-                    # Use reverse geocoding to get detailed address info
-                    try:
-                        reverse_location = self.geolocator.reverse(f"{location.latitude}, {location.longitude}")
-                        if reverse_location:
-                            return location.latitude, location.longitude, reverse_location.raw.get('address', {})
-                    except:
-                        pass
-                    return location.latitude, location.longitude, location.raw.get('address', {})
-                else:
-                    return (None, None, None)
+                        # Use reverse geocoding to get detailed address info (check cache first)
+                        reverse_cache_key = f"reverse_{location.latitude}_{location.longitude}"
+                        cached_address = self.db_manager.get_cached_json(reverse_cache_key, "geolocation")
+                        if cached_address:
+                            return location.latitude, location.longitude, cached_address
+                        else:
+                            try:
+                                reverse_location = rate_limited_nominatim_reverse_sync(self.bot, f"{location.latitude}, {location.longitude}", timeout=10)
+                                if reverse_location:
+                                    address_info = reverse_location.raw.get('address', {})
+                                    # Cache the reverse geocoding result
+                                    self.db_manager.cache_json(reverse_cache_key, address_info, "geolocation", cache_hours=720)
+                                    return location.latitude, location.longitude, address_info
+                            except:
+                                pass
+                            return location.latitude, location.longitude, location.raw.get('address', {})
+            
+            return (None, None, None)
         except Exception as e:
             self.logger.error(f"Error geocoding city {city}: {e}")
             return (None, None, None)

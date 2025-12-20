@@ -55,3 +55,45 @@ class BotTxRateLimiter:
             wait_time = self.time_until_next_tx()
             if wait_time > 0:
                 await asyncio.sleep(wait_time + 0.05)  # Small buffer
+
+
+class NominatimRateLimiter:
+    """Rate limiting for Nominatim geocoding API requests
+    
+    Nominatim policy: Maximum 1 request per second
+    We'll be conservative and use 1.1 seconds to ensure compliance
+    """
+    
+    def __init__(self, seconds: float = 1.1):
+        self.seconds = seconds
+        self.last_request = 0
+        self._lock = None  # Will be set to asyncio.Lock if needed
+    
+    def can_request(self) -> bool:
+        """Check if we can make a Nominatim request"""
+        return time.time() - self.last_request >= self.seconds
+    
+    def time_until_next(self) -> float:
+        """Get time until next allowed request"""
+        elapsed = time.time() - self.last_request
+        return max(0, self.seconds - elapsed)
+    
+    def record_request(self):
+        """Record that we made a Nominatim request"""
+        self.last_request = time.time()
+    
+    async def wait_for_request(self):
+        """Wait until we can make a Nominatim request (async)"""
+        import asyncio
+        while not self.can_request():
+            wait_time = self.time_until_next()
+            if wait_time > 0:
+                await asyncio.sleep(wait_time + 0.05)  # Small buffer
+    
+    def wait_for_request_sync(self):
+        """Wait until we can make a Nominatim request (synchronous)"""
+        import time as time_module
+        while not self.can_request():
+            wait_time = self.time_until_next()
+            if wait_time > 0:
+                time_module.sleep(wait_time + 0.05)  # Small buffer
