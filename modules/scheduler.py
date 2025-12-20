@@ -9,6 +9,8 @@ import threading
 import schedule
 import datetime
 import pytz
+import sqlite3
+import json
 from typing import Dict, Tuple
 
 
@@ -121,6 +123,7 @@ class MessageScheduler:
         """Run the scheduler in a separate thread"""
         self.logger.info("Scheduler thread started")
         last_log_time = 0
+        last_feed_poll_time = 0
         
         while self.bot.connected:
             current_time = self.get_current_time()
@@ -137,6 +140,64 @@ class MessageScheduler:
             
             # Check for interval-based advertising
             self.check_interval_advertising()
+            
+            # Poll feeds every minute (but feeds themselves control their check intervals)
+            if time.time() - last_feed_poll_time >= 60:  # Every 60 seconds
+                if (hasattr(self.bot, 'feed_manager') and self.bot.feed_manager and 
+                    hasattr(self.bot.feed_manager, 'enabled') and self.bot.feed_manager.enabled and
+                    hasattr(self.bot, 'connected') and self.bot.connected):
+                    # Run feed polling in async context
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    # Schedule feed polling
+                    try:
+                        loop.run_until_complete(self.bot.feed_manager.poll_all_feeds())
+                        self.logger.debug("Feed polling cycle completed")
+                    except Exception as e:
+                        self.logger.error(f"Error in feed polling cycle: {e}")
+                    last_feed_poll_time = time.time()
+            
+            # Channels are fetched once on launch only - no periodic refresh
+            # This prevents losing channels during incomplete updates
+            
+            # Process pending channel operations from web viewer (every 5 seconds)
+            if not hasattr(self, 'last_channel_ops_check_time'):
+                self.last_channel_ops_check_time = 0
+            
+            if time.time() - self.last_channel_ops_check_time >= 5:  # Every 5 seconds
+                if (hasattr(self.bot, 'channel_manager') and self.bot.channel_manager and 
+                    hasattr(self.bot, 'connected') and self.bot.connected):
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    loop.run_until_complete(self._process_channel_operations())
+                    self.last_channel_ops_check_time = time.time()
+            
+            # Process feed message queue (every 2 seconds)
+            if not hasattr(self, 'last_message_queue_check_time'):
+                self.last_message_queue_check_time = 0
+            
+            if time.time() - self.last_message_queue_check_time >= 2:  # Every 2 seconds
+                if (hasattr(self.bot, 'feed_manager') and self.bot.feed_manager and 
+                    hasattr(self.bot, 'connected') and self.bot.connected):
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    loop.run_until_complete(self.bot.feed_manager.process_message_queue())
+                    self.last_message_queue_check_time = time.time()
             
             schedule.run_pending()
             time.sleep(1)
@@ -194,3 +255,108 @@ class MessageScheduler:
             self.logger.info("Interval-based flood advert sent successfully")
         except Exception as e:
             self.logger.error(f"Error sending interval-based advert: {e}")
+    
+    async def _process_channel_operations(self):
+        """Process pending channel operations from the web viewer"""
+        try:
+            db_path = self.bot.db_manager.db_path
+            
+            # Get pending operations
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT id, operation_type, channel_idx, channel_name, channel_key_hex
+                    FROM channel_operations
+                    WHERE status = 'pending'
+                    ORDER BY created_at ASC
+                    LIMIT 10
+                ''')
+                
+                operations = cursor.fetchall()
+            
+            if not operations:
+                return
+            
+            self.logger.info(f"Processing {len(operations)} pending channel operation(s)")
+            
+            for op in operations:
+                op_id = op['id']
+                op_type = op['operation_type']
+                channel_idx = op['channel_idx']
+                channel_name = op['channel_name']
+                channel_key_hex = op['channel_key_hex']
+                
+                try:
+                    success = False
+                    error_msg = None
+                    
+                    if op_type == 'add':
+                        # Add channel
+                        if channel_key_hex:
+                            # Custom channel with key
+                            channel_secret = bytes.fromhex(channel_key_hex)
+                            success = await self.bot.channel_manager.add_channel(
+                                channel_idx, channel_name, channel_secret=channel_secret
+                            )
+                        else:
+                            # Hashtag channel (firmware generates key)
+                            success = await self.bot.channel_manager.add_channel(
+                                channel_idx, channel_name
+                            )
+                        
+                        if success:
+                            self.logger.info(f"Successfully processed channel add operation: {channel_name} at index {channel_idx}")
+                        else:
+                            error_msg = "Failed to add channel"
+                    
+                    elif op_type == 'remove':
+                        # Remove channel
+                        success = await self.bot.channel_manager.remove_channel(channel_idx)
+                        
+                        if success:
+                            self.logger.info(f"Successfully processed channel remove operation: index {channel_idx}")
+                        else:
+                            error_msg = "Failed to remove channel"
+                    
+                    # Update operation status
+                    with sqlite3.connect(db_path) as conn:
+                        cursor = conn.cursor()
+                        if success:
+                            cursor.execute('''
+                                UPDATE channel_operations
+                                SET status = 'completed',
+                                    processed_at = CURRENT_TIMESTAMP,
+                                    result_data = ?
+                                WHERE id = ?
+                            ''', (json.dumps({'success': True}), op_id))
+                        else:
+                            cursor.execute('''
+                                UPDATE channel_operations
+                                SET status = 'failed',
+                                    processed_at = CURRENT_TIMESTAMP,
+                                    error_message = ?
+                                WHERE id = ?
+                            ''', (error_msg or 'Unknown error', op_id))
+                        conn.commit()
+                
+                except Exception as e:
+                    self.logger.error(f"Error processing channel operation {op_id}: {e}")
+                    # Mark as failed
+                    try:
+                        with sqlite3.connect(db_path) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute('''
+                                UPDATE channel_operations
+                                SET status = 'failed',
+                                    processed_at = CURRENT_TIMESTAMP,
+                                    error_message = ?
+                                WHERE id = ?
+                            ''', (str(e), op_id))
+                            conn.commit()
+                    except Exception as update_error:
+                        self.logger.error(f"Error updating operation status: {update_error}")
+        
+        except Exception as e:
+            self.logger.error(f"Error in _process_channel_operations: {e}")

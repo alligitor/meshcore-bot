@@ -37,6 +37,7 @@ class SportsCommand(BaseCommand):
     description = "Get sports scores and schedules (usage: sports [team/league])"
     category = "sports"
     cooldown_seconds = 3  # 3 second cooldown per user to prevent API abuse
+    requires_internet = True  # Requires internet access for ESPN API
     
     # ESPN API base URL
     ESPN_BASE_URL = "http://site.api.espn.com/apis/site/v2/sports"
@@ -82,6 +83,18 @@ class SportsCommand(BaseCommand):
         '8': 'MIN-W',      # Minnesota Lynx (Women's)
         '11': 'PHX-W',     # Phoenix Mercury (Women's)
         '16': 'WSH-W',     # Washington Mystics (Women's)
+        # PWHL teams - use custom abbreviations to distinguish from NHL
+        # NOTE: Team IDs need to be verified using test_scripts/find_espn_team_id.py hockey pwhl <team_name>
+        # Once verified, uncomment and replace 'VERIFY_TEAM_ID' with the actual ESPN team ID
+        # Format: 'ACTUAL_TEAM_ID': 'ABBREV-W',  # Team Name (Women's)
+        # Example: '123456': 'BOS-W',  # Boston (Women's)
+        # 'VERIFY_BOS': 'BOS-W',  # Boston (Women's) - verify team_id
+        # 'VERIFY_MIN': 'MIN-W',  # Minnesota (Women's) - verify team_id
+        # 'VERIFY_MTL': 'MTL-W',  # Montreal (Women's) - verify team_id
+        # 'VERIFY_NY': 'NY-W',    # New York (Women's) - verify team_id
+        # 'VERIFY_OTT': 'OTT-W',  # Ottawa (Women's) - verify team_id
+        # 'VERIFY_TOR': 'TOR-W',  # Toronto (Women's) - verify team_id
+        # 'VERIFY_SEA': 'SEA-W',  # Seattle Torrent (Women's) - verify team_id
     }
     
     # Team mappings for common searches
@@ -118,6 +131,8 @@ class SportsCommand(BaseCommand):
         'ari': {'sport': 'football', 'league': 'nfl', 'team_id': '22'},
         'chargers': {'sport': 'football', 'league': 'nfl', 'team_id': '24'},
         'lac': {'sport': 'football', 'league': 'nfl', 'team_id': '24'},
+        'la chargers': {'sport': 'football', 'league': 'nfl', 'team_id': '24'},
+        'los angeles chargers': {'sport': 'football', 'league': 'nfl', 'team_id': '24'},
         'chiefs': {'sport': 'football', 'league': 'nfl', 'team_id': '12'},
         'kansas city': {'sport': 'football', 'league': 'nfl', 'team_id': '12'},
         'kc': {'sport': 'football', 'league': 'nfl', 'team_id': '12'},
@@ -143,6 +158,7 @@ class SportsCommand(BaseCommand):
         'nyg': {'sport': 'football', 'league': 'nfl', 'team_id': '19'},
         'jaguars': {'sport': 'football', 'league': 'nfl', 'team_id': '30'},
         'jax': {'sport': 'football', 'league': 'nfl', 'team_id': '30'},
+        'jacksonville': {'sport': 'football', 'league': 'nfl', 'team_id': '30'},
         'jets': {'sport': 'football', 'league': 'nfl', 'team_id': '20'},
         'nyj': {'sport': 'football', 'league': 'nfl', 'team_id': '20'},
         'lions': {'sport': 'football', 'league': 'nfl', 'team_id': '8'},
@@ -162,6 +178,8 @@ class SportsCommand(BaseCommand):
         'lv': {'sport': 'football', 'league': 'nfl', 'team_id': '13'},
         'rams': {'sport': 'football', 'league': 'nfl', 'team_id': '14'},
         'lar': {'sport': 'football', 'league': 'nfl', 'team_id': '14'},
+        'la rams': {'sport': 'football', 'league': 'nfl', 'team_id': '14'},
+        'los angeles rams': {'sport': 'football', 'league': 'nfl', 'team_id': '14'},
         'ravens': {'sport': 'football', 'league': 'nfl', 'team_id': '33'},
         'baltimore': {'sport': 'football', 'league': 'nfl', 'team_id': '33'},
         'bal': {'sport': 'football', 'league': 'nfl', 'team_id': '33'},
@@ -309,11 +327,117 @@ class SportsCommand(BaseCommand):
         'mystics': {'sport': 'basketball', 'league': 'wnba', 'team_id': '16'},
         'washington mystics': {'sport': 'basketball', 'league': 'wnba', 'team_id': '16'},
         
-        # NHL Teams (limited data available from API)
+        # NHL Teams
+        'ducks': {'sport': 'hockey', 'league': 'nhl', 'team_id': '25'},
+        'anaheim': {'sport': 'hockey', 'league': 'nhl', 'team_id': '25'},
+        'ana': {'sport': 'hockey', 'league': 'nhl', 'team_id': '25'},
+        'bruins': {'sport': 'hockey', 'league': 'nhl', 'team_id': '1'},
+        'boston bruins': {'sport': 'hockey', 'league': 'nhl', 'team_id': '1'},
+        'bos': {'sport': 'hockey', 'league': 'nhl', 'team_id': '1'},
+        'sabres': {'sport': 'hockey', 'league': 'nhl', 'team_id': '2'},
+        'buffalo': {'sport': 'hockey', 'league': 'nhl', 'team_id': '2'},
+        'buf': {'sport': 'hockey', 'league': 'nhl', 'team_id': '2'},
+        'flames': {'sport': 'hockey', 'league': 'nhl', 'team_id': '3'},
+        'calgary': {'sport': 'hockey', 'league': 'nhl', 'team_id': '3'},
+        'cgy': {'sport': 'hockey', 'league': 'nhl', 'team_id': '3'},
+        'hurricanes': {'sport': 'hockey', 'league': 'nhl', 'team_id': '7'},
+        'carolina': {'sport': 'hockey', 'league': 'nhl', 'team_id': '7'},
+        'car': {'sport': 'hockey', 'league': 'nhl', 'team_id': '7'},
+        'blackhawks': {'sport': 'hockey', 'league': 'nhl', 'team_id': '4'},
+        'chicago blackhawks': {'sport': 'hockey', 'league': 'nhl', 'team_id': '4'},
+        'chi': {'sport': 'hockey', 'league': 'nhl', 'team_id': '4'},
+        'avalanche': {'sport': 'hockey', 'league': 'nhl', 'team_id': '17'},
+        'colorado': {'sport': 'hockey', 'league': 'nhl', 'team_id': '17'},
+        'col': {'sport': 'hockey', 'league': 'nhl', 'team_id': '17'},
+        'blue jackets': {'sport': 'hockey', 'league': 'nhl', 'team_id': '29'},
+        'columbus': {'sport': 'hockey', 'league': 'nhl', 'team_id': '29'},
+        'cbj': {'sport': 'hockey', 'league': 'nhl', 'team_id': '29'},
+        'stars': {'sport': 'hockey', 'league': 'nhl', 'team_id': '9'},
+        'dallas': {'sport': 'hockey', 'league': 'nhl', 'team_id': '9'},
+        'dal': {'sport': 'hockey', 'league': 'nhl', 'team_id': '9'},
+        'red wings': {'sport': 'hockey', 'league': 'nhl', 'team_id': '5'},
+        'detroit': {'sport': 'hockey', 'league': 'nhl', 'team_id': '5'},
+        'det': {'sport': 'hockey', 'league': 'nhl', 'team_id': '5'},
+        'oilers': {'sport': 'hockey', 'league': 'nhl', 'team_id': '6'},
+        'edmonton': {'sport': 'hockey', 'league': 'nhl', 'team_id': '6'},
+        'edm': {'sport': 'hockey', 'league': 'nhl', 'team_id': '6'},
+        'panthers': {'sport': 'hockey', 'league': 'nhl', 'team_id': '26'},
+        'florida': {'sport': 'hockey', 'league': 'nhl', 'team_id': '26'},
+        'fla': {'sport': 'hockey', 'league': 'nhl', 'team_id': '26'},
+        'kings': {'sport': 'hockey', 'league': 'nhl', 'team_id': '8'},
+        'los angeles': {'sport': 'hockey', 'league': 'nhl', 'team_id': '8'},
+        'la': {'sport': 'hockey', 'league': 'nhl', 'team_id': '8'},
+        'wild': {'sport': 'hockey', 'league': 'nhl', 'team_id': '30'},
+        'minnesota': {'sport': 'hockey', 'league': 'nhl', 'team_id': '30'},
+        'min': {'sport': 'hockey', 'league': 'nhl', 'team_id': '30'},
+        'canadiens': {'sport': 'hockey', 'league': 'nhl', 'team_id': '10'},
+        'montreal': {'sport': 'hockey', 'league': 'nhl', 'team_id': '10'},
+        'mtl': {'sport': 'hockey', 'league': 'nhl', 'team_id': '10'},
+        'predators': {'sport': 'hockey', 'league': 'nhl', 'team_id': '27'},
+        'nashville': {'sport': 'hockey', 'league': 'nhl', 'team_id': '27'},
+        'nsh': {'sport': 'hockey', 'league': 'nhl', 'team_id': '27'},
+        'devils': {'sport': 'hockey', 'league': 'nhl', 'team_id': '11'},
+        'new jersey': {'sport': 'hockey', 'league': 'nhl', 'team_id': '11'},
+        'nj': {'sport': 'hockey', 'league': 'nhl', 'team_id': '11'},
+        'islanders': {'sport': 'hockey', 'league': 'nhl', 'team_id': '12'},
+        'new york islanders': {'sport': 'hockey', 'league': 'nhl', 'team_id': '12'},
+        'nyi': {'sport': 'hockey', 'league': 'nhl', 'team_id': '12'},
+        'rangers': {'sport': 'hockey', 'league': 'nhl', 'team_id': '13'},
+        'new york rangers': {'sport': 'hockey', 'league': 'nhl', 'team_id': '13'},
+        'nyr': {'sport': 'hockey', 'league': 'nhl', 'team_id': '13'},
+        'senators': {'sport': 'hockey', 'league': 'nhl', 'team_id': '14'},
+        'ottawa': {'sport': 'hockey', 'league': 'nhl', 'team_id': '14'},
+        'ott': {'sport': 'hockey', 'league': 'nhl', 'team_id': '14'},
+        'flyers': {'sport': 'hockey', 'league': 'nhl', 'team_id': '15'},
+        'philadelphia': {'sport': 'hockey', 'league': 'nhl', 'team_id': '15'},
+        'phi': {'sport': 'hockey', 'league': 'nhl', 'team_id': '15'},
+        'penguins': {'sport': 'hockey', 'league': 'nhl', 'team_id': '16'},
+        'pittsburgh': {'sport': 'hockey', 'league': 'nhl', 'team_id': '16'},
+        'pit': {'sport': 'hockey', 'league': 'nhl', 'team_id': '16'},
+        'sharks': {'sport': 'hockey', 'league': 'nhl', 'team_id': '18'},
+        'san jose': {'sport': 'hockey', 'league': 'nhl', 'team_id': '18'},
+        'sj': {'sport': 'hockey', 'league': 'nhl', 'team_id': '18'},
         'kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '124292'},
         'seattle kraken': {'sport': 'hockey', 'league': 'nhl', 'team_id': '124292'},
+        'seattle': {'sport': 'hockey', 'league': 'nhl', 'team_id': '124292'},
         'blues': {'sport': 'hockey', 'league': 'nhl', 'team_id': '19'},
-        'stars': {'sport': 'hockey', 'league': 'nhl', 'team_id': '9'},
+        'st louis': {'sport': 'hockey', 'league': 'nhl', 'team_id': '19'},
+        'stl': {'sport': 'hockey', 'league': 'nhl', 'team_id': '19'},
+        'lightning': {'sport': 'hockey', 'league': 'nhl', 'team_id': '20'},
+        'tampa bay': {'sport': 'hockey', 'league': 'nhl', 'team_id': '20'},
+        'tb': {'sport': 'hockey', 'league': 'nhl', 'team_id': '20'},
+        'maple leafs': {'sport': 'hockey', 'league': 'nhl', 'team_id': '21'},
+        'toronto': {'sport': 'hockey', 'league': 'nhl', 'team_id': '21'},
+        'tor': {'sport': 'hockey', 'league': 'nhl', 'team_id': '21'},
+        'mammoth': {'sport': 'hockey', 'league': 'nhl', 'team_id': '129764'},
+        'utah': {'sport': 'hockey', 'league': 'nhl', 'team_id': '129764'},
+        'utah mammoth': {'sport': 'hockey', 'league': 'nhl', 'team_id': '129764'},
+        'canucks': {'sport': 'hockey', 'league': 'nhl', 'team_id': '22'},
+        'vancouver': {'sport': 'hockey', 'league': 'nhl', 'team_id': '22'},
+        'van': {'sport': 'hockey', 'league': 'nhl', 'team_id': '22'},
+        'golden knights': {'sport': 'hockey', 'league': 'nhl', 'team_id': '37'},
+        'vegas': {'sport': 'hockey', 'league': 'nhl', 'team_id': '37'},
+        'vgk': {'sport': 'hockey', 'league': 'nhl', 'team_id': '37'},
+        'capitals': {'sport': 'hockey', 'league': 'nhl', 'team_id': '23'},
+        'washington': {'sport': 'hockey', 'league': 'nhl', 'team_id': '23'},
+        'wsh': {'sport': 'hockey', 'league': 'nhl', 'team_id': '23'},
+        'jets': {'sport': 'hockey', 'league': 'nhl', 'team_id': '28'},
+        'winnipeg': {'sport': 'hockey', 'league': 'nhl', 'team_id': '28'},
+        'wpg': {'sport': 'hockey', 'league': 'nhl', 'team_id': '28'},
+        
+        # PWHL Teams (Professional Women's Hockey League)
+        # NOTE: As of now, PWHL data may not be available in ESPN's API yet.
+        # ESPN may not have added PWHL teams to their API endpoints.
+        # Team IDs need to be verified using test_scripts/find_espn_team_id.py hockey pwhl <team_name>
+        # Once ESPN adds PWHL support and team IDs are verified, uncomment and update the team_id values below
+        # 'torrent': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
+        # 'seattle torrent': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
+        # 'boston pwhl': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
+        # 'minnesota pwhl': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
+        # 'montreal pwhl': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
+        # 'new york pwhl': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
+        # 'ottawa pwhl': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
+        # 'toronto pwhl': {'sport': 'hockey', 'league': 'pwhl', 'team_id': 'VERIFY_TEAM_ID'},
         
         # MLS Teams
         'sounders': {'sport': 'soccer', 'league': 'usa.1', 'team_id': '9726'},
@@ -455,7 +579,8 @@ class SportsCommand(BaseCommand):
         """Check if the league is a women's league"""
         womens_leagues = {
             ('basketball', 'wnba'),
-            ('soccer', 'usa.nwsl')
+            ('soccer', 'usa.nwsl'),
+            ('hockey', 'pwhl')
         }
         return (sport, league) in womens_leagues
     
@@ -608,6 +733,7 @@ class SportsCommand(BaseCommand):
             # Extract team name if provided
             parts = content.split()
             if len(parts) > 1:
+                # Join all parts after 'sports' keyword, preserving "schedule" if present
                 team_name = ' '.join(parts[1:]).lower()
                 response = await self.get_team_scores(team_name)
             else:
@@ -635,9 +761,10 @@ class SportsCommand(BaseCommand):
             try:
                 team_info = self.TEAM_MAPPINGS.get(team)
                 if team_info:
-                    game_info = await self.fetch_team_game_data(team_info)
-                    if game_info:
-                        game_data.append(game_info)
+                    # Get all relevant games for this team (live, past within 8 days, upcoming within 6 weeks)
+                    games = await self.fetch_team_games(team_info)
+                    if games:
+                        game_data.extend(games)
             except Exception as e:
                 self.logger.warning(f"Error fetching score for {team}: {e}")
         
@@ -689,6 +816,10 @@ class SportsCommand(BaseCommand):
             'nhl': {'sport': 'hockey', 'league': 'nhl'},
             'hockey': {'sport': 'hockey', 'league': 'nhl'},
             
+            # PWHL
+            'pwhl': {'sport': 'hockey', 'league': 'pwhl'},
+            'womens hockey': {'sport': 'hockey', 'league': 'pwhl'},
+            
             # MLS
             'mls': {'sport': 'soccer', 'league': 'usa.1'},
             'soccer': {'sport': 'soccer', 'league': 'usa.1'},
@@ -712,14 +843,14 @@ class SportsCommand(BaseCommand):
         
         # Define city mappings to team names
         city_mappings = {
-            'seattle': ['seahawks', 'mariners', 'sounders', 'kraken', 'reign', 'storm'],
-            'chicago': ['bears', 'cubs', 'white sox', 'fire', 'sky'],
-            'new york': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls', 'liberty'],
-            'ny': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls', 'liberty'],
+            'seattle': ['seahawks', 'mariners', 'sounders', 'kraken', 'reign', 'storm', 'torrent'],
+            'chicago': ['bears', 'cubs', 'white sox', 'fire', 'sky', 'blackhawks'],
+            'new york': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls', 'liberty', 'rangers', 'islanders'],  # Add PWHL New York when team_id verified
+            'ny': ['giants', 'jets', 'yankees', 'mets', 'knicks', 'nyc fc', 'red bulls', 'liberty', 'rangers', 'islanders'],  # Add PWHL New York when team_id verified
             'los angeles': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc', 'sparks'],
             'la': ['rams', 'dodgers', 'lakers', 'la galaxy', 'lafc', 'sparks'],
             'miami': ['dolphins', 'marlins', 'heat', 'inter miami'],
-            'boston': ['patriots', 'red sox', 'celtics', 'revolution'],
+            'boston': ['patriots', 'red sox', 'celtics', 'revolution', 'bruins'],  # Add PWHL Boston when team_id verified
             'philadelphia': ['eagles', 'phillies', '76ers', 'union'],
             'philadelphia': ['eagles', 'phillies', '76ers', 'union'],
             'atlanta': ['falcons', 'braves', 'hawks', 'atlanta united', 'dream'],
@@ -727,8 +858,8 @@ class SportsCommand(BaseCommand):
             'dallas': ['cowboys', 'rangers', 'stars', 'fc dallas', 'wings'],
             'denver': ['broncos', 'rockies', 'rapids'],
             'detroit': ['lions', 'tigers', 'pistons'],
-            'minnesota': ['vikings', 'twins', 'timberwolves', 'minnesota united', 'lynx'],
-            'minneapolis': ['vikings', 'twins', 'timberwolves', 'minnesota united', 'lynx'],
+            'minnesota': ['vikings', 'twins', 'timberwolves', 'minnesota united', 'lynx', 'wild'],  # Add PWHL Minnesota when team_id verified
+            'minneapolis': ['vikings', 'twins', 'timberwolves', 'minnesota united', 'lynx'],  # Add PWHL Minnesota when team_id verified
             'cleveland': ['browns', 'guardians', 'cavaliers'],
             'cincinnati': ['bengals', 'reds', 'fc cincinnati'],
             'pittsburgh': ['steelers', 'pirates', 'penguins'],
@@ -773,16 +904,16 @@ class SportsCommand(BaseCommand):
             'utah': ['jazz', 'real salt lake'],
             'orlando': ['magic', 'orlando city'],
             'orl': ['magic', 'orlando city'],
-            'toronto': ['raptors', 'blue jays', 'toronto fc', 'maple leafs'],
-            'tor': ['raptors', 'blue jays', 'toronto fc', 'maple leafs'],
+            'toronto': ['raptors', 'blue jays', 'toronto fc', 'maple leafs'],  # Add PWHL Toronto when team_id verified
+            'tor': ['raptors', 'blue jays', 'toronto fc', 'maple leafs'],  # Add PWHL Toronto when team_id verified
             'vancouver': ['canucks', 'whitecaps'],
             'van': ['canucks', 'whitecaps'],
-            'montreal': ['canadiens', 'cf montreal'],
-            'mtl': ['canadiens', 'cf montreal'],
+            'montreal': ['canadiens', 'cf montreal'],  # Add PWHL Montreal when team_id verified
+            'mtl': ['canadiens', 'cf montreal'],  # Add PWHL Montreal when team_id verified
             'calgary': ['flames'],
             'edmonton': ['oilers'],
             'winnipeg': ['jets'],
-            'ottawa': ['senators'],
+            'ottawa': ['senators'],  # Add PWHL Ottawa when team_id verified
             'columbus': ['blue jackets', 'crew'],
             'clb': ['blue jackets', 'crew'],
             'st louis': ['blues', 'st louis city'],
@@ -818,9 +949,10 @@ class SportsCommand(BaseCommand):
         game_data = []
         for team_info in city_teams:
             try:
-                game_info = await self.fetch_team_game_data(team_info)
-                if game_info:
-                    game_data.append(game_info)
+                # Get all relevant games for this team (live, past within 8 days, upcoming within 6 weeks)
+                games = await self.fetch_team_games(team_info)
+                if games:
+                    game_data.extend(games)
             except Exception as e:
                 self.logger.warning(f"Error fetching score for {team_info}: {e}")
         
@@ -953,10 +1085,12 @@ class SportsCommand(BaseCommand):
                     pass
             
             # Format based on game status
-            if status_name in ['STATUS_IN_PROGRESS', 'STATUS_FIRST_HALF', 'STATUS_SECOND_HALF']:
+            if status_name in ['STATUS_IN_PROGRESS', 'STATUS_FIRST_HALF', 'STATUS_SECOND_HALF', 'STATUS_END_PERIOD']:
                 # Game is live - prioritize these (use negative timestamp)
+                # STATUS_END_PERIOD means a period just ended but game is still ongoing
                 clock = status.get('displayClock', '')
                 period = status.get('period', 0)
+                is_end_period = (status_name == 'STATUS_END_PERIOD')
                 
                 # Format period based on sport
                 if sport == 'soccer':
@@ -975,12 +1109,18 @@ class SportsCommand(BaseCommand):
                         period_str = short_detail  # e.g., "Top 14th", "Bottom 9th"
                     else:
                         period_str = f"{period}I"  # Fallback to inning number only
+                    if is_end_period:
+                        period_str = f"End {period_str}"
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
+                    if is_end_period:
+                        period_str = f"End {period_str}"
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 else:
                     period_str = f"P{period}"  # Generic periods
+                    if is_end_period:
+                        period_str = f"End {period_str}"
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 
                 timestamp = -1  # Live games first
@@ -1097,6 +1237,23 @@ class SportsCommand(BaseCommand):
     
     async def get_team_scores(self, team_name: str) -> str:
         """Get scores for a specific team or league"""
+        # Check if this is a schedule query (team_name ends with " schedule")
+        if team_name.endswith(' schedule'):
+            team_name_clean = team_name[:-9].strip()  # Remove " schedule"
+            team_info = self.TEAM_MAPPINGS.get(team_name_clean)
+            if not team_info:
+                return self.translate('commands.sports.team_not_found', team=team_name_clean)
+            
+            try:
+                schedule_info = await self.fetch_team_schedule_formatted(team_info)
+                if schedule_info:
+                    return schedule_info
+                else:
+                    return self.translate('commands.sports.no_games_team', team=team_name_clean)
+            except Exception as e:
+                self.logger.error(f"Error fetching schedule for {team_name_clean}: {e}")
+                return self.translate('commands.sports.error_fetching_team', team=team_name_clean)
+        
         # Check if this is a league query
         league_info = self.get_league_info(team_name)
         if league_info:
@@ -1173,8 +1330,163 @@ class SportsCommand(BaseCommand):
         Uses the team schedule endpoint which returns both past and upcoming games
         in a single API call. Returns games sorted by relevance:
         - Live games first
-        - Then upcoming games
-        - Then recent past games (most recent first)
+        - Last completed game (if within last 8 days)
+        - Next scheduled game (if known)
+        """
+        try:
+            # Use team schedule endpoint - returns both past and upcoming games
+            url = f"{self.ESPN_BASE_URL}/{team_info['sport']}/{team_info['league']}/teams/{team_info['team_id']}/schedule"
+            
+            # Make API request
+            response = requests.get(url, timeout=self.url_timeout)
+            response.raise_for_status()
+            
+            data = response.json()
+            events = data.get('events', [])
+            
+            if not events:
+                return []
+            
+            # Parse all games
+            all_games = []
+            live_event_ids = []  # Track event IDs for live games
+            for event in events:
+                game_data = self.parse_game_event_with_timestamp(event, team_info['team_id'], team_info['sport'], team_info['league'])
+                if game_data:
+                    all_games.append(game_data)
+                    # If this is a live game, store the event ID to fetch live data
+                    if game_data['timestamp'] < 0:  # Negative timestamp indicates live game
+                        event_id = event.get('id')
+                        if event_id:
+                            live_event_ids.append((event_id, len(all_games) - 1))  # Store index too
+            
+            if not all_games:
+                return []
+            
+            # Fetch live event data for live games to get real-time scores
+            for event_id, game_index in live_event_ids:
+                try:
+                    live_event_data = await self.fetch_live_event_data(event_id, team_info['sport'], team_info['league'])
+                    if live_event_data:
+                        # The event endpoint returns the event directly (not in an array)
+                        # Update the game data with live scores
+                        updated_game = self.parse_game_event_with_timestamp(
+                            live_event_data, team_info['team_id'], team_info['sport'], team_info['league']
+                        )
+                        if updated_game:
+                            all_games[game_index] = updated_game
+                except Exception as e:
+                    self.logger.warning(f"Error fetching live data for event {event_id}: {e}")
+            
+            # Sort by timestamp (negative for live games, then by actual timestamp)
+            # This prioritizes: live games > upcoming games > recent past games
+            all_games.sort(key=lambda x: x['timestamp'])
+            
+            # Get current time for comparison
+            now = datetime.now(timezone.utc).timestamp()
+            # 8 days in seconds
+            eight_days_ago = now - (8 * 24 * 60 * 60)
+            # 6 weeks in seconds (6 * 7 * 24 * 60 * 60)
+            six_weeks_from_now = now + (6 * 7 * 24 * 60 * 60)
+            
+            # Separate into categories
+            live_games = [g for g in all_games if g['timestamp'] < 0]  # Negative timestamps = live
+            upcoming_games = []
+            past_games = []
+            
+            # Categorize games with positive timestamps
+            for game in all_games:
+                if game['timestamp'] < 0:
+                    continue  # Already in live_games
+                
+                game_event_ts = game.get('event_timestamp')
+                effective_ts = game_event_ts if game_event_ts is not None else game['timestamp']
+                
+                if game['timestamp'] >= 9999999990 and game_event_ts is None:
+                    # No real timestamp available, treat as past
+                    past_games.append((effective_ts, game))
+                elif effective_ts is None:
+                    past_games.append((effective_ts, game))
+                elif effective_ts > now:
+                    # Future game - only include if within next 6 weeks
+                    if effective_ts is not None and effective_ts <= six_weeks_from_now:
+                        upcoming_games.append((effective_ts, game))
+                else:
+                    # Past game - only include if within last 8 days
+                    if effective_ts is not None and effective_ts >= eight_days_ago:
+                        past_games.append((effective_ts, game))
+            
+            # Sort upcoming games by soonest first, past games by most recent first
+            upcoming_games.sort(key=lambda x: x[0] if x[0] is not None else float('inf'))
+            past_games.sort(key=lambda x: x[0] if x[0] is not None else -float('inf'), reverse=True)
+            
+            # Build result with new priority:
+            # 1. Live games (if any)
+            # 2. Last completed game (if within last 8 days)
+            # 3. Next scheduled game (if known and within 6 weeks)
+            result = []
+            
+            # Add live games (if any)
+            if live_games:
+                result.extend(live_games)
+            
+            # Add last completed game (if within last 8 days)
+            if past_games:
+                result.append(past_games[0][1])  # Most recent past game
+            
+            # Add next scheduled game (if known and within 6 weeks)
+            if upcoming_games:
+                result.append(upcoming_games[0][1])
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching team games: {e}")
+            return []
+    
+    async def fetch_live_event_data(self, event_id: str, sport: str, league: str) -> Optional[Dict]:
+        """Fetch live event data from the scoreboard endpoint for real-time scores
+        
+        The scoreboard endpoint provides more up-to-date scores for live games than the schedule endpoint.
+        We fetch the scoreboard and find the matching event by ID.
+        """
+        try:
+            # Use scoreboard endpoint which has live scores
+            url = f"{self.ESPN_BASE_URL}/{sport}/{league}/scoreboard"
+            response = requests.get(url, timeout=self.url_timeout)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Find the event with matching ID in the scoreboard
+            # Convert event_id to string for comparison (API may return IDs as strings or ints)
+            event_id_str = str(event_id)
+            events = data.get('events', [])
+            for event in events:
+                event_id_from_api = str(event.get('id', ''))
+                if event_id_from_api == event_id_str:
+                    return event
+            
+            # If not found in scoreboard, return None (event might not be live anymore)
+            return None
+        except Exception as e:
+            self.logger.warning(f"Error fetching live event data for {event_id}: {e}")
+            return None
+    
+    async def fetch_team_game_data(self, team_info: Dict[str, str]) -> Optional[Dict]:
+        """Fetch structured game data for a team with timestamp for sorting
+        
+        Uses the team schedule endpoint which returns both past and upcoming games
+        in a single API call, eliminating the need for multiple scoreboard requests.
+        Returns only the most relevant game (for backward compatibility).
+        """
+        games = await self.fetch_team_games(team_info)
+        return games[0] if games else None
+    
+    async def fetch_team_schedule(self, team_info: Dict[str, str]) -> List[Dict]:
+        """Fetch upcoming scheduled games for a team
+        
+        Returns as many upcoming games as available from the schedule endpoint.
+        Used for 'sports <teamname> schedule' command.
         """
         try:
             # Use team schedule endpoint - returns both past and upcoming games
@@ -1200,71 +1512,79 @@ class SportsCommand(BaseCommand):
             if not all_games:
                 return []
             
-            # Sort by timestamp (negative for live games, then by actual timestamp)
-            # This prioritizes: live games > upcoming games > recent past games
-            all_games.sort(key=lambda x: x['timestamp'])
-            
             # Get current time for comparison
             now = datetime.now(timezone.utc).timestamp()
             
-            # Separate into categories
-            live_games = [g for g in all_games if g['timestamp'] < 0]  # Negative timestamps = live
+            # Filter to only upcoming games
             upcoming_games = []
-            past_games = []
-            
-            # Categorize games with positive timestamps
             for game in all_games:
+                # Skip live games (negative timestamps)
                 if game['timestamp'] < 0:
-                    continue  # Already in live_games
+                    continue
                 
                 game_event_ts = game.get('event_timestamp')
                 effective_ts = game_event_ts if game_event_ts is not None else game['timestamp']
                 
-                if game['timestamp'] >= 9999999990 and game_event_ts is None:
-                    # No real timestamp available, treat as past
-                    past_games.append((effective_ts, game))
-                elif effective_ts is None:
-                    past_games.append((effective_ts, game))
-                elif effective_ts > now:
-                    # Future game
+                # Only include games with valid future timestamps
+                if effective_ts is not None and effective_ts > now:
                     upcoming_games.append((effective_ts, game))
-                else:
-                    # Past game
-                    past_games.append((effective_ts, game))
             
-            # Sort upcoming games by soonest first, past games by most recent first
+            # Sort by soonest first
             upcoming_games.sort(key=lambda x: x[0] if x[0] is not None else float('inf'))
-            past_games.sort(key=lambda x: x[0] if x[0] is not None else -float('inf'), reverse=True)
             
-            # Build result: live games + next upcoming + recent past
-            result = []
-            
-            # Add live games (if any)
-            if live_games:
-                result.extend(live_games)
-            
-            # Add next upcoming game (if no live games)
-            if not live_games and upcoming_games:
-                result.append(upcoming_games[0][1])
-            
-            # Add recent past games (most recent first, up to what fits)
-            result.extend([g for _, g in past_games])
-            
-            return result
+            # Return all upcoming games (caller will limit by message length)
+            return [g for _, g in upcoming_games]
             
         except Exception as e:
-            self.logger.error(f"Error fetching team games: {e}")
+            self.logger.error(f"Error fetching team schedule: {e}")
             return []
     
-    async def fetch_team_game_data(self, team_info: Dict[str, str]) -> Optional[Dict]:
-        """Fetch structured game data for a team with timestamp for sorting
+    async def fetch_team_schedule_formatted(self, team_info: Dict[str, str]) -> Optional[str]:
+        """Fetch and format upcoming scheduled games for a team
         
-        Uses the team schedule endpoint which returns both past and upcoming games
-        in a single API call, eliminating the need for multiple scoreboard requests.
-        Returns only the most relevant game (for backward compatibility).
+        Returns formatted schedule with as many games as fit in 130 characters.
         """
-        games = await self.fetch_team_games(team_info)
-        return games[0] if games else None
+        games = await self.fetch_team_schedule(team_info)
+        if not games:
+            return None
+        
+        # Format games to fit within message limit (130 characters)
+        # Use 125 as a buffer to avoid cutting off mid-game
+        sport_emoji = self.SPORT_EMOJIS.get(team_info['sport'], '🏆')
+        formatted_games = []
+        current_length = 0
+        max_length = 125  # Leave buffer to avoid cutoff
+        
+        for game in games:
+            # Ensure game['formatted'] doesn't already have an emoji
+            game_formatted = game['formatted'].strip()
+            # Remove emoji if it's at the start (some games might have it)
+            if game_formatted and game_formatted[0] in self.SPORT_EMOJIS.values():
+                game_formatted = game_formatted[1:].strip()
+            
+            game_str = f"{sport_emoji} {game_formatted}"
+            # Check if adding this game would exceed limit
+            if formatted_games:
+                # Account for newline separator
+                test_length = current_length + len("\n") + len(game_str)
+            else:
+                test_length = len(game_str)
+            
+            if test_length <= max_length:
+                formatted_games.append(game_str)
+                current_length = test_length
+            else:
+                # Can't fit more games - stop before exceeding limit
+                break
+        
+        if not formatted_games:
+            # If even the first game doesn't fit, return it anyway (truncated)
+            game_formatted = games[0]['formatted'].strip()
+            if game_formatted and game_formatted[0] in self.SPORT_EMOJIS.values():
+                game_formatted = game_formatted[1:].strip()
+            return f"{sport_emoji} {game_formatted[:120]}"
+        
+        return "\n".join(formatted_games)
     
     def parse_game_event_with_timestamp(self, event: Dict, team_id: str, sport: str, league: str) -> Optional[Dict]:
         """Parse a game event and return structured data with timestamp for sorting"""
@@ -1336,10 +1656,12 @@ class SportsCommand(BaseCommand):
                     pass
             
             # Format based on game status
-            if status_name in ['STATUS_IN_PROGRESS', 'STATUS_FIRST_HALF', 'STATUS_SECOND_HALF']:
+            if status_name in ['STATUS_IN_PROGRESS', 'STATUS_FIRST_HALF', 'STATUS_SECOND_HALF', 'STATUS_END_PERIOD']:
                 # Game is live - prioritize these (use negative timestamp)
+                # STATUS_END_PERIOD means a period just ended but game is still ongoing
                 clock = status.get('displayClock', '')
                 period = status.get('period', 0)
+                is_end_period = (status_name == 'STATUS_END_PERIOD')
                 
                 # Format period based on sport
                 if sport == 'soccer':
@@ -1361,9 +1683,13 @@ class SportsCommand(BaseCommand):
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({period_str})"
                 elif sport == 'football':
                     period_str = f"Q{period}"  # Quarters
+                    if is_end_period:
+                        period_str = f"End {period_str}"
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 else:
-                    period_str = f"P{period}"  # Generic periods
+                    period_str = f"P{period}"  # Generic periods (hockey, etc.)
+                    if is_end_period:
+                        period_str = f"End {period_str}"
                     formatted = f"{away_name} {away_score}-{home_score} @{home_name} ({clock} {period_str})"
                 
                 timestamp = -1  # Live games first

@@ -22,6 +22,36 @@ class TestCommand(BaseCommand):
     description = "Responds to 'test' or 't' with connection info"
     category = "basic"
     
+    def __init__(self, bot):
+        super().__init__(bot)
+        # Get bot location from config for geographic proximity calculations
+        self.geographic_guessing_enabled = False
+        self.bot_latitude = None
+        self.bot_longitude = None
+        
+        # Get recency/proximity weighting from config (same as path command)
+        recency_weight = bot.config.getfloat('Path_Command', 'recency_weight', fallback=0.2)
+        self.recency_weight = max(0.0, min(1.0, recency_weight))  # Clamp to 0.0-1.0
+        self.proximity_weight = 1.0 - self.recency_weight
+        
+        try:
+            # Try to get location from Bot section
+            if bot.config.has_section('Bot'):
+                lat = bot.config.getfloat('Bot', 'bot_latitude', fallback=None)
+                lon = bot.config.getfloat('Bot', 'bot_longitude', fallback=None)
+                
+                if lat is not None and lon is not None:
+                    # Validate coordinates
+                    if -90 <= lat <= 90 and -180 <= lon <= 180:
+                        self.bot_latitude = lat
+                        self.bot_longitude = lon
+                        self.geographic_guessing_enabled = True
+                        self.logger.debug(f"Test command: Geographic proximity enabled with bot location: {lat:.4f}, {lon:.4f}")
+                    else:
+                        self.logger.warning(f"Invalid bot coordinates in config: {lat}, {lon}")
+        except Exception as e:
+            self.logger.warning(f"Error reading bot location from config: {e}")
+    
     def get_help_text(self) -> str:
         return self.translate('commands.test.help')
     
@@ -148,7 +178,9 @@ class TestCommand(BaseCommand):
             
             # Multiple repeaters - use geographic proximity selection if path context available
             if path_context and len(path_context) > 1:
-                selected = self._select_by_path_proximity(repeaters, node_id, path_context)
+                # Get sender location if available (for first repeater selection)
+                sender_location = self._get_sender_location()
+                selected = self._select_by_path_proximity(repeaters, node_id, path_context, sender_location)
                 if selected:
                     return (float(selected['latitude']), float(selected['longitude']))
             
@@ -161,6 +193,37 @@ class TestCommand(BaseCommand):
             return None
         except Exception as e:
             self.logger.debug(f"Error looking up repeater location for {node_id}: {e}")
+            return None
+    
+    def _get_sender_location(self) -> Optional[Tuple[float, float]]:
+        """Get sender location from current message if available"""
+        try:
+            if not hasattr(self, '_current_message') or not self._current_message:
+                return None
+            
+            sender_pubkey = self._current_message.sender_pubkey
+            if not sender_pubkey:
+                return None
+            
+            # Look up sender location from database (any role, not just repeaters)
+            query = '''
+                SELECT latitude, longitude 
+                FROM complete_contact_tracking 
+                WHERE public_key = ? 
+                AND latitude IS NOT NULL AND longitude IS NOT NULL
+                AND latitude != 0 AND longitude != 0
+                ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
+                LIMIT 1
+            '''
+            
+            results = self.bot.db_manager.execute_query(query, (sender_pubkey,))
+            
+            if results:
+                row = results[0]
+                return (row['latitude'], row['longitude'])
+            return None
+        except Exception as e:
+            self.logger.debug(f"Error getting sender location: {e}")
             return None
     
     def _calculate_recency_weighted_scores(self, repeaters: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], float]]:
@@ -241,7 +304,7 @@ class TestCommand(BaseCommand):
             self.logger.debug(f"Error in simple location lookup for {node_id}: {e}")
             return None
     
-    def _select_by_path_proximity(self, repeaters: List[Dict[str, Any]], node_id: str, path_context: List[str]) -> Optional[Dict[str, Any]]:
+    def _select_by_path_proximity(self, repeaters: List[Dict[str, Any]], node_id: str, path_context: List[str], sender_location: Optional[Tuple[float, float]] = None) -> Optional[Dict[str, Any]]:
         """Select repeater based on proximity to previous/next nodes in path"""
         try:
             # Filter by recency first
@@ -269,13 +332,32 @@ class TestCommand(BaseCommand):
                 next_node_id = path_context[current_index + 1]
                 next_location = self._get_node_location_simple(next_node_id)
             
+            # For the first repeater in the path, prioritize sender location as the source
+            # The first repeater's primary job is to receive from the sender, so use sender location if available
+            is_first_repeater = (current_index == 0)
+            if is_first_repeater and sender_location:
+                # For first repeater, use sender location only (not averaged with next node)
+                self.logger.debug(f"Test command: Using sender location for proximity calculation of first repeater: {sender_location[0]:.4f}, {sender_location[1]:.4f}")
+                return self._select_by_single_proximity(recent_repeaters, sender_location, "sender")
+            
+            # For the last repeater in the path, prioritize bot location as the destination
+            # The last repeater's primary job is to deliver to the bot, so use bot location only
+            is_last_repeater = (current_index == len(path_context) - 1)
+            if is_last_repeater and self.geographic_guessing_enabled:
+                if self.bot_latitude is not None and self.bot_longitude is not None:
+                    # For last repeater, use bot location only (not averaged with previous node)
+                    bot_location = (self.bot_latitude, self.bot_longitude)
+                    self.logger.debug(f"Test command: Using bot location for proximity calculation of last repeater: {self.bot_latitude:.4f}, {self.bot_longitude:.4f}")
+                    return self._select_by_single_proximity(recent_repeaters, bot_location, "bot")
+            
+            # For non-first/non-last repeaters, use both previous and next locations if available
             # Use proximity selection
             if prev_location and next_location:
                 return self._select_by_dual_proximity(recent_repeaters, prev_location, next_location)
             elif prev_location:
-                return self._select_by_single_proximity(recent_repeaters, prev_location)
+                return self._select_by_single_proximity(recent_repeaters, prev_location, "previous")
             elif next_location:
-                return self._select_by_single_proximity(recent_repeaters, next_location)
+                return self._select_by_single_proximity(recent_repeaters, next_location, "next")
             else:
                 return None
                 
@@ -313,8 +395,8 @@ class TestCommand(BaseCommand):
             normalized_distance = min(avg_distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Weight: 40% recency, 60% proximity
-            combined_score = (recency_score * 0.4) + (proximity_score * 0.6)
+            # Use configurable weighting (from Path_Command config)
+            combined_score = (recency_score * self.recency_weight) + (proximity_score * self.proximity_weight)
             
             # Apply star bias multiplier if repeater is starred (use same config as path command)
             star_bias_multiplier = self.bot.config.getfloat('Path_Command', 'star_bias_multiplier', fallback=2.5)
@@ -327,7 +409,7 @@ class TestCommand(BaseCommand):
         
         return best_repeater
     
-    def _select_by_single_proximity(self, repeaters: List[Dict[str, Any]], reference_location: Tuple[float, float]) -> Optional[Dict[str, Any]]:
+    def _select_by_single_proximity(self, repeaters: List[Dict[str, Any]], reference_location: Tuple[float, float], direction: str = "unknown") -> Optional[Dict[str, Any]]:
         """Select repeater based on proximity to single reference node"""
         scored_repeaters = self._calculate_recency_weighted_scores(repeaters)
         min_recency_threshold = 0.01
@@ -335,6 +417,17 @@ class TestCommand(BaseCommand):
         
         if not scored_repeaters:
             return None
+        
+        # For last repeater (direction="bot") or first repeater (direction="sender"), use 100% proximity (0% recency)
+        # The final hop to the bot and first hop from sender should prioritize distance above all else
+        # Recency still matters for filtering (min_recency_threshold), but not for scoring
+        if direction == "bot" or direction == "sender":
+            proximity_weight = 1.0
+            recency_weight = 0.0
+        else:
+            # Use configurable weighting for other cases (from Path_Command config)
+            proximity_weight = self.proximity_weight
+            recency_weight = self.recency_weight
         
         best_repeater = None
         best_combined_score = 0.0
@@ -349,8 +442,8 @@ class TestCommand(BaseCommand):
             normalized_distance = min(distance / 1000.0, 1.0)
             proximity_score = 1.0 - normalized_distance
             
-            # Weight: 40% recency, 60% proximity
-            combined_score = (recency_score * 0.4) + (proximity_score * 0.6)
+            # Use appropriate weighting based on direction
+            combined_score = (recency_score * recency_weight) + (proximity_score * proximity_weight)
             
             # Apply star bias multiplier if repeater is starred (use same config as path command)
             star_bias_multiplier = self.bot.config.getfloat('Path_Command', 'star_bias_multiplier', fallback=2.5)
@@ -486,4 +579,6 @@ class TestCommand(BaseCommand):
     
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the test command"""
+        # Store the current message for use in location lookups
+        self._current_message = message
         return await self.handle_keyword_match(message)

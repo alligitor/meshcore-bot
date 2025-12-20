@@ -35,6 +35,8 @@ from .db_manager import DBManager
 from .i18n import Translator
 from .solar_conditions import set_config
 from .web_viewer.integration import WebViewerIntegration
+from .feed_manager import FeedManager
+from .security_utils import validate_safe_path
 
 
 class MeshCoreBot:
@@ -57,6 +59,16 @@ class MeshCoreBot:
         
         # Initialize database manager first (needed by plugins)
         db_path = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
+        
+        # Validate database path for security (prevent path traversal)
+        # Use explicit bot root directory (where config.ini is located)
+        try:
+            db_path = str(validate_safe_path(db_path, base_dir=str(self.bot_root), allow_absolute=False))
+        except ValueError as e:
+            self.logger.error(f"Invalid database path: {e}")
+            self.logger.error("Using default: meshcore_bot.db")
+            db_path = 'meshcore_bot.db'
+        
         self.logger.info(f"Initializing database manager with database: {db_path}")
         try:
             self.db_manager = DBManager(self, db_path)
@@ -125,6 +137,15 @@ class MeshCoreBot:
         
         self.scheduler = MessageScheduler(self)
         
+        # Initialize feed manager
+        self.logger.info("Initializing feed manager")
+        try:
+            self.feed_manager = FeedManager(self)
+            self.logger.info("Feed manager initialized successfully")
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize feed manager: {e}")
+            self.feed_manager = None
+        
         # Initialize repeater manager
         self.logger.info("Initializing repeater manager")
         try:
@@ -143,6 +164,14 @@ class MeshCoreBot:
         
         # Advert tracking
         self.last_advert_time = None
+        
+        # Clock sync tracking
+        self.last_clock_sync_time = None
+    
+    @property
+    def bot_root(self) -> Path:
+        """Get bot root directory (where config.ini is located)"""
+        return Path(self.config_file).parent.resolve()
         
         self.logger.info(f"MeshCore Bot initialized: {self.config.get('Bot', 'bot_name')}")
     
@@ -391,8 +420,7 @@ airnow_api_key =
 
 # Repeater prefix API URL for prefix command
 # Leave empty to disable prefix command functionality
-# Example: https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
-# Note: w0z.is is regionally available - configure your own regional API
+# Configure your own regional API endpoint
 repeater_prefix_api_url = 
 
 # Repeater prefix cache duration in hours
@@ -537,6 +565,16 @@ use_zulu_time = false
         
         # File handler
         log_file = self.config.get('Logging', 'log_file', fallback='meshcore_bot.log')
+        
+        # Validate log file path for security (prevent path traversal)
+        # Use explicit bot root directory (where config.ini is located)
+        try:
+            log_file = str(validate_safe_path(log_file, base_dir=str(self.bot_root), allow_absolute=False))
+        except ValueError as e:
+            self.logger.warning(f"Invalid log file path: {e}")
+            self.logger.warning("Using default: meshcore_bot.log")
+            log_file = 'meshcore_bot.log'
+        
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
@@ -644,6 +682,9 @@ use_zulu_time = false
                 # Setup message event handlers
                 await self.setup_message_handlers()
                 
+                # Set radio clock if needed
+                await self.set_radio_clock()
+                
                 return True
             else:
                 self.logger.error("Failed to connect to MeshCore node")
@@ -651,6 +692,46 @@ use_zulu_time = false
                 
         except Exception as e:
             self.logger.error(f"Connection failed: {e}")
+            return False
+    
+    async def set_radio_clock(self) -> bool:
+        """Set radio clock only if device time is earlier than current system time"""
+        try:
+            if not self.meshcore or not self.meshcore.is_connected:
+                self.logger.warning("Cannot set radio clock - not connected to device")
+                return False
+            
+            # Get current device time
+            self.logger.info("Checking device time...")
+            time_result = await self.meshcore.commands.get_time()
+            if time_result.type == EventType.ERROR:
+                self.logger.warning("Device does not support time commands")
+                return False
+            
+            device_time = time_result.payload.get('time', 0)
+            current_time = int(time.time())
+            
+            self.logger.info(f"Device time: {device_time}, System time: {current_time}")
+            
+            # Only set time if device time is earlier than current time
+            if device_time < current_time:
+                time_diff = current_time - device_time
+                self.logger.info(f"Device time is {time_diff} seconds behind, updating...")
+                
+                result = await self.meshcore.commands.set_time(current_time)
+                if result.type == EventType.OK:
+                    self.logger.info(f"✓ Radio clock updated to: {current_time}")
+                    self.last_clock_sync_time = current_time
+                    return True
+                else:
+                    self.logger.warning(f"Failed to update radio clock: {result}")
+                    return False
+            else:
+                self.logger.info("Device time is current or ahead - no update needed")
+                return True
+                
+        except Exception as e:
+            self.logger.warning(f"Error checking/setting radio clock: {e}")
             return False
     
     async def wait_for_contacts(self):
@@ -743,6 +824,10 @@ use_zulu_time = false
         # Setup scheduled messages
         self.scheduler.setup_scheduled_messages()
         
+        # Initialize feed manager (if enabled)
+        if self.feed_manager:
+            await self.feed_manager.initialize()
+        
         # Start scheduler thread
         self.scheduler.start()
         
@@ -793,6 +878,10 @@ use_zulu_time = false
             print("Stopping MeshCore Bot...")
         
         self.connected = False
+        
+        # Stop feed manager
+        if self.feed_manager:
+            await self.feed_manager.stop()
         
         # Stop web viewer with proper shutdown sequence
         if self.web_viewer_integration:

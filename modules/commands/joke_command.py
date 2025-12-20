@@ -22,6 +22,7 @@ class JokeCommand(BaseCommand):
     category = "entertainment"
     cooldown_seconds = 3  # 3 second cooldown per user to prevent API abuse
     requires_dm = False  # Works in both channels and DMs
+    requires_internet = True  # Requires internet access for API calls
     
     # Supported categories
     SUPPORTED_CATEGORIES = {

@@ -156,12 +156,12 @@
     "commands": {
         "help": {
             "description": "Affiche les commandes. 'help <commande>' pour détails.",
-            "general": "**Aide Bot MeshCore**\n\n**Commandes disponibles:**\n{commands_list}",
-            "unknown": "**Commande inconnue: '{command}'**\n\nCommandes disponibles:\n{available}",
-            "specific": "**Aide pour '{command}':**\n{help_text}",
+            "general": "Aide Bot MeshCore\n\nCommandes disponibles:\n{commands_list}",
+            "unknown": "Commande inconnue: '{command}'\n\nCommandes disponibles:\n{available}",
+            "specific": "Aide pour '{command}':\n{help_text}",
             "no_help": "Aucune aide disponible",
-            "usage_examples": "\n**Exemples d'utilisation:**\n• `help @` - Aide pour syntaxe @{string}\n• `help t` - Aide pour syntaxe t {string}\n• `help advert` - Aide pour commande advert\n• `help test` - Aide pour commande test\n• `help ping` - Aide pour commande ping",
-            "custom_syntax": "\n**Syntaxe personnalisée:**\n• `t phrase` - Accusé de réception avec phrase (canaux & MP)\n• `@{string}` - Accusé de réception avec chaîne (MP uniquement)\n• `advert` - Envoyer annonce flood (MP uniquement, délai 1h)"
+            "usage_examples": "\nExemples d'utilisation:\n• `help @` - Aide pour syntaxe @{string}\n• `help t` - Aide pour syntaxe t {string}\n• `help advert` - Aide pour commande advert\n• `help test` - Aide pour commande test\n• `help ping` - Aide pour commande ping",
+            "custom_syntax": "\nSyntaxe personnalisée:\n• `t phrase` - Accusé de réception avec phrase (canaux & MP)\n• `@{string}` - Accusé de réception avec chaîne (MP uniquement)\n• `advert` - Envoyer annonce flood (MP uniquement, délai 1h)"
         },
         "ping": {
             "description": "Répond à 'ping' avec 'Pong!'",

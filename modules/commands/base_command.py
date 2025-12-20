@@ -8,7 +8,9 @@ from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 import pytz
+import re
 from ..models import MeshMessage
+from ..security_utils import validate_pubkey_format
 
 
 class BaseCommand(ABC):
@@ -19,6 +21,7 @@ class BaseCommand(ABC):
     keywords: List[str] = []  # All trigger words for this command (including name and aliases)
     description: str = ""
     requires_dm: bool = False
+    requires_internet: bool = False  # Set to True if command needs internet access
     cooldown_seconds: int = 0
     category: str = "general"
     
@@ -217,6 +220,7 @@ class BaseCommand(ABC):
             'keywords': self.keywords,
             'description': self.description,
             'requires_dm': self.requires_dm,
+            'requires_internet': self.requires_internet,
             'cooldown_seconds': self.cooldown_seconds,
             'category': self.category,
             'class_name': self.__class__.__name__,
@@ -415,51 +419,84 @@ class BaseCommand(ABC):
             return False
     
     def _check_admin_access(self, message: MeshMessage) -> bool:
-        """Check if the message sender has admin access"""
+        """
+        Check if the message sender has admin access (security-hardened)
+        
+        Security features:
+        - Strict pubkey format validation (64-char hex)
+        - No fallback to sender_id (prevents spoofing)
+        - Whitespace/empty config detection
+        - Normalized comparison (lowercase)
+        - Uses centralized validate_pubkey_format() function
+        """
+        import re # This import is needed for re.match
         if not hasattr(self.bot, 'config'):
             return False
         
         try:
             # Get admin pubkeys from config
             admin_pubkeys = self.bot.config.get('Admin_ACL', 'admin_pubkeys', fallback='')
-            if not admin_pubkeys:
-                self.logger.warning("No admin pubkeys configured")
+            
+            # Check for empty or whitespace-only configuration
+            if not admin_pubkeys.strip():
+                self.logger.warning("No admin pubkeys configured or empty/whitespace config")
                 return False
             
-            # Parse admin pubkeys
-            admin_pubkey_list = [key.strip() for key in admin_pubkeys.split(',') if key.strip()]
+            # Parse and VALIDATE admin pubkeys
+            admin_pubkey_list = []
+            for key in admin_pubkeys.split(','):
+                key = key.strip()
+                if not key:
+                    continue
+                
+                # Validate hex format (64 chars for ed25519 public keys)
+                if not validate_pubkey_format(key, expected_length=64):
+                    self.logger.error(f"Invalid admin pubkey format in config: {key[:16]}...")
+                    continue  # Skip invalid keys but continue checking others
+                
+                admin_pubkey_list.append(key.lower())  # Normalize to lowercase
+            
             if not admin_pubkey_list:
-                self.logger.warning("No valid admin pubkeys found in config")
+                self.logger.error("No valid admin pubkeys found in config after validation")
                 return False
             
-            # Get sender's public key from message
+            # Get sender's public key - NEVER fall back to sender_id
             sender_pubkey = getattr(message, 'sender_pubkey', None)
             if not sender_pubkey:
-                # Try to get from sender_id if it's a pubkey
-                sender_pubkey = getattr(message, 'sender_id', None)
-            
-            if not sender_pubkey:
-                self.logger.warning(f"No sender public key found for message from {message.sender_id}")
+                self.logger.warning(
+                    f"No sender public key available for {message.sender_id} - "
+                    "admin access denied (missing pubkey)"
+                )
                 return False
             
-            # Check if sender's pubkey matches any admin key (exact match required for security)
-            is_admin = False
-            for admin_key in admin_pubkey_list:
-                # Only allow exact matches for security
-                if sender_pubkey == admin_key:
-                    is_admin = True
-                    break
+            # Validate sender pubkey format
+            if not validate_pubkey_format(sender_pubkey, expected_length=64):
+                self.logger.warning(
+                    f"Invalid sender pubkey format from {message.sender_id}: "
+                    f"{sender_pubkey[:16]}... - admin access denied"
+                )
+                return False
+            
+            # Normalize and compare
+            sender_pubkey_normalized = sender_pubkey.lower()
+            is_admin = sender_pubkey_normalized in admin_pubkey_list
             
             if not is_admin:
-                self.logger.info(f"Access denied for {message.sender_id} (pubkey: {sender_pubkey[:16]}...) - not in admin ACL")
+                self.logger.warning(
+                    f"Access denied for {message.sender_id} "
+                    f"(pubkey: {sender_pubkey[:16]}...) - not in admin ACL"
+                )
             else:
-                self.logger.info(f"Admin access granted for {message.sender_id} (pubkey: {sender_pubkey[:16]}...)")
+                self.logger.info(
+                    f"Admin access granted for {message.sender_id} "
+                    f"(pubkey: {sender_pubkey[:16]}...)"
+                )
             
             return is_admin
             
         except Exception as e:
             self.logger.error(f"Error checking admin access: {e}")
-            return False
+            return False  # Fail securely
     
     def _strip_quotes_from_config(self, value: str) -> str:
         """Strip quotes from config values if present"""

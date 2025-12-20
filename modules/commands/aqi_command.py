@@ -24,6 +24,7 @@ class AqiCommand(BaseCommand):
     description = "Get Air Quality Index for a location (usage: aqi seattle, aqi greenwood, aqi vancouver canada, aqi 47.6,-122.3, or aqi help)"
     category = "weather"
     cooldown_seconds = 5  # 5 second cooldown per user to prevent API abuse
+    requires_internet = True  # Requires internet access for OpenMeteo API and geocoding
     
     # Error constants
     ERROR_FETCHING_DATA = "Error fetching AQI data"
