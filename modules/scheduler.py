@@ -110,7 +110,8 @@ class MessageScheduler:
             
             # Log current time every 5 minutes for debugging
             if time.time() - last_log_time > 300:  # 5 minutes
-                self.logger.info(f"Scheduler running - Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                #don't log this message as it clutters the output
+                #self.logger.info(f"Scheduler running - Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                 last_log_time = time.time()
             
             # Check for pending scheduled messages
