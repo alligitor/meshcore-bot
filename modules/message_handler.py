@@ -5,10 +5,15 @@ Processes incoming messages and routes them to appropriate command handlers
 """
 
 import asyncio
-from typing import Optional
+import time
+import json
+import re
+from typing import List, Optional, Dict, Any
 from meshcore import EventType
 
 from .models import MeshMessage
+from .enums import PayloadType, PayloadVersion, RouteType, AdvertFlags, DeviceRole
+from .utils import calculate_packet_hash
 
 
 class MessageHandler:
@@ -35,6 +40,9 @@ class MessageHandler:
         # Enhanced RF data storage with better correlation
         self.rf_data_by_timestamp = {}  # Index by timestamp for faster lookup
         self.rf_data_by_pubkey = {}     # Index by pubkey for exact matches
+        
+        # Multitest command listener (for collecting paths during listening window)
+        self.multitest_listener = None
         
         self.logger.info(f"RF Data Correlation: timeout={self.rf_data_timeout}s, enhanced={self.enhanced_correlation}")
     
@@ -116,7 +124,9 @@ class MessageHandler:
                 # Fallback to pubkey correlation if no raw_hex
                 recent_rf_data = self.find_recent_rf_data(message_pubkey)
                 if recent_rf_data and recent_rf_data.get('raw_hex'):
-                    decoded_packet = self.decode_meshcore_packet(recent_rf_data['raw_hex'])
+                    # Use payload field if available, otherwise fall back to raw_hex
+                    payload_hex = recent_rf_data.get('payload')
+                    decoded_packet = self.decode_meshcore_packet(recent_rf_data['raw_hex'], payload_hex)
                     if decoded_packet:
                         self.logger.debug(f"Decoded packet for routing from RF data: {decoded_packet}")
                         
@@ -249,10 +259,21 @@ class MessageHandler:
                         sender_id = contact_name
                         break
             
+            # Get the full public key from contacts if available
+            sender_pubkey = payload.get('pubkey_prefix', '')
+            if hasattr(self.bot.meshcore, 'contacts') and self.bot.meshcore.contacts:
+                for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                    if contact_data.get('public_key', '').startswith(sender_pubkey):
+                        # Use the full public key from the contact
+                        sender_pubkey = contact_data.get('public_key', sender_pubkey)
+                        self.logger.debug(f"Found full public key for {sender_id}: {sender_pubkey[:16]}...")
+                        break
+            
             # Convert to our message format
             message = MeshMessage(
                 content=payload.get('text', ''),
                 sender_id=sender_id,
+                sender_pubkey=sender_pubkey,
                 is_dm=True,
                 timestamp=timestamp,
                 snr=snr,
@@ -295,6 +316,8 @@ class MessageHandler:
         try:
             payload = event.payload
             self.logger.info(f"📦 RAW_DATA EVENT RECEIVED: {payload}")
+            self.logger.info(f"📦 Event type: {type(event)}")
+            self.logger.info(f"📦 Metadata: {metadata}")
             
             # This should contain the full packet data we need
             if hasattr(payload, 'data') or 'data' in payload:
@@ -314,6 +337,9 @@ class MessageHandler:
                         packet_info = self.decode_meshcore_packet(raw_hex)
                         if packet_info:
                             self.logger.info(f"✅ SUCCESSFULLY DECODED RAW PACKET: {packet_info}")
+                            
+                            # Check if this is an advertisement packet and track it
+                            await self._process_advertisement_packet(packet_info, metadata)
                         else:
                             self.logger.warning("❌ Failed to decode raw packet data")
                     else:
@@ -327,6 +353,82 @@ class MessageHandler:
             self.logger.error(f"Error handling raw data event: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
+    
+    async def _process_advertisement_packet(self, packet_info: Dict, metadata=None):
+        """Process advertisement packets for complete repeater tracking"""
+        try:
+            # Check if this is an advertisement packet
+            if (packet_info.get('payload_type') == 'ADVERT' or 
+                packet_info.get('payload_type_name') == 'ADVERT' or 
+                packet_info.get('type') == 'advert'):
+                self.logger.debug(f"Processing advertisement packet: {packet_info}")
+                
+                # Parse the advert payload if we have it
+                advert_data = {}
+                if 'payload_hex' in packet_info:
+                    try:
+                        payload_bytes = bytes.fromhex(packet_info['payload_hex'])
+                        parsed_advert = self.parse_advert(payload_bytes)
+                        if parsed_advert:
+                            advert_data = parsed_advert
+                            self.logger.info(f"✅ Parsed ADVERT: {advert_data.get('mode', 'Unknown')} - {advert_data.get('name', 'No name')}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to parse ADVERT payload: {e}")
+                
+                # Fallback to basic information if parsing failed
+                if not advert_data:
+                    advert_data = {
+                        'public_key': packet_info.get('sender_id', ''),
+                        'name': packet_info.get('name', packet_info.get('adv_name', 'Unknown')),
+                        'mode': 'Unknown'
+                    }
+                
+                # Add advert data to packet_info for web viewer
+                if advert_data:
+                    packet_info['advert_name'] = advert_data.get('name')
+                    packet_info['advert_mode'] = advert_data.get('mode')
+                    packet_info['advert_public_key'] = advert_data.get('public_key')
+                
+                # Extract signal information from metadata
+                signal_info = {}
+                if metadata:
+                    signal_info.update(metadata)
+                
+                # Add hop count if available
+                if 'hops' in packet_info:
+                    signal_info['hops'] = packet_info['hops']
+                
+                # Extract packet_hash if available (from routing_info or packet_info)
+                packet_hash = None
+                if 'routing_info' in packet_info and packet_info['routing_info']:
+                    packet_hash = packet_info['routing_info'].get('packet_hash')
+                elif 'packet_hash' in packet_info:
+                    packet_hash = packet_info['packet_hash']
+                
+                # Track this advertisement in the complete database
+                if hasattr(self.bot, 'repeater_manager'):
+                    # Track all advertisements regardless of type
+                    success = await self.bot.repeater_manager.track_contact_advertisement(
+                        advert_data, signal_info, packet_hash=packet_hash
+                    )
+                    if success:
+                        # Log rich advert information
+                        mode = advert_data.get('mode', 'Unknown')
+                        name = advert_data.get('name', 'No name')
+                        location = ""
+                        if 'lat' in advert_data and 'lon' in advert_data:
+                            location = f" at {advert_data['lat']:.4f},{advert_data['lon']:.4f}"
+                        
+                        # Show hop count in log
+                        hop_count = signal_info.get('hops', 0)
+                        hop_info = f" ({hop_count} hop{'s' if hop_count != 1 else ''})" if hop_count is not None else ""
+                        
+                        self.logger.info(f"📡 Tracked {mode}: {name}{location}{hop_info}")
+                    else:
+                        self.logger.warning(f"Failed to track contact advertisement: {advert_data.get('name', 'Unknown')}")
+                
+        except Exception as e:
+            self.logger.error(f"Error processing advertisement packet: {e}")
     
     async def handle_rf_log_data(self, event, metadata=None):
         """Handle RF log data events to cache SNR information and store raw packet data"""
@@ -378,16 +480,34 @@ class MessageHandler:
                     
                     # Extract routing information from raw packet if available
                     routing_info = None
+                    packet_hash = None
                     if raw_hex:
-                        decoded_packet = self.decode_meshcore_packet(raw_hex)
+                        # Use extracted payload if available, otherwise use raw_hex
+                        decoded_packet = self.decode_meshcore_packet(raw_hex, extracted_payload)
                         if decoded_packet:
+                            # Calculate packet hash for this packet (useful for tracking same message via different paths)
+                            # Use extracted_payload if available (actual MeshCore packet), otherwise use raw_hex
+                            # This matches the logic in decode_meshcore_packet which prefers extracted_payload
+                            # extracted_payload is the actual MeshCore packet without RF wrapper, so use it if available
+                            packet_hex_for_hash = extracted_payload if (extracted_payload and len(extracted_payload) > 0) else raw_hex
+                            
+                            # Ensure we use the numeric payload_type value (not enum or string)
+                            payload_type_value = decoded_packet.get('payload_type', None)
+                            if payload_type_value is not None:
+                                # Handle enum.value if it's an enum
+                                if hasattr(payload_type_value, 'value'):
+                                    payload_type_value = payload_type_value.value
+                                payload_type_value = int(payload_type_value)
+                            packet_hash = calculate_packet_hash(packet_hex_for_hash, payload_type_value)
+                            
                             routing_info = {
                                 'path_length': decoded_packet.get('path_len', 0),
                                 'path_hex': decoded_packet.get('path_hex', ''),
                                 'path_nodes': decoded_packet.get('path', []),
                                 'route_type': decoded_packet.get('route_type_name', 'Unknown'),
-                                'transport_size': decoded_packet.get('transport_size', 0),
-                                'payload_type': decoded_packet.get('payload_type_name', 'Unknown')
+                                'payload_length': payload_length,  # Use the actual payload length
+                                'payload_type': decoded_packet.get('payload_type_name', 'Unknown'),
+                                'packet_hash': packet_hash  # Store hash for packet tracking
                             }
                             
                             # Log the routing information for analysis
@@ -395,9 +515,29 @@ class MessageHandler:
                                 # Format path with comma separation (every 2 characters)
                                 path_hex = routing_info['path_hex']
                                 formatted_path = ','.join([path_hex[i:i+2] for i in range(0, len(path_hex), 2)])
-                                self.logger.info(f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {formatted_path} ({routing_info['path_length']} bytes) | Type: {routing_info['payload_type']}")
+                                log_message = f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {formatted_path} ({routing_info['path_length']} bytes) | Payload: {routing_info['payload_length']} bytes | Type: {routing_info['payload_type']}"
+                                self.logger.info(log_message)
                             else:
-                                self.logger.info(f"📡 DIRECT MESSAGE: {routing_info['route_type']} | Type: {routing_info['payload_type']}")
+                                log_message = f"📡 DIRECT MESSAGE: {routing_info['route_type']} | Type: {routing_info['payload_type']}"
+                                self.logger.info(log_message)
+                            
+                            # Capture full packet data for web viewer (for all packets)
+                            if (hasattr(self.bot, 'web_viewer_integration') and 
+                                self.bot.web_viewer_integration and 
+                                self.bot.web_viewer_integration.bot_integration):
+                                self.bot.web_viewer_integration.bot_integration.capture_full_packet_data(decoded_packet)
+                            
+                            # Process ADVERT packets for contact tracking (regardless of path length)
+                            if routing_info['payload_type'] == 'ADVERT':
+                                # Add routing_info to decoded_packet so it's available in _process_advertisement_packet
+                                decoded_packet['routing_info'] = routing_info
+                                # Create signal info from available data
+                                signal_info = {
+                                    'snr': snr_value,
+                                    'rssi': payload.get('rssi') if 'rssi' in payload else None,
+                                    'hops': routing_info['path_length']
+                                }
+                                await self._process_advertisement_packet(decoded_packet, signal_info)
                     
                     rf_data = {
                         'timestamp': current_time,
@@ -408,7 +548,8 @@ class MessageHandler:
                         'raw_hex': raw_hex,  # Full packet data
                         'payload': extracted_payload,  # Extracted payload
                         'payload_length': payload_length,  # Payload length
-                        'routing_info': routing_info  # Extracted routing information
+                        'routing_info': routing_info,  # Extracted routing information
+                        'packet_hash': packet_hash  # Packet hash for tracking same message via different paths
                     }
                     self.recent_rf_data.append(rf_data)
                     
@@ -629,62 +770,89 @@ class MessageHandler:
     
 
     
-    def decode_meshcore_packet(self, raw_hex: str) -> Optional[dict]:
+    def decode_meshcore_packet(self, raw_hex: str, payload_hex: str = None) -> Optional[dict]:
         """
-        Decode a MeshCore packet from raw hex data
+        Decode a MeshCore packet from raw hex data - matches Packet.cpp exactly
         
         Args:
-            raw_hex: Raw packet data as hex string
+            raw_hex: Raw packet data as hex string (may be RF data or direct MeshCore packet)
+            payload_hex: Optional extracted payload hex string (preferred over raw_hex)
             
         Returns:
             Decoded packet information or None if parsing fails
         """
         try:
-            if not raw_hex:
-                self.logger.debug("No raw_hex data provided for packet decoding")
-                return None
-                
-            byte_data = bytes.fromhex(raw_hex)
-            
-            if len(byte_data) < 2:
-                self.logger.debug(f"Packet too short: {len(byte_data)} bytes")
-                return None
-                
-            # Parse header
-            header = byte_data[0]
-            route_type = header & 0x03
-            payload_type = (header >> 2) & 0x0F
-            payload_version = (header >> 6) & 0x03
-            
-            # Determine if transport codes are present
-            has_transport = route_type in [0x00, 0x01, 0x03]  # TRANSPORT_FLOOD, TRANSPORT_DIRECT, or TRANSPORT_DIRECT
-            transport_size = 2 if has_transport else 0  # Transport codes are 2 bytes when present
-            
-            # Calculate offsets - DIRECT route packets have different structure
-            if route_type == 0x02:  # ROUTE_TYPE_DIRECT
-                # DIRECT packets: header(1) + unknown(2) + path_len(1)
-                path_len_offset = 3
+            # Use payload_hex if provided (this is the actual MeshCore packet)
+            if payload_hex:
+                self.logger.debug("Using provided payload_hex for decoding")
+                hex_data = payload_hex
+            elif raw_hex:
+                self.logger.debug("Using raw_hex for decoding")
+                hex_data = raw_hex
             else:
-                # TRANSPORT packets: header(1) + transport_codes(2) + path_len(1)
-                path_len_offset = 1 + transport_size
-            
-            if len(byte_data) <= path_len_offset:
-                self.logger.debug(f"Packet too short for path length: {len(byte_data)} bytes")
+                self.logger.debug("No packet data provided for decoding")
                 return None
-                
-            path_len = byte_data[path_len_offset]
-            path_start = path_len_offset + 1
             
-            # Validate packet length
+            # Remove 0x prefix if present (like in your other project)
+            if hex_data.startswith('0x'):
+                hex_data = hex_data[2:]
             
-            if len(byte_data) < path_start + path_len:
-                self.logger.debug(f"Packet too short: need {path_start + path_len}, have {len(byte_data)}")
+            byte_data = bytes.fromhex(hex_data)
+            
+            # Validate minimum packet size
+            if len(byte_data) < 2:
+                self.logger.error(f"Packet too short: {len(byte_data)} bytes")
                 return None
-                
-            # Extract path and payload
-            path_bytes = byte_data[path_start:path_start + path_len]
-            payload_start = path_start + path_len
-            payload = byte_data[payload_start:]
+            
+            header = byte_data[0]
+
+            # Extract route type
+            route_type = RouteType(header & 0x03)
+            has_transport = route_type in [RouteType.TRANSPORT_FLOOD, RouteType.TRANSPORT_DIRECT]
+            
+            # Calculate path length offset based on presence of transport codes
+            offset = 1
+            if has_transport:
+                offset += 4
+            
+            # Check if we have enough data for path_len
+            if len(byte_data) <= offset:
+                self.logger.error(f"Packet too short for path_len at offset {offset}: {len(byte_data)} bytes")
+                return None
+            
+            path_len = byte_data[offset]
+            offset += 1
+            
+            # Check if we have enough data for the full path
+            if len(byte_data) < offset + path_len:
+                self.logger.error(f"Packet too short for path (need {offset + path_len}, have {len(byte_data)})")
+                return None
+            
+            # Extract path
+            path_bytes = byte_data[offset:offset + path_len]
+            offset += path_len
+            
+            # Remaining data is payload
+            payload = byte_data[offset:]
+            
+            # Extract payload version (bits 6-7)
+            payload_version = PayloadVersion((header >> 6) & 0x03)
+            
+            # Only accept VER_1 (version 0)
+            if payload_version != PayloadVersion.VER_1:
+                self.logger.warning(f"Encountered an unknown packet version. Version: {payload_version.value} RAW: {hex_data}")
+                return None
+
+            # Extract payload type (bits 2-5)
+            payload_type = PayloadType((header >> 2) & 0x0F)
+
+            # Convert path to list of hex values
+            path_hex = path_bytes.hex()
+            path_values = []
+            i = 0
+            while i < len(path_hex):
+                path_values.append(path_hex[i:i+2])
+                i += 2
             
             # Process path based on packet type
             path_info = self._process_packet_path(
@@ -694,42 +862,148 @@ class MessageHandler:
                 payload_type
             )
             
-            # Extract transport codes if present
+            # Extract transport codes if present (only for TRANSPORT_FLOOD and TRANSPORT_DIRECT)
             transport_codes = None
-            if has_transport and len(byte_data) >= 3:
-                transport_bytes = byte_data[1:3]
+            if has_transport and len(byte_data) >= 5:  # header(1) + transport(4)
+                transport_bytes = byte_data[1:5]
                 transport_codes = {
                     'code1': int.from_bytes(transport_bytes[0:2], byteorder='little'),
+                    'code2': int.from_bytes(transport_bytes[2:4], byteorder='little'),
                     'hex': transport_bytes.hex()
                 }
             
             packet_info = {
                 'header': f"0x{header:02x}",
-                'route_type': route_type,
-                'route_type_name': self._get_route_type_name(route_type),
-                'payload_type': payload_type,
-                'payload_type_name': self.get_payload_type_name(payload_type),
-                'payload_version': payload_version,
+                # Raw values for backward compatibility
+                'route_type': route_type.value,
+                'route_type_name': route_type.name,
+                'payload_type': payload_type.value,
+                'payload_type_name': payload_type.name,
+                'payload_version': payload_version.value,
+                # Enum objects for improved type safety
+                'route_type_enum': route_type,
+                'payload_type_enum': payload_type,
+                'payload_version_enum': payload_version,
+                # Transport and path information
                 'has_transport_codes': has_transport,
                 'transport_codes': transport_codes,
-                'transport_size': transport_size,
+                'transport_size': 4 if has_transport else 0,
                 'path_len': path_len,
                 'path_info': path_info,
-                'path': path_info.get('path', []),  # For backward compatibility
-                'path_hex': path_bytes.hex(),
+                'path': path_values,  # For backward compatibility
+                'path_hex': path_hex,
                 'payload_hex': payload.hex(),
                 'payload_bytes': len(payload)
             }
             
-            self.logger.debug(f"Decoded packet: {packet_info.get('route_type_name')} {packet_info.get('payload_type_name')} - {packet_info.get('path_len')} hops")
+            self.logger.debug(f"Successfully decoded: route={packet_info.get('route_type_name')}, type={packet_info.get('payload_type_name')}")
             return packet_info
             
         except Exception as e:
-            self.logger.error(f"Error decoding packet '{raw_hex[:64]}...': {e}")
+            # Log as ERROR not DEBUG so we can see what's failing
+            self.logger.error(f"Error decoding packet (len={len(byte_data)}): {e}", exc_info=True)
+            self.logger.error(f"Failed packet hex: {hex_data}")
             return None
 
+    def parse_advert(self, payload):
+        """Parse advert payload - matches C++ AdvertDataHelpers.h implementation"""
+        try:
+            # Validate minimum payload size
+            if len(payload) < 101:
+                self.logger.error(f"ADVERT payload too short: {len(payload)} bytes")
+                return {}
+            
+            # advert header
+            pub_key = payload[0:32]
+            timestamp = int.from_bytes(payload[32:32+4], "little")
+            signature = payload[36:36+64]
+
+            # appdata - parse according to C++ AdvertDataParser
+            app_data = payload[100:]
+            if len(app_data) == 0:
+                self.logger.error("ADVERT has no app data")
+                return {}
+            
+            flags_byte = app_data[0]
+            
+            # Log the full flag byte for debugging
+            if hasattr(self, 'debug') and self.debug:
+                self.logger.debug(f"ADVERT flags: 0x{flags_byte:02X} (binary: {flags_byte:08b})")
+            
+            # Create flags object with the full byte value
+            flags = AdvertFlags(flags_byte)
+            
+            advert = {
+                "public_key": pub_key.hex(),
+                "advert_time": timestamp,
+                "signature": signature.hex(),
+            }
+
+            # Extract type from lower 4 bits (matches C++ getType())
+            adv_type = flags_byte & 0x0F
+            if adv_type == AdvertFlags.ADV_TYPE_CHAT.value:
+                advert.update({"mode": DeviceRole.Companion.name})
+            elif adv_type == AdvertFlags.ADV_TYPE_REPEATER.value:
+                advert.update({"mode": DeviceRole.Repeater.name})
+            elif adv_type == AdvertFlags.ADV_TYPE_ROOM.value:
+                advert.update({"mode": DeviceRole.RoomServer.name})
+            elif adv_type == AdvertFlags.ADV_TYPE_SENSOR.value:
+                advert.update({"mode": "Sensor"})
+            else:
+                advert.update({"mode": f"Type{adv_type}"})
+
+            # Parse data according to C++ AdvertDataParser logic
+            i = 1  # Start after flags byte
+            
+            # Parse location data if present (matches C++ hasLatLon())
+            if AdvertFlags.ADV_LATLON_MASK in flags:
+                if len(app_data) < i + 8:
+                    self.logger.error(f"ADVERT with location flag too short: {len(app_data)} bytes")
+                    return advert
+                
+                lat = int.from_bytes(app_data[i:i+4], 'little', signed=True)
+                lon = int.from_bytes(app_data[i+4:i+8], 'little', signed=True)
+                advert.update({"lat": round(lat / 1000000.0, 6), "lon": round(lon / 1000000.0, 6)})
+                i += 8
+            
+            # Parse feat1 data if present
+            if AdvertFlags.ADV_FEAT1_MASK in flags:
+                if len(app_data) < i + 2:
+                    self.logger.error(f"ADVERT with feat1 flag too short: {len(app_data)} bytes")
+                    return advert
+                feat1 = int.from_bytes(app_data[i:i+2], 'little')
+                advert.update({"feat1": feat1})
+                i += 2
+            
+            # Parse feat2 data if present
+            if AdvertFlags.ADV_FEAT2_MASK in flags:
+                if len(app_data) < i + 2:
+                    self.logger.error(f"ADVERT with feat2 flag too short: {len(app_data)} bytes")
+                    return advert
+                feat2 = int.from_bytes(app_data[i:i+2], 'little')
+                advert.update({"feat2": feat2})
+                i += 2
+            
+            # Parse name data if present (matches C++ hasName())
+            if AdvertFlags.ADV_NAME_MASK in flags:
+                if len(app_data) >= i:
+                    name_len = len(app_data) - i
+                    if name_len > 0:
+                        try:
+                            # Decode name and handle potential null terminators
+                            name = app_data[i:].decode('utf-8', errors='ignore').rstrip('\x00')
+                            advert.update({"name": name})
+                        except Exception as e:
+                            self.logger.warning(f"Failed to decode ADVERT name: {e}")
+
+            return advert
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing ADVERT payload: {e}", exc_info=True)
+            return {}
+
     def _process_packet_path(self, path_bytes: bytes, payload: bytes, 
-                             route_type: int, payload_type: int) -> dict:
+                             route_type: RouteType, payload_type: PayloadType) -> dict:
         """
         Process the path field based on packet and route type
         
@@ -746,8 +1020,8 @@ class MessageHandler:
             # Convert path bytes to hex node IDs
             path_nodes = [f"{b:02x}" for b in path_bytes]
             
-            # Special handling for TRACE packets (0x09)
-            if payload_type == 0x09:  # PAYLOAD_TYPE_TRACE
+            # Special handling for TRACE packets
+            if payload_type == PayloadType.TRACE:
                 # In TRACE packets, path field contains SNR data
                 # Real path is in the payload after tag(4) + auth(4) + flags(1)
                 snr_values = []
@@ -772,7 +1046,7 @@ class MessageHandler:
                 }
             
             # Regular packets - determine path type based on route type
-            is_direct = route_type in [0x02, 0x03]  # DIRECT or TRANSPORT_DIRECT
+            is_direct = route_type in [RouteType.DIRECT, RouteType.TRANSPORT_DIRECT]
             
             if is_direct:
                 # Direct routing: path contains routing instructions
@@ -970,7 +1244,9 @@ class MessageHandler:
                 hops = payload.get('path_len', 255)
                 
                 # First try the packet decoder
-                packet_info = self.decode_meshcore_packet(raw_hex)
+                # Use payload field if available, otherwise use raw_hex
+                payload_hex = recent_rf_data.get('payload')
+                packet_info = self.decode_meshcore_packet(raw_hex, payload_hex)
                 if packet_info and packet_info.get('path_len') is not None:
                     # Valid packet decoded - use the results even if path is empty (0 hops = direct)
                     hops = packet_info.get('path_len', 0)
@@ -1037,10 +1313,21 @@ class MessageHandler:
                 hops = payload.get('path_len', 255)
                 path_string = None
             
+            # Get the full public key from contacts if available
+            sender_pubkey = payload.get('pubkey_prefix', '')
+            if hasattr(self.bot.meshcore, 'contacts') and self.bot.meshcore.contacts:
+                for contact_key, contact_data in self.bot.meshcore.contacts.items():
+                    if contact_data.get('public_key', '').startswith(sender_pubkey):
+                        # Use the full public key from the contact
+                        sender_pubkey = contact_data.get('public_key', sender_pubkey)
+                        self.logger.debug(f"Found full public key for {sender_id}: {sender_pubkey[:16]}...")
+                        break
+            
             # Convert to our message format
             message = MeshMessage(
                 content=message_content,  # Use the extracted message content
                 sender_id=sender_id,
+                sender_pubkey=sender_pubkey,
                 channel=channel_name,
                 timestamp=payload.get('sender_timestamp', 0),
                 snr=snr,
@@ -1256,6 +1543,32 @@ class MessageHandler:
     
     async def process_message(self, message: MeshMessage):
         """Process a received message"""
+        # Check if multitest is listening and notify it
+        if self.multitest_listener:
+            try:
+                self.multitest_listener.on_message_received(message)
+            except Exception as e:
+                self.logger.debug(f"Error notifying multitest listener: {e}")
+        
+        # Record all messages in stats database FIRST (before any filtering)
+        # This ensures we collect stats for all channels, not just monitored ones
+        if 'stats' in self.bot.command_manager.commands:
+            stats_command = self.bot.command_manager.commands['stats']
+            if stats_command:
+                stats_command.record_message(message)
+                stats_command.record_path_stats(message)
+        
+        # Check greeter command for public channel messages (BEFORE general message filtering)
+        # This allows greeter to work on its own configured channels even if not in monitor_channels
+        if 'greeter' in self.bot.command_manager.commands:
+            greeter_command = self.bot.command_manager.commands['greeter']
+            if greeter_command and greeter_command.should_execute(message):
+                try:
+                    await greeter_command.execute(message)
+                except Exception as e:
+                    self.logger.error(f"Error executing greeter command: {e}")
+        
+        # Now check if we should process this message for bot responses
         if not self.should_process_message(message):
             return
         
@@ -1273,7 +1586,21 @@ class MessageHandler:
         plugin_command_with_response_matched = False
         if keyword_matches:
             for keyword, response in keyword_matches:
-                self.logger.info(f"Keyword '{keyword}' matched, responding")
+                # Use translator if available for logging
+                if hasattr(self.bot, 'translator'):
+                    log_msg = self.bot.translator.translate('messages.keyword_matched', keyword=keyword)
+                    self.logger.info(log_msg)
+                else:
+                    self.logger.info(f"Keyword '{keyword}' matched, responding")
+                
+                # Record command execution in stats database
+                if 'stats' in self.bot.command_manager.commands:
+                    stats_command = self.bot.command_manager.commands['stats']
+                    if stats_command:
+                        stats_command.record_command(message, keyword, response is not None)
+                
+                # Note: Command data capture is handled in command_manager.py after execution
+                # to avoid duplicate messages to web viewer
                 
                 # Track if this is a help response
                 if keyword == 'help':
@@ -1310,8 +1637,21 @@ class MessageHandler:
             self.logger.debug(f"Ignoring message from banned user: {message.sender_id}")
             return False
         
-        # Check if channel is monitored
-        if not message.is_dm and message.channel and message.channel not in self.bot.command_manager.monitor_channels:
+        # Check if channel is monitored (with command override support)
+        if not message.is_dm and message.channel:
+            # Check if channel is in global monitor_channels
+            if message.channel in self.bot.command_manager.monitor_channels:
+                return True  # Global allow - all commands can work
+            
+            # Check if ANY command allows this channel (for selective access)
+            for command_name, command in self.bot.command_manager.commands.items():
+                if hasattr(command, 'is_channel_allowed') and callable(command.is_channel_allowed):
+                    if command.is_channel_allowed(message):
+                        # At least one command allows this channel
+                        self.logger.debug(f"Channel {message.channel} allowed by command '{command_name}' override")
+                        return True
+            
+            # Channel not in global list and no command allows it
             self.logger.debug(f"Channel {message.channel} not in monitored channels: {self.bot.command_manager.monitor_channels}")
             return False
         
@@ -1325,7 +1665,9 @@ class MessageHandler:
     async def handle_new_contact(self, event, metadata=None):
         """Handle NEW_CONTACT events for automatic contact management"""
         try:
-            self.logger.info(f"New contact discovered: {event}")
+            self.logger.info(f"🔍 NEW_CONTACT EVENT RECEIVED: {event}")
+            self.logger.info(f"📦 Event type: {type(event)}")
+            self.logger.info(f"📦 Event payload: {event.payload if hasattr(event, 'payload') else 'No payload'}")
             
             # Extract contact information from the event
             contact_data = event.payload if hasattr(event, 'payload') else event
@@ -1340,16 +1682,93 @@ class MessageHandler:
             
             self.logger.info(f"Processing new contact: {contact_name} (key: {public_key[:16]}...)")
             
-            # Check if this is a repeater (we don't want to auto-manage repeaters)
+            # Extract additional signal information from the event
+            signal_info = {}
+            if metadata:
+                signal_info.update(metadata)
+            
+            # Try to get signal data and packet_hash from recent RF data correlation
+            # Only collect RSSI/SNR for zero-hop (direct) advertisements
+            packet_hash = None
+            try:
+                # Look for recent RF data that might correlate with this contact
+                recent_rf_data = self.bot.message_handler.recent_rf_data
+                if recent_rf_data:
+                    # Find RF data that might match this contact's public key
+                    for rf_entry in recent_rf_data[-10:]:  # Check last 10 RF entries
+                        if 'routing_info' in rf_entry:
+                            routing_info = rf_entry['routing_info']
+                            
+                            # Extract packet_hash if available
+                            packet_hash = routing_info.get('packet_hash') or rf_entry.get('packet_hash')
+                            
+                            # Only collect signal data for direct (zero-hop) advertisements
+                            path_length = routing_info.get('path_length', 0)
+                            if path_length == 0:
+                                # Direct advertisement - collect signal data
+                                if 'snr' in rf_entry:
+                                    signal_info['snr'] = rf_entry['snr']
+                                if 'rssi' in rf_entry:
+                                    signal_info['rssi'] = rf_entry['rssi']
+                                signal_info['hops'] = 0
+                                self.logger.debug(f"📡 Direct advertisement - collecting signal data: SNR={rf_entry.get('snr')}, RSSI={rf_entry.get('rssi')}")
+                            else:
+                                # Multi-hop advertisement - only collect hop count, not signal data
+                                signal_info['hops'] = path_length
+                                self.logger.debug(f"📡 Multi-hop advertisement ({path_length} hops) - skipping signal data collection")
+                            break
+            except Exception as e:
+                self.logger.debug(f"Could not correlate RF data: {e}")
+            
+            # Log captured signal information
+            if signal_info:
+                self.logger.info(f"📡 Signal data: {signal_info}")
+            else:
+                self.logger.info(f"📡 No signal data available")
+            
+            # Check if this is a repeater or companion
             if hasattr(self.bot, 'repeater_manager'):
                 is_repeater = self.bot.repeater_manager._is_repeater_device(contact_data)
+                
                 if is_repeater:
-                    self.logger.info(f"New contact '{contact_name}' is a repeater - will be managed by repeater system")
-                    # Let the repeater manager handle it
-                    await self.bot.repeater_manager.scan_and_catalog_repeaters()
+                    # REPEATER: Track directly in SQLite database (no device contact list)
+                    self.logger.info(f"📡 New repeater discovered: {contact_name} - tracking in database only")
+                    
+                    # Track repeater in complete database with signal info
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info, packet_hash=packet_hash)
+                    
+                    # Check if auto-purge is needed (run after tracking to ensure data is captured)
+                    await self.bot.repeater_manager.check_and_auto_purge()
+                    
+                    self.logger.info(f"✅ Repeater {contact_name} tracked in database - not added to device contacts")
+                    return
+                else:
+                    # COMPANION: Track in database AND add to device contact list
+                    self.logger.info(f"👤 New companion discovered: {contact_name} - will be added to device contacts")
+                    
+                    # Track companion in complete database with signal info
+                    await self.bot.repeater_manager.track_contact_advertisement(contact_data, signal_info, packet_hash=packet_hash)
+                    
+                    # Add companion to device contact list
+                    try:
+                        result = await self.bot.meshcore.commands.add_contact(contact_data)
+                        if hasattr(result, 'type') and result.type.name == 'OK':
+                            self.logger.info(f"✅ Companion {contact_name} added to device contacts")
+                        else:
+                            self.logger.warning(f"❌ Failed to add companion {contact_name} to device: {result}")
+                    except Exception as e:
+                        self.logger.error(f"❌ Error adding companion {contact_name} to device: {e}")
+                    
+                    # Check if auto-purge is needed
+                    await self.bot.repeater_manager.check_and_auto_purge()
                     return
             
-            # For non-repeater contacts, handle based on auto_manage_contacts setting
+            # Fallback: Track in database for unknown contact types
+            if hasattr(self.bot, 'repeater_manager'):
+                await self.bot.repeater_manager.track_contact_advertisement(contact_data, packet_hash=packet_hash)
+                await self.bot.repeater_manager.check_and_auto_purge()
+            
+            # For unknown contact types, handle based on auto_manage_contacts setting
             if hasattr(self.bot, 'repeater_manager'):
                 auto_manage_setting = self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower()
                 

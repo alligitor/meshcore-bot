@@ -13,6 +13,7 @@ class MeshMessage:
     """Simplified message structure for our bot"""
     content: str
     sender_id: Optional[str] = None
+    sender_pubkey: Optional[str] = None
     channel: Optional[str] = None
     hops: Optional[int] = None
     path: Optional[str] = None
