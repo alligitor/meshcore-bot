@@ -19,6 +19,6 @@ cmd_output=$(grep -v Direct $input_file | grep EXTRAC | cut -f6- -d- |cut -f2- -
 
 while IFS=',' read -r -a nodes; do
     for ((i=0; i<${#nodes[@]}-1; i++)); do
-        echo "${nodes[i]},${nodes[i+1]}"
+        echo "${nodes[i]}-${nodes[i+1]}"
     done
 done <<< "$cmd_output"
