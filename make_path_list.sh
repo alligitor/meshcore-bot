@@ -15,10 +15,32 @@ input_file="$1"
 
 
 cmd_output=$(grep -v Direct $input_file | grep EXTRAC | cut -f6- -d- |cut -f2- -d: | cut -f1 -d\( | cut -f2 -d\ | sort -u | awk -F, '{ for (i=NF; i>0; i--) printf "%s%s", $i, (i>1?",":"\n") }')
+#cmd_output=$(cat $input_file)
+
+# Must be associative
+declare -A counts
 
 
 while IFS=',' read -r -a nodes; do
     for ((i=0; i<${#nodes[@]}-1; i++)); do
-        echo "${nodes[i]}-${nodes[i+1]}"
+        pair="${nodes[i]},${nodes[i+1]}"
+
+         # Get current count or default to 0
+#         echo "${nodes[i]}+${nodes[i+1]}"
+         current=${counts["$pair"]}
+         if [[ -z "$current" ]]; then
+             counts["$pair"]=1
+         else
+             counts["$pair"]=$(( current + 1 ))
+         fi
+#         echo "${nodes[i]}-${nodes[i+1]}"
     done
 done <<< "$cmd_output"
+
+# --- Output results --- 
+for pair in "${!counts[@]}"; do
+#    echo "$pair,${counts[$pair]}"
+     IFS=',' read -r left right <<< "$pair"
+     echo "$left-(${counts[$pair]})-$right"
+done
+
