@@ -176,12 +176,12 @@
     "commands": {
         "help": {
             "description": "Zeigt Befehle an. Nutze 'help <befehl>' für Details.",
-            "general": "**MeshCore Bot Hilfe**\n\n**Verfügbare Befehle:**\n{commands_list}",
-            "unknown": "**Unbekannter Befehl: '{command}'**\n\nVerfügbare Befehle:\n{available}",
-            "specific": "**Hilfe für '{command}':**\n{help_text}",
+            "general": "MeshCore Bot Hilfe\n\nVerfügbare Befehle:\n{commands_list}",
+            "unknown": "Unbekannter Befehl: '{command}'\n\nVerfügbare Befehle:\n{available}",
+            "specific": "Hilfe für '{command}':\n{help_text}",
             "no_help": "Keine Hilfe verfügbar",
-            "usage_examples": "\n**Verwendungsbeispiele:**\n• `help @` - Hilfe für @{string} Syntax\n• `help t` - Hilfe für t {string} Syntax\n• `help advert` - Hilfe für advert Befehl\n• `help test` - Hilfe für test Befehl\n• `help ping` - Hilfe für ping Befehl",
-            "custom_syntax": "\n**Spezielle Syntax:**\n• `t phrase` - Bestätigung mit Phrase (Kanäle & DMs)\n• `@{string}` - Bestätigung mit String (nur DMs)\n• `advert` - Flood-Anzeige senden (nur DMs, 1h Wartezeit)"
+            "usage_examples": "\nVerwendungsbeispiele:\n• `help @` - Hilfe für @{string} Syntax\n• `help t` - Hilfe für t {string} Syntax\n• `help advert` - Hilfe für advert Befehl\n• `help test` - Hilfe für test Befehl\n• `help ping` - Hilfe für ping Befehl",
+            "custom_syntax": "\nSpezielle Syntax:\n• `t phrase` - Bestätigung mit Phrase (Kanäle & DMs)\n• `@{string}` - Bestätigung mit String (nur DMs)\n• `advert` - Flood-Anzeige senden (nur DMs, 1h Wartezeit)"
         },
         "ping": {
             "description": "Antwortet auf 'ping' mit 'Pong!'",

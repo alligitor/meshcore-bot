@@ -14,6 +14,7 @@ from meshcore import EventType
 from .models import MeshMessage
 from .enums import PayloadType, PayloadVersion, RouteType, AdvertFlags, DeviceRole
 from .utils import calculate_packet_hash
+from .security_utils import sanitize_input
 
 
 class MessageHandler:
@@ -251,28 +252,36 @@ class MessageHandler:
             
             # Look up contact name from pubkey prefix
             sender_id = payload.get('pubkey_prefix', '')
+            sender_name = sender_id  # Default to sender_id
             if hasattr(self.bot.meshcore, 'contacts') and self.bot.meshcore.contacts:
                 for contact_key, contact_data in self.bot.meshcore.contacts.items():
                     if contact_data.get('public_key', '').startswith(sender_id):
                         # Use the contact name if available, otherwise use adv_name
                         contact_name = contact_data.get('name', contact_data.get('adv_name', sender_id))
-                        sender_id = contact_name
+                        sender_name = contact_name
                         break
             
             # Get the full public key from contacts if available
             sender_pubkey = payload.get('pubkey_prefix', '')
+            sender_pubkey = sender_id  # Default to sender_id
             if hasattr(self.bot.meshcore, 'contacts') and self.bot.meshcore.contacts:
                 for contact_key, contact_data in self.bot.meshcore.contacts.items():
-                    if contact_data.get('public_key', '').startswith(sender_pubkey):
+                    if contact_data.get('public_key', '').startswith(sender_id):
                         # Use the full public key from the contact
-                        sender_pubkey = contact_data.get('public_key', sender_pubkey)
-                        self.logger.debug(f"Found full public key for {sender_id}: {sender_pubkey[:16]}...")
+                        sender_pubkey = contact_data.get('public_key', sender_id)
+                        self.logger.debug(f"Found full public key for {sender_name}: {sender_pubkey[:16]}...")
                         break
+            
+            # Sanitize message content to prevent injection attacks
+            # Note: Firmware enforces 150-char limit at hardware level, so we disable length check
+            # but still strip control characters for security
+            message_content = payload.get('text', '')
+            message_content = sanitize_input(message_content, max_length=None, strip_controls=True)
             
             # Convert to our message format
             message = MeshMessage(
-                content=payload.get('text', ''),
-                sender_id=sender_id,
+                content=message_content,
+                sender_id=sender_name,
                 sender_pubkey=sender_pubkey,
                 is_dm=True,
                 timestamp=timestamp,
@@ -398,12 +407,41 @@ class MessageHandler:
                 if 'hops' in packet_info:
                     signal_info['hops'] = packet_info['hops']
                 
-                # Extract packet_hash if available (from routing_info or packet_info)
+                # Extract packet_hash and path information if available (from routing_info or packet_info)
                 packet_hash = None
+                out_path = ''
+                out_path_len = -1
+                
                 if 'routing_info' in packet_info and packet_info['routing_info']:
-                    packet_hash = packet_info['routing_info'].get('packet_hash')
+                    routing_info = packet_info['routing_info']
+                    packet_hash = routing_info.get('packet_hash')
+                    # Extract path information from routing_info
+                    path_hex = routing_info.get('path_hex', '')
+                    path_length = routing_info.get('path_length', 0)
+                    if path_hex and path_length > 0:
+                        out_path = path_hex
+                        out_path_len = path_length
+                    elif path_length == 0:
+                        # Direct connection
+                        out_path = ''
+                        out_path_len = 0
                 elif 'packet_hash' in packet_info:
                     packet_hash = packet_info['packet_hash']
+                
+                # Also check packet_info directly for path information (fallback)
+                if out_path_len == -1:
+                    if 'path_hex' in packet_info:
+                        out_path = packet_info.get('path_hex', '')
+                        out_path_len = packet_info.get('path_len', -1)
+                    elif 'path_len' in packet_info:
+                        out_path_len = packet_info.get('path_len', -1)
+                        if out_path_len == 0:
+                            out_path = ''
+                
+                # Add path information to advert_data so it gets saved to the database
+                if out_path_len >= 0:
+                    advert_data['out_path'] = out_path
+                    advert_data['out_path_len'] = out_path_len
                 
                 # Track this advertisement in the complete database
                 if hasattr(self.bot, 'repeater_manager'):
@@ -1562,9 +1600,29 @@ class MessageHandler:
         # This allows greeter to work on its own configured channels even if not in monitor_channels
         if 'greeter' in self.bot.command_manager.commands:
             greeter_command = self.bot.command_manager.commands['greeter']
+            # First, check if this message should cancel a pending greeting (human greeting detection)
+            if greeter_command:
+                greeter_command.check_message_for_human_greeting(message)
+            # Then check if we should greet this user
             if greeter_command and greeter_command.should_execute(message):
                 try:
-                    await greeter_command.execute(message)
+                    success = await greeter_command.execute(message)
+                    
+                    # Small delay to ensure send_response has completed
+                    await asyncio.sleep(0.1)
+                    
+                    # Determine if a response was sent
+                    response_sent = False
+                    if hasattr(greeter_command, 'last_response') and greeter_command.last_response:
+                        response_sent = True
+                    elif hasattr(self.bot.command_manager, '_last_response') and self.bot.command_manager._last_response:
+                        response_sent = True
+                    
+                    # Record command execution in stats database
+                    if 'stats' in self.bot.command_manager.commands:
+                        stats_command = self.bot.command_manager.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, 'greeter', response_sent)
                 except Exception as e:
                     self.logger.error(f"Error executing greeter command: {e}")
         
@@ -1593,15 +1651,6 @@ class MessageHandler:
                 else:
                     self.logger.info(f"Keyword '{keyword}' matched, responding")
                 
-                # Record command execution in stats database
-                if 'stats' in self.bot.command_manager.commands:
-                    stats_command = self.bot.command_manager.commands['stats']
-                    if stats_command:
-                        stats_command.record_command(message, keyword, response is not None)
-                
-                # Note: Command data capture is handled in command_manager.py after execution
-                # to avoid duplicate messages to web viewer
-                
                 # Track if this is a help response
                 if keyword == 'help':
                     help_response_sent = True
@@ -1611,8 +1660,20 @@ class MessageHandler:
                     plugin_command_with_response_matched = True
                 
                 # Skip commands that handle their own responses (response is None)
+                # These will be recorded when they execute via execute_commands
                 if response is None:
                     continue
+                
+                # Record command execution in stats database for keyword-matched commands with responses
+                # Commands without responses (response is None) are recorded in execute_commands to avoid double-counting
+                if 'stats' in self.bot.command_manager.commands:
+                    stats_command = self.bot.command_manager.commands['stats']
+                    if stats_command:
+                        # response is not None here, so we know a response will be sent
+                        stats_command.record_command(message, keyword, True)
+                
+                # Note: Command data capture is handled in command_manager.py after execution
+                # to avoid duplicate messages to web viewer
                 
                 # Send response
                 if message.is_dm:
@@ -1687,7 +1748,7 @@ class MessageHandler:
             if metadata:
                 signal_info.update(metadata)
             
-            # Try to get signal data and packet_hash from recent RF data correlation
+            # Try to get signal data, packet_hash, and path information from recent RF data correlation
             # Only collect RSSI/SNR for zero-hop (direct) advertisements
             packet_hash = None
             try:
@@ -1702,8 +1763,20 @@ class MessageHandler:
                             # Extract packet_hash if available
                             packet_hash = routing_info.get('packet_hash') or rf_entry.get('packet_hash')
                             
-                            # Only collect signal data for direct (zero-hop) advertisements
+                            # Extract path information from routing_info
+                            path_hex = routing_info.get('path_hex', '')
                             path_length = routing_info.get('path_length', 0)
+                            
+                            # Add path information to contact_data if not already present
+                            if 'out_path' not in contact_data or not contact_data.get('out_path'):
+                                if path_hex and path_length > 0:
+                                    contact_data['out_path'] = path_hex
+                                    contact_data['out_path_len'] = path_length
+                                elif path_length == 0:
+                                    contact_data['out_path'] = ''
+                                    contact_data['out_path_len'] = 0
+                            
+                            # Only collect signal data for direct (zero-hop) advertisements
                             if path_length == 0:
                                 # Direct advertisement - collect signal data
                                 if 'snr' in rf_entry:

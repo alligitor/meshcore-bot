@@ -146,6 +146,7 @@ class AlertCommand(BaseCommand):
     description = "Get active emergency incidents (usage: alert seattle, alert 98258, alert 178th seattle, alert seattle all)"
     category = "emergency"
     cooldown_seconds = 10  # 10 second cooldown to prevent API abuse
+    requires_internet = True  # Requires internet access for PulsePoint API
     
     def __init__(self, bot):
         super().__init__(bot)

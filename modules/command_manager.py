@@ -15,6 +15,7 @@ from meshcore import EventType
 from .models import MeshMessage
 from .plugin_loader import PluginLoader
 from .commands.base_command import BaseCommand
+from .utils import check_internet_connectivity_async
 
 
 class CommandManager:
@@ -33,6 +34,11 @@ class CommandManager:
         # Initialize plugin loader and load all plugins
         self.plugin_loader = PluginLoader(bot)
         self.commands = self.plugin_loader.load_all_plugins()
+        
+        # Cache for internet connectivity status to avoid checking on every command
+        # Format: {'has_internet': bool, 'timestamp': float}
+        self._internet_status_cache = None
+        self._internet_cache_duration = 30  # Cache for 30 seconds
         
         self.logger.info(f"CommandManager initialized with {len(self.commands)} plugins")
     
@@ -175,6 +181,14 @@ class CommandManager:
                 if not command.can_execute(message):
                     continue  # Skip this command if it can't execute (wrong channel, cooldown, etc.)
                 
+                # Check network connectivity for commands that require internet
+                if command.requires_internet:
+                    has_internet = self._check_internet_cached()
+                    if not has_internet:
+                        self.logger.warning(f"Command '{command_name}' requires internet but network is unavailable")
+                        # Skip this command - don't add to matches
+                        continue
+                
                 # Get response format and generate response
                 response_format = command.get_response_format()
                 if response_format:
@@ -205,7 +219,24 @@ class CommandManager:
     
     async def handle_advert_command(self, message: MeshMessage):
         """Handle the advert command from DM"""
-        await self.commands['advert'].execute(message)
+        command = self.commands['advert']
+        success = await command.execute(message)
+        
+        # Small delay to ensure send_response has completed
+        await asyncio.sleep(0.1)
+        
+        # Determine if a response was sent
+        response_sent = False
+        if hasattr(command, 'last_response') and command.last_response:
+            response_sent = True
+        elif hasattr(self, '_last_response') and self._last_response:
+            response_sent = True
+        
+        # Record command execution in stats database
+        if 'stats' in self.commands:
+            stats_command = self.commands['stats']
+            if stats_command:
+                stats_command.record_command(message, 'advert', response_sent)
     
     async def send_dm(self, recipient_id: str, content: str) -> bool:
         """Send a direct message using meshcore-cli command"""
@@ -215,7 +246,10 @@ class CommandManager:
         # Check user rate limiter (prevents spam from users)
         if not self.bot.rate_limiter.can_send():
             wait_time = self.bot.rate_limiter.time_until_next()
-            self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
+            # Only log warning if there's a meaningful wait time (> 0.1 seconds)
+            # This avoids misleading "Wait 0.0 seconds" messages from timing edge cases
+            if wait_time > 0.1:
+                self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
             return False
         
         # Wait for bot TX rate limiter (prevents network overload)
@@ -308,7 +342,10 @@ class CommandManager:
         # Check user rate limiter (prevents spam from users)
         if not self.bot.rate_limiter.can_send():
             wait_time = self.bot.rate_limiter.time_until_next()
-            self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
+            # Only log warning if there's a meaningful wait time (> 0.1 seconds)
+            # This avoids misleading "Wait 0.0 seconds" messages from timing edge cases
+            if wait_time > 0.1:
+                self.logger.warning(f"Rate limited. Wait {wait_time:.1f} seconds")
             return False
         
         # Wait for bot TX rate limiter (prevents network overload)
@@ -528,6 +565,7 @@ class CommandManager:
                 
                 # Check if command can execute (cooldown, DM requirements, etc.)
                 if not command.can_execute_now(message):
+                    response_sent = False
                     # For DM-only commands in public channels, only show error if channel is allowed
                     # (i.e., channel is in monitor_channels or command's allowed_channels)
                     # This prevents prompting users in channels where the command shouldn't work at all
@@ -536,10 +574,12 @@ class CommandManager:
                         if command.is_channel_allowed(message):
                             error_msg = command.translate('errors.dm_only', command=command_name)
                             await self.send_response(message, error_msg)
+                            response_sent = True
                         # Otherwise, silently ignore (channel not configured for this command)
                     elif command.requires_admin_access():
                         error_msg = command.translate('errors.access_denied', command=command_name)
                         await self.send_response(message, error_msg)
+                        response_sent = True
                     elif hasattr(command, 'get_remaining_cooldown') and callable(command.get_remaining_cooldown):
                         # Check if it's the per-user version (takes user_id parameter)
                         import inspect
@@ -552,7 +592,34 @@ class CommandManager:
                         if remaining > 0:
                             error_msg = command.translate('errors.cooldown', command=command_name, seconds=remaining)
                             await self.send_response(message, error_msg)
+                            response_sent = True
+                    
+                    # Record command execution in stats database (even if it failed checks)
+                    if 'stats' in self.commands:
+                        stats_command = self.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, command_name, response_sent)
+                    
                     return
+                
+                # Check network connectivity for commands that require internet
+                if command.requires_internet:
+                    has_internet = await self._check_internet_cached_async()
+                    if not has_internet:
+                        self.logger.warning(f"Command '{command_name}' requires internet but network is unavailable")
+                        # Try to get translated error message, fallback to default
+                        error_msg = command.translate('errors.no_internet', command=command_name)
+                        # If translation returns the key itself (translation not found), use fallback
+                        if error_msg == 'errors.no_internet':
+                            error_msg = f"{command_name} unavailable: No internet connection available"
+                        await self.send_response(message, error_msg)
+                        
+                        # Record command execution in stats database (error response was sent)
+                        if 'stats' in self.commands:
+                            stats_command = self.commands['stats']
+                            if stats_command:
+                                stats_command.record_command(message, command_name, True)
+                        return
                 
                 try:
                     # Record execution time for cooldown tracking
@@ -567,22 +634,33 @@ class CommandManager:
                     # Execute the command
                     success = await command.execute(message)
                     
-                    # Capture command data for web viewer (with small delay to ensure response is set)
+                    # Small delay to ensure send_response has completed
+                    await asyncio.sleep(0.1)
+                    
+                    # Determine if a response was sent by checking response tracking
+                    response_sent = False
+                    response = None
+                    if hasattr(command, 'last_response') and command.last_response:
+                        response = command.last_response
+                        response_sent = True
+                    elif hasattr(self, '_last_response') and self._last_response:
+                        response = self._last_response
+                        response_sent = True
+                    
+                    # Record command execution in stats database
+                    if 'stats' in self.commands:
+                        stats_command = self.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, command_name, response_sent)
+                    
+                    # Capture command data for web viewer
                     if (hasattr(self.bot, 'web_viewer_integration') and 
                         self.bot.web_viewer_integration and 
                         self.bot.web_viewer_integration.bot_integration):
                         try:
-                            # Small delay to ensure send_response has completed
-                            await asyncio.sleep(0.1)
-                            
-                            # Get the response that was sent (if any)
-                            # Prioritize command.last_response (full response) over _last_response (may be split)
-                            # This ensures commands like path that split messages still show full response in webviewer
-                            response = "Command executed"  # Default response
-                            if hasattr(command, 'last_response') and command.last_response:
-                                response = command.last_response
-                            elif hasattr(self, '_last_response') and self._last_response:
-                                response = self._last_response
+                            # Use the response we found, or default
+                            if response is None:
+                                response = "Command executed"
                             
                             self.bot.web_viewer_integration.bot_integration.capture_command(
                                 message, command_name, response, success if success is not None else True
@@ -596,6 +674,12 @@ class CommandManager:
                     error_msg = command.translate('errors.execution_error', command=command_name, error=str(e))
                     await self.send_response(message, error_msg)
                     
+                    # Record command execution in stats database (error response was sent)
+                    if 'stats' in self.commands:
+                        stats_command = self.commands['stats']
+                        if stats_command:
+                            stats_command.record_command(message, command_name, True)  # Error message counts as response
+                    
                     # Capture failed command for web viewer
                     if (hasattr(self.bot, 'web_viewer_integration') and 
                         self.bot.web_viewer_integration and 
@@ -607,6 +691,63 @@ class CommandManager:
                         except Exception as capture_error:
                             self.logger.debug(f"Failed to capture failed command data: {capture_error}")
                 return
+    
+    def _check_internet_cached(self) -> bool:
+        """
+        Check internet connectivity with caching to avoid checking on every command.
+        Uses synchronous check for keyword matching.
+        
+        Returns:
+            True if internet is available, False otherwise
+        """
+        current_time = time.time()
+        
+        # Check if we have a valid cached result
+        if self._internet_status_cache is not None:
+            cache_age = current_time - self._internet_status_cache['timestamp']
+            if cache_age < self._internet_cache_duration:
+                # Return cached result
+                return self._internet_status_cache['has_internet']
+        
+        # Cache expired or doesn't exist - perform actual check
+        from .utils import check_internet_connectivity
+        has_internet = check_internet_connectivity()
+        
+        # Update cache
+        self._internet_status_cache = {
+            'has_internet': has_internet,
+            'timestamp': current_time
+        }
+        
+        return has_internet
+    
+    async def _check_internet_cached_async(self) -> bool:
+        """
+        Check internet connectivity with caching to avoid checking on every command.
+        Uses async check for command execution.
+        
+        Returns:
+            True if internet is available, False otherwise
+        """
+        current_time = time.time()
+        
+        # Check if we have a valid cached result
+        if self._internet_status_cache is not None:
+            cache_age = current_time - self._internet_status_cache['timestamp']
+            if cache_age < self._internet_cache_duration:
+                # Return cached result
+                return self._internet_status_cache['has_internet']
+        
+        # Cache expired or doesn't exist - perform actual check
+        has_internet = await check_internet_connectivity_async()
+        
+        # Update cache
+        self._internet_status_cache = {
+            'has_internet': has_internet,
+            'timestamp': current_time
+        }
+        
+        return has_internet
     
     def get_plugin_by_keyword(self, keyword: str) -> Optional[BaseCommand]:
         """Get a plugin by keyword"""

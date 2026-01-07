@@ -25,11 +25,16 @@ class PrefixCommand(BaseCommand):
     category = "meshcore_info"
     requires_dm = False
     cooldown_seconds = 2
+    requires_internet = False  # Will be set to True in __init__ if API is configured
     
     def __init__(self, bot):
         super().__init__(bot)
         # Get API URL from config, no fallback to regional API
         self.api_url = self.bot.config.get('External_Data', 'repeater_prefix_api_url', fallback="")
+        
+        # Only require internet if API is configured
+        if self.api_url and self.api_url.strip():
+            self.requires_internet = True
         self.cache_data = {}
         self.cache_timestamp = 0
         # Get cache duration from config, with fallback to 1 hour
@@ -43,7 +48,7 @@ class PrefixCommand(BaseCommand):
         
         # Get time window settings from config
         self.prefix_heard_days = self.bot.config.getint('Prefix_Command', 'prefix_heard_days', fallback=7)
-        self.prefix_free_days = self.bot.config.getint('Prefix_Command', 'prefix_free_days', fallback=30)
+        self.prefix_free_days = self.bot.config.getint('Prefix_Command', 'prefix_free_days', fallback=7)
         
         # Get bot location and radius filter settings
         self.bot_latitude = self.bot.config.getfloat('Bot', 'bot_latitude', fallback=None)
@@ -441,68 +446,69 @@ class PrefixCommand(BaseCommand):
             - has_data: True if we have valid data (from cache or database), False otherwise
         """
         try:
-            # Get all used prefixes from both API cache and database
+            # Get all used prefixes - prioritize API cache over database
             used_prefixes = set()
             has_data = False
             
-            # Always try to refresh cache if it's empty or stale
+            # Always try to refresh cache if it's empty or stale (only if API URL is configured)
             current_time = time.time()
-            if not self.cache_data or current_time - self.cache_timestamp > self.cache_duration:
-                self.logger.info("Refreshing cache for free prefixes lookup")
-                await self.refresh_cache()
+            if self.api_url and self.api_url.strip():
+                if not self.cache_data or current_time - self.cache_timestamp > self.cache_duration:
+                    self.logger.info("Refreshing cache for free prefixes lookup")
+                    await self.refresh_cache()
             
-            # Add prefixes from API cache
-            if self.cache_data:
+            # Prioritize API cache - if we have API data and API is configured, use it exclusively
+            # The API is the authoritative source and matches what MeshCore Analyzer shows
+            if self.api_url and self.api_url.strip() and self.cache_data:
                 for prefix in self.cache_data.keys():
                     used_prefixes.add(prefix.upper())
                 has_data = True
                 self.logger.info(f"Found {len(used_prefixes)} used prefixes from API cache")
-            
-            # Add prefixes from database (filtered by prefix_free_days and distance if enabled)
-            db_prefixes_found = False
-            try:
-                # If distance filtering is enabled, we need location data to filter
-                if self.distance_filtering_enabled:
-                    query = f'''
-                        SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix, latitude, longitude
-                        FROM complete_contact_tracking 
-                        WHERE role IN ('repeater', 'roomserver')
-                        AND LENGTH(public_key) >= 2
-                        AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
-                    '''
-                else:
-                    query = f'''
-                        SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
-                        FROM complete_contact_tracking 
-                        WHERE role IN ('repeater', 'roomserver')
-                        AND LENGTH(public_key) >= 2
-                        AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
-                    '''
-                results = self.bot.db_manager.execute_query(query)
-                for row in results:
-                    prefix = row['prefix'].upper()
-                    if len(prefix) == 2:
-                        # Filter by distance if enabled
-                        if self.distance_filtering_enabled:
-                            # Check if repeater has valid coordinates
-                            if (row.get('latitude') is not None and 
-                                row.get('longitude') is not None and
-                                not (row.get('latitude') == 0.0 and row.get('longitude') == 0.0)):
-                                distance = calculate_distance(
-                                    self.bot_latitude, self.bot_longitude,
-                                    row['latitude'], row['longitude']
-                                )
-                                # Skip repeaters beyond maximum range
-                                if distance > self.max_prefix_range:
-                                    continue
-                            # Note: Repeaters without coordinates are included in used prefixes (conservative approach)
-                        used_prefixes.add(prefix)
-                        db_prefixes_found = True
-                if db_prefixes_found:
+            else:
+                # Fallback to database only if API cache is unavailable
+                # When using database, use prefix_free_days to filter which prefixes are considered "used"
+                # Only repeaters heard within prefix_free_days will be considered as using a prefix
+                try:
+                    # If distance filtering is enabled, we need location data to filter
+                    if self.distance_filtering_enabled:
+                        query = f'''
+                            SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix, latitude, longitude
+                            FROM complete_contact_tracking 
+                            WHERE role IN ('repeater', 'roomserver')
+                            AND LENGTH(public_key) >= 2
+                            AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
+                        '''
+                    else:
+                        query = f'''
+                            SELECT DISTINCT SUBSTR(public_key, 1, 2) as prefix
+                            FROM complete_contact_tracking 
+                            WHERE role IN ('repeater', 'roomserver')
+                            AND LENGTH(public_key) >= 2
+                            AND last_heard >= datetime('now', '-{self.prefix_free_days} days')
+                        '''
+                    results = self.bot.db_manager.execute_query(query)
+                    for row in results:
+                        prefix = row['prefix'].upper()
+                        if len(prefix) == 2:
+                            # Filter by distance if enabled
+                            if self.distance_filtering_enabled:
+                                # Check if repeater has valid coordinates
+                                if (row.get('latitude') is not None and 
+                                    row.get('longitude') is not None and
+                                    not (row.get('latitude') == 0.0 and row.get('longitude') == 0.0)):
+                                    distance = calculate_distance(
+                                        self.bot_latitude, self.bot_longitude,
+                                        row['latitude'], row['longitude']
+                                    )
+                                    # Skip repeaters beyond maximum range
+                                    if distance > self.max_prefix_range:
+                                        continue
+                                # Note: Repeaters without coordinates are included in used prefixes (conservative approach)
+                            used_prefixes.add(prefix)
                     has_data = True
-                    self.logger.info(f"Found additional prefixes from database")
-            except Exception as e:
-                self.logger.warning(f"Error getting prefixes from database: {e}")
+                    self.logger.info(f"Found {len(used_prefixes)} used prefixes from database (fallback)")
+                except Exception as e:
+                    self.logger.warning(f"Error getting prefixes from database: {e}")
             
             # If we don't have any data from either source, return early
             if not has_data:

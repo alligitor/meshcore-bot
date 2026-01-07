@@ -66,9 +66,11 @@
     <!-- New Devices -->
     <div class="col-md-3">
         <div class="card h-100">
-            <div class="card-header">
-                <i class="fas fa-plus-circle"></i> New Devices
-                <small class="text-muted d-block" style="font-size: 0.75em; font-weight: normal; margin-top: 2px;">Last 7 days</small>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>
+                    <i class="fas fa-plus-circle"></i> New Devices
+                </span>
+                <small class="text-muted" style="font-size: 0.75em; font-weight: normal;">Last 7 days</small>
             </div>
             <div class="card-body d-flex align-items-center">
                 <div class="row text-center w-100">
@@ -404,7 +406,7 @@ class ModernContactsManager {
                 <td>${this.formatLocation(contact)}</td>
                 <td>${this.formatDistance(contact)}</td>
                 <td>${this.formatSignal(contact)}</td>
-                <td><span class="badge bg-primary">${contact.hop_count || 0}</span></td>
+                <td>${this.formatHops(contact)}</td>
                 <td>${this.formatTimestamp(contact.first_heard)}</td>
                 <td>${this.formatTimeAgo(contact.last_seen)}</td>
                 <td><span class="badge bg-success">${contact.advert_count || 0}</span></td>
@@ -432,6 +434,9 @@ class ModernContactsManager {
                 </td>
             </tr>
         `).join('');
+        
+        // Setup path tooltips after rendering
+        this.setupPathTooltips();
     }
     
     updateStatistics() {
@@ -866,6 +871,170 @@ class ModernContactsManager {
         }
     }
     
+    formatHops(contact) {
+        const hopCount = contact.hop_count || 0;
+        const outPath = contact.out_path || '';
+        const outPathLen = contact.out_path_len || -1;
+        
+        // Escape the path for use in HTML attributes
+        const escapedPath = outPath.replace(/"/g, '&quot;');
+        const escapedUserId = contact.user_id.replace(/"/g, '&quot;');
+        
+        // If we have path data, add tooltip functionality
+        if (outPath && outPathLen > 0) {
+            // Create a unique ID for this tooltip
+            const tooltipId = `hops-tooltip-${contact.user_id.substring(0, 16).replace(/[^a-zA-Z0-9]/g, '_')}`;
+            return `<span class="badge bg-primary path-badge" 
+                          id="${tooltipId}" 
+                          data-path-hex="${escapedPath}"
+                          data-path-len="${outPathLen}"
+                          data-user-id="${escapedUserId}"
+                          style="cursor: help; position: relative;">
+                      ${hopCount}
+                    </span>`;
+        } else if (outPathLen === 0) {
+            // Direct connection
+            return `<span class="badge bg-primary" 
+                          data-bs-toggle="tooltip" 
+                          data-bs-placement="top"
+                          title="Direct connection (0 hops)">
+                      ${hopCount}
+                    </span>`;
+        } else {
+            // No path data
+            return `<span class="badge bg-primary">${hopCount}</span>`;
+        }
+    }
+    
+    setupPathTooltips() {
+        // Create a global custom tooltip element if it doesn't exist
+        let customTooltip = document.getElementById('custom-path-tooltip');
+        if (!customTooltip) {
+            customTooltip = document.createElement('div');
+            customTooltip.id = 'custom-path-tooltip';
+            customTooltip.className = 'custom-path-tooltip';
+            customTooltip.style.cssText = 'position: absolute; z-index: 1070; display: none; padding: 0.5rem; background-color: rgba(0, 0, 0, 0.9); color: white; border-radius: 0.25rem; font-size: 0.875rem; max-width: 300px; pointer-events: none;';
+            document.body.appendChild(customTooltip);
+        }
+        
+        // Setup event listeners for path tooltips after rendering
+        document.querySelectorAll('.path-badge').forEach(badge => {
+            const pathHex = badge.dataset.pathHex;
+            if (!pathHex) return;
+            
+            // Check if tooltip is already set up
+            if (badge.dataset.tooltipSetup === 'true') return;
+            
+            badge.dataset.tooltipSetup = 'true';
+            
+            // Load path data on first hover
+            let pathLoaded = false;
+            let pathContent = 'Loading path...';
+            
+            const showTooltip = (event) => {
+                const rect = badge.getBoundingClientRect();
+                customTooltip.innerHTML = pathContent;
+                customTooltip.style.display = 'block';
+                customTooltip.style.left = (rect.left + rect.width / 2 - customTooltip.offsetWidth / 2) + 'px';
+                customTooltip.style.top = (rect.top - customTooltip.offsetHeight - 8) + 'px';
+                
+                // Adjust if tooltip goes off screen
+                const tooltipRect = customTooltip.getBoundingClientRect();
+                if (tooltipRect.left < 10) {
+                    customTooltip.style.left = '10px';
+                }
+                if (tooltipRect.right > window.innerWidth - 10) {
+                    customTooltip.style.left = (window.innerWidth - customTooltip.offsetWidth - 10) + 'px';
+                }
+                if (tooltipRect.top < 10) {
+                    customTooltip.style.top = (rect.bottom + 8) + 'px';
+                }
+            };
+            
+            const hideTooltip = () => {
+                customTooltip.style.display = 'none';
+            };
+            
+            badge.addEventListener('mouseenter', async (event) => {
+                showTooltip(event);
+                
+                // If path is already loaded, we're done
+                if (pathLoaded) {
+                    return;
+                }
+                
+                // If we're already loading, don't start another request
+                if (badge.dataset.loading === 'true') {
+                    return;
+                }
+                
+                try {
+                    badge.dataset.loading = 'true';
+                    
+                    // Fetch decoded path from API
+                    const response = await fetch('/api/decode-path', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            path_hex: pathHex
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!response.ok || !data.success) {
+                        throw new Error(data.error || 'Failed to decode path');
+                    }
+                    
+                    if (!data.path || !Array.isArray(data.path)) {
+                        throw new Error('Invalid path data format');
+                    }
+                    
+                    // Format the path response
+                    const pathLines = data.path.map(node => {
+                        if (node.found) {
+                            // Escape HTML to prevent XSS
+                            const name = this.escapeHtml(node.name);
+                            // Add ❓ emoji if this is a geographic guess (collision)
+                            const guessIndicator = node.geographic_guess ? ' ❓' : '';
+                            return `${node.node_id}: ${name}${guessIndicator}`;
+                        } else {
+                            return `${node.node_id}: Unknown`;
+                        }
+                    });
+                    
+                    pathContent = pathLines.length > 0 ? pathLines.join('<br>') : 'No path data';
+                    pathLoaded = true;
+                    badge.dataset.loading = 'false';
+                    
+                    // Update tooltip content if still hovering
+                    if (badge.matches(':hover')) {
+                        showTooltip(event);
+                    }
+                    
+                } catch (error) {
+                    console.error('Error loading path tooltip:', error);
+                    pathContent = 'Error loading path: ' + error.message;
+                    badge.dataset.loading = 'false';
+                    
+                    // Update tooltip content if still hovering
+                    if (badge.matches(':hover')) {
+                        showTooltip(event);
+                    }
+                }
+            });
+            
+            badge.addEventListener('mouseleave', hideTooltip);
+            badge.addEventListener('mousemove', (event) => {
+                if (badge.matches(':hover')) {
+                    showTooltip(event);
+                }
+            });
+        });
+    }
+    
     formatTimestamp(timestamp) {
         if (!timestamp) return '<span class="text-muted">Never</span>';
         
@@ -918,7 +1087,7 @@ class ModernContactsManager {
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
-                            <pre class="bg-light p-3 rounded">${JSON.stringify(contact.raw_advert_data_parsed || contact.raw_advert_data || 'No advertisement data available', null, 2)}</pre>
+                            <pre class="bg-light p-3 rounded" style="background-color: var(--bg-secondary); color: var(--text-color);">${JSON.stringify(contact.raw_advert_data_parsed || contact.raw_advert_data || 'No advertisement data available', null, 2)}</pre>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -1305,6 +1474,84 @@ document.addEventListener('DOMContentLoaded', () => {
 .sort-active i {
     opacity: 1;
     color: #0d6efd !important;
+}
+
+/* Dark mode table styling with better contrast */
+[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(odd) > td {
+    background-color: #3a3a3a; /* Slightly lighter than even rows, but not too light */
+}
+
+[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(even) > td {
+    background-color: #2d2d2d; /* Darker gray (card-bg) */
+}
+
+[data-theme="dark"] .table-hover > tbody > tr:hover > td {
+    background-color: #404040 !important; /* Slightly lighter for hover, but maintains good contrast */
+}
+
+[data-theme="dark"] .table-dark {
+    background-color: var(--bg-tertiary);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .table-dark th {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .table td {
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+/* Ensure all text in table cells is light in dark mode */
+[data-theme="dark"] .table td,
+[data-theme="dark"] .table td * {
+    color: var(--text-color) !important;
+}
+
+/* Node names (strong tags) should be light and prominent */
+[data-theme="dark"] .table td strong {
+    color: #ffffff !important;
+    font-weight: 600;
+}
+
+/* Ensure small text is also light */
+[data-theme="dark"] .table td small {
+    color: var(--text-muted) !important;
+}
+
+/* Dark mode input group styling */
+[data-theme="dark"] .input-group-text {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .input-group .form-control {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .input-group .form-control:focus {
+    background-color: var(--bg-tertiary);
+    border-color: #007bff;
+    color: var(--text-color);
+    box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+}
+
+/* Custom path tooltip styling */
+.custom-path-tooltip {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    line-height: 1.5;
+}
+
+[data-theme="dark"] .custom-path-tooltip {
+    background-color: rgba(40, 40, 40, 0.95) !important;
+    color: var(--text-color) !important;
+    border: 1px solid var(--border-color);
 }
 </style>
 {% endblock %}

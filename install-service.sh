@@ -10,6 +10,11 @@
 #   4. Install and enable the service (systemd or launchd)
 #   5. Create a Python virtual environment with dependencies
 #
+# Usage:
+#   ./install-service.sh          # Normal installation (non-destructive if already installed)
+#   ./install-service.sh --upgrade # Upgrade mode (copies new files, updates dependencies)
+#   ./install-service.sh -u        # Short form of --upgrade
+#
 # Prerequisites:
 #   - Linux system with systemd OR macOS
 #   - Python 3.7+ installed
@@ -65,6 +70,36 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Parse command line arguments (before sudo check so help works)
+UPGRADE_MODE=false
+for arg in "$@"; do
+    case $arg in
+        --upgrade|-u)
+            UPGRADE_MODE=true
+            ;;
+        --help|-h)
+            echo "MeshCore Bot Service Installation Script"
+            echo ""
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --upgrade, -u    Upgrade mode: update files and dependencies"
+            echo "  --help, -h       Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0               # Normal installation (non-destructive if already installed)"
+            echo "  $0 --upgrade     # Upgrade existing installation"
+            echo "  $0 -u            # Short form of --upgrade"
+            exit 0
+            ;;
+        *)
+            echo "Error: Unknown option: $arg" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # Function to print section headers
 print_section() {
     echo ""
@@ -93,7 +128,12 @@ print_error() {
     echo -e "${RED}✗${NC}  $1"
 }
 
-print_section "MeshCore Bot Service Installer"
+if [[ "$UPGRADE_MODE" == true ]]; then
+    print_section "MeshCore Bot Service Upgrader"
+    print_info "Running in UPGRADE mode - will update files and dependencies"
+else
+    print_section "MeshCore Bot Service Installer"
+fi
 echo ""
 if [[ "$IS_MACOS" == true ]]; then
     print_info "Detected macOS - will install as launchd service"
@@ -218,31 +258,152 @@ print_section "Step 2: Creating Installation Directories"
 print_info "Creating directory structure for bot installation"
 # Create installation directory
 if [ -d "$INSTALL_DIR" ]; then
-    print_warning "Installation directory $INSTALL_DIR already exists"
-    print_info "Existing files will be backed up and replaced"
-    BACKUP_DIR="${INSTALL_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
-    mv "$INSTALL_DIR" "$BACKUP_DIR" 2>/dev/null || {
-        print_error "Could not backup existing installation. Please remove $INSTALL_DIR manually"
-        exit 1
-    }
-    print_success "Backed up existing installation to $BACKUP_DIR"
+    if [[ "$UPGRADE_MODE" == true ]]; then
+        print_info "Installation directory $INSTALL_DIR already exists"
+        print_info "Upgrade mode: will update files while preserving configuration"
+    else
+        print_warning "Installation directory $INSTALL_DIR already exists"
+        print_info "Non-destructive mode: will update files without removing existing installation"
+        print_info "Use --upgrade flag for explicit upgrade mode"
+    fi
+else
+    mkdir -p "$INSTALL_DIR"
+    print_success "Created installation directory: $INSTALL_DIR"
 fi
-mkdir -p "$INSTALL_DIR"
-print_success "Created installation directory: $INSTALL_DIR"
 
 # Create log directory
 mkdir -p "$LOG_DIR"
 print_success "Created log directory: $LOG_DIR"
 
 print_section "Step 3: Copying Bot Files"
-print_info "Copying all bot files to $INSTALL_DIR"
-print_info "This includes Python scripts, modules, configuration templates, and documentation"
-# Copy bot files to installation directory
-cp -r . "$INSTALL_DIR/" 2>/dev/null || {
+if [[ "$UPGRADE_MODE" == true ]]; then
+    print_info "Upgrading files in $INSTALL_DIR"
+    print_info "Only newer files will be copied, preserving existing configuration"
+else
+    print_info "Copying bot files to $INSTALL_DIR"
+    print_info "Existing files will be updated only if source is newer"
+fi
+
+# Function to copy files intelligently
+copy_files_smart() {
+    local source_dir="$1"
+    local dest_dir="$2"
+    local files_copied=0
+    local files_skipped=0
+    local files_updated=0
+    
+    # Use rsync if available (better for this use case)
+    if command -v rsync &> /dev/null; then
+        print_info "Using rsync for efficient file copying"
+        # Preserve config.ini if it exists
+        local preserve_config=""
+        if [ -f "$dest_dir/config.ini" ]; then
+            preserve_config="--exclude=config.ini"
+            print_info "Preserving existing config.ini (not overwriting)"
+        fi
+        
+        # Note: --update flag preserves files in alternatives/ if destination is newer or same
+        # This protects user's custom alternative commands while allowing updates to repository files
+        if [ -d "$dest_dir/modules/commands/alternatives" ]; then
+            print_info "Preserving existing alternative commands (only updating if source is newer)"
+        fi
+        
+        # Exclude patterns
+        rsync -a --update --exclude='.git' \
+              --exclude='__pycache__' \
+              --exclude='*.pyc' \
+              --exclude='*.pyo' \
+              --exclude='.DS_Store' \
+              --exclude='venv' \
+              --exclude='*.db' \
+              --exclude='*.db-shm' \
+              --exclude='*.db-wal' \
+              --exclude='*.log' \
+              --exclude='backups' \
+              $preserve_config \
+              "$source_dir/" "$dest_dir/" 2>/dev/null || {
+            print_warning "rsync had some issues, falling back to manual copy"
+        }
+        print_success "Files synchronized using rsync"
+        return 0
+    fi
+    
+    # Fallback: manual copy with find
+    print_info "Using manual file copy (consider installing rsync for better performance)"
+    
+    # Preserve alternatives directory if it exists
+    if [ -d "$dest_dir/modules/commands/alternatives" ]; then
+        print_info "Preserving existing alternative commands (not overwriting)"
+    fi
+    
+    # Copy files, preserving config.ini if it exists
+    while IFS= read -r file; do
+        local rel_path="${file#$source_dir/}"
+        local dest_file="$dest_dir/$rel_path"
+        local dest_dir_path="$(dirname "$dest_file")"
+        
+        # Skip excluded patterns
+        [[ "$rel_path" == *".git"* ]] && continue
+        [[ "$rel_path" == *"__pycache__"* ]] && continue
+        [[ "$rel_path" == *".pyc" ]] && continue
+        [[ "$rel_path" == *".pyo" ]] && continue
+        [[ "$rel_path" == *".DS_Store"* ]] && continue
+        [[ "$rel_path" == *"/venv/"* ]] && continue
+        [[ "$rel_path" == *".db" ]] && continue
+        [[ "$rel_path" == *".db-shm" ]] && continue
+        [[ "$rel_path" == *".db-wal" ]] && continue
+        [[ "$rel_path" == *".log" ]] && continue
+        [[ "$rel_path" == *"/backups/"* ]] && continue
+        
+        # Preserve alternatives directory - only update if source file is newer
+        if [[ "$rel_path" == "modules/commands/alternatives/"* ]] && [ -d "$dest_dir/modules/commands/alternatives" ]; then
+            if [ -f "$dest_file" ]; then
+                # File exists in destination - only update if source is newer
+                if [ "$file" -nt "$dest_file" ]; then
+                    # Source is newer, will update below
+                    :
+                else
+                    # Destination is same or newer - preserve user's version
+                    files_skipped=$((files_skipped + 1))
+                    continue
+                fi
+            fi
+            # File doesn't exist in destination, or source is newer - will copy below
+        fi
+        
+        # Create destination directory if needed
+        mkdir -p "$dest_dir_path"
+        
+        # Special handling for config.ini - preserve existing if it exists
+        if [[ "$rel_path" == "config.ini" ]] && [ -f "$dest_file" ]; then
+            files_skipped=$((files_skipped + 1))
+            continue
+        fi
+        
+        # Copy if destination doesn't exist or source is newer
+        if [ ! -f "$dest_file" ] || [ "$file" -nt "$dest_file" ]; then
+            if cp "$file" "$dest_file" 2>/dev/null; then
+                if [ -f "$dest_file" ]; then
+                    files_updated=$((files_updated + 1))
+                else
+                    files_copied=$((files_copied + 1))
+                fi
+            else
+                print_warning "Could not copy $rel_path"
+            fi
+        else
+            files_skipped=$((files_skipped + 1))
+        fi
+    done < <(find "$source_dir" -type f 2>/dev/null)
+    
+    print_success "File sync complete: $files_updated updated, $files_copied new, $files_skipped unchanged"
+}
+
+# Copy files using smart copy function
+copy_files_smart "$SCRIPT_DIR" "$INSTALL_DIR" || {
     print_error "Failed to copy files. Check permissions and disk space"
     exit 1
 }
-print_success "Copied bot files to $INSTALL_DIR"
 
 print_section "Step 4: Setting File Permissions"
 print_info "Configuring file ownership and permissions for security"
@@ -272,10 +433,14 @@ if [[ "$IS_MACOS" == true ]]; then
     mkdir -p "$LAUNCHD_DIR"
     
     # Update plist with actual installation paths and copy to LaunchDaemons
-    print_info "Updating plist file with installation paths"
-    # Use a more portable approach for path substitution
-    if command -v python3 &> /dev/null; then
-        python3 -c "
+    if [ -f "$LAUNCHD_DIR/$SERVICE_FILE" ] && [[ "$UPGRADE_MODE" != true ]]; then
+        print_info "Plist file already exists at $LAUNCHD_DIR/$SERVICE_FILE"
+        print_info "Skipping update (use --upgrade to update service configuration)"
+    else
+        print_info "Updating plist file with installation paths"
+        # Use a more portable approach for path substitution
+        if command -v python3 &> /dev/null; then
+            python3 -c "
 import sys
 import re
 with open('$SERVICE_FILE', 'r') as f:
@@ -285,11 +450,12 @@ content = content.replace('/usr/local/var/log/meshcore-bot', '$LOG_DIR')
 with open('$LAUNCHD_DIR/$SERVICE_FILE', 'w') as f:
     f.write(content)
 "
-    else
-        # Fallback to sed (works on both macOS and Linux)
-        sed "s|/usr/local/meshcore-bot|$INSTALL_DIR|g; s|/usr/local/var/log/meshcore-bot|$LOG_DIR|g" "$SERVICE_FILE" > "$LAUNCHD_DIR/$SERVICE_FILE"
+        else
+            # Fallback to sed (works on both macOS and Linux)
+            sed "s|/usr/local/meshcore-bot|$INSTALL_DIR|g; s|/usr/local/var/log/meshcore-bot|$LOG_DIR|g" "$SERVICE_FILE" > "$LAUNCHD_DIR/$SERVICE_FILE"
+        fi
+        print_success "Copied and configured plist file to $LAUNCHD_DIR/"
     fi
-    print_success "Copied and configured plist file to $LAUNCHD_DIR/"
     
     # Set ownership
     chown root:wheel "$LAUNCHD_DIR/$SERVICE_FILE"
@@ -297,46 +463,78 @@ with open('$LAUNCHD_DIR/$SERVICE_FILE', 'w') as f:
     print_success "Set plist permissions"
     
     print_section "Step 6: Loading Service"
-    print_info "Loading service into launchd"
-    # Unload if already loaded
-    launchctl list "$PLIST_NAME" &>/dev/null && launchctl unload "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || true
-    # Load the service
-    launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || {
-        print_error "Failed to load service. Check plist syntax and permissions."
-        exit 1
-    }
-    print_success "Service '$PLIST_NAME' loaded into launchd"
+    # Check if service is already loaded
+    if launchctl list "$PLIST_NAME" &>/dev/null; then
+        if [[ "$UPGRADE_MODE" == true ]]; then
+            print_info "Service already loaded - reloading in upgrade mode"
+            launchctl unload "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || true
+            launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || {
+                print_error "Failed to reload service. Check plist syntax and permissions."
+                exit 1
+            }
+            print_success "Service '$PLIST_NAME' reloaded in launchd"
+        else
+            print_info "Service '$PLIST_NAME' is already loaded"
+            print_info "Skipping reload (use --upgrade to reload service configuration)"
+        fi
+    else
+        print_info "Loading service into launchd"
+        launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || {
+            print_error "Failed to load service. Check plist syntax and permissions."
+            exit 1
+        }
+        print_success "Service '$PLIST_NAME' loaded into launchd"
+    fi
     print_info "Note: The service is loaded but not started yet. You'll start it after configuration."
 else
-    print_info "Installing systemd service file to enable automatic startup"
-    print_info "The service will be configured to start on boot and restart on failure"
-    # Copy service file to systemd directory
-    cp "$SERVICE_FILE" "$SYSTEMD_DIR/"
-    print_success "Copied service file to $SYSTEMD_DIR/"
-    
-    # Reload systemd
-    print_info "Reloading systemd to recognize the new service"
-    systemctl daemon-reload
-    print_success "Systemd configuration reloaded"
+    # Check if service file already exists
+    if [ -f "$SYSTEMD_DIR/$SERVICE_NAME.service" ]; then
+        if [[ "$UPGRADE_MODE" == true ]]; then
+            print_info "Service file already exists - updating in upgrade mode"
+            cp "$SERVICE_FILE" "$SYSTEMD_DIR/"
+            print_success "Updated service file in $SYSTEMD_DIR/"
+            systemctl daemon-reload
+            print_success "Systemd configuration reloaded"
+        else
+            print_info "Service file already exists at $SYSTEMD_DIR/$SERVICE_NAME.service"
+            print_info "Skipping update (use --upgrade to update service configuration)"
+        fi
+    else
+        print_info "Installing systemd service file to enable automatic startup"
+        print_info "The service will be configured to start on boot and restart on failure"
+        cp "$SERVICE_FILE" "$SYSTEMD_DIR/"
+        print_success "Copied service file to $SYSTEMD_DIR/"
+        systemctl daemon-reload
+        print_success "Systemd configuration reloaded"
+    fi
     
     print_section "Step 6: Enabling Service"
-    print_info "Enabling service to start automatically on system boot"
-    # Enable service to start on boot
-    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
-    print_success "Service '$SERVICE_NAME' enabled for automatic startup"
+    # Check if service is already enabled
+    if systemctl is-enabled "$SERVICE_NAME" &>/dev/null; then
+        print_info "Service '$SERVICE_NAME' is already enabled for automatic startup"
+    else
+        print_info "Enabling service to start automatically on system boot"
+        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+        print_success "Service '$SERVICE_NAME' enabled for automatic startup"
+    fi
     print_info "Note: The service is enabled but not started yet. You'll start it after configuration."
 fi
 
 print_section "Step 7: Setting Up Python Virtual Environment"
-print_info "Creating an isolated Python environment for the bot"
-print_info "This ensures dependencies don't conflict with system Python packages"
-# Create virtual environment
 if [ -d "$INSTALL_DIR/venv" ]; then
-    print_warning "Virtual environment already exists, removing it..."
-    rm -rf "$INSTALL_DIR/venv"
+    print_info "Virtual environment already exists at $INSTALL_DIR/venv"
+    print_info "Preserving existing virtual environment"
+    if [[ "$UPGRADE_MODE" == true ]]; then
+        print_info "Upgrade mode: will update dependencies"
+    else
+        print_info "Will update dependencies if requirements.txt changed"
+    fi
+else
+    print_info "Creating an isolated Python environment for the bot"
+    print_info "This ensures dependencies don't conflict with system Python packages"
+    python3 -m venv "$INSTALL_DIR/venv"
+    print_success "Created virtual environment at $INSTALL_DIR/venv"
 fi
-python3 -m venv "$INSTALL_DIR/venv"
-print_success "Created virtual environment at $INSTALL_DIR/venv"
 
 # Upgrade pip first
 print_info "Upgrading pip to latest version"
@@ -360,9 +558,15 @@ print_success "Installed all Python dependencies"
 chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/venv"
 print_success "Set ownership of virtual environment"
 
-print_section "Installation Complete!"
-echo ""
-print_success "MeshCore Bot has been successfully installed as a systemd service!"
+if [[ "$UPGRADE_MODE" == true ]]; then
+    print_section "Upgrade Complete!"
+    echo ""
+    print_success "MeshCore Bot has been successfully upgraded!"
+else
+    print_section "Installation Complete!"
+    echo ""
+    print_success "MeshCore Bot has been successfully installed as a system service!"
+fi
 echo ""
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -467,5 +671,15 @@ else
     echo "  ${YELLOW}sudo systemctl restart $SERVICE_NAME${NC}"
 fi
 echo ""
-print_success "Installation complete! The bot is ready to configure and start."
+if [[ "$UPGRADE_MODE" == true ]]; then
+    print_success "Upgrade complete! The bot files have been updated."
+    print_info "You may want to restart the service to apply changes:"
+    if [[ "$IS_MACOS" == true ]]; then
+        echo "  ${YELLOW}sudo launchctl stop $PLIST_NAME && sudo launchctl start $PLIST_NAME${NC}"
+    else
+        echo "  ${YELLOW}sudo systemctl restart $SERVICE_NAME${NC}"
+    fi
+else
+    print_success "Installation complete! The bot is ready to configure and start."
+fi
 echo ""

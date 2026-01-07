@@ -22,6 +22,7 @@ class DadJokeCommand(BaseCommand):
     description = "Get a random dad joke from icanhazdadjoke.com"
     category = "fun"
     cooldown_seconds = 3
+    requires_internet = True  # Requires internet access for API calls
     
     # API configuration
     DAD_JOKE_API_URL = "https://icanhazdadjoke.com/"

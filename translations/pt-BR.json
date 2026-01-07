@@ -153,12 +153,12 @@
     "commands": {
         "help": {
             "description": "Mostra comandos. Use 'ajuda <comando>' pra detalhes.",
-            "general": "**Ajuda do Bot MeshCore**\n\n**Comandos Disponíveis:**\n{commands_list}",
-            "unknown": "**Comando desconhecido: '{command}'**\n\nComandos disponíveis:\n{available}",
-            "specific": "**Ajuda pra '{command}':**\n{help_text}",
+            "general": "Ajuda do Bot MeshCore\n\nComandos Disponíveis:\n{commands_list}",
+            "unknown": "Comando desconhecido: '{command}'\n\nComandos disponíveis:\n{available}",
+            "specific": "Ajuda pra '{command}':\n{help_text}",
             "no_help": "Sem ajuda disponível",
-            "usage_examples": "\n**Exemplos de Uso:**\n• `ajuda @` - Ajuda pra sintaxe @{string}\n• `ajuda t` - Ajuda pra sintaxe t {string}\n• `ajuda anuncio` - Ajuda pro comando anuncio\n• `ajuda teste` - Ajuda pro comando teste\n• `ajuda ping` - Ajuda pro comando ping",
-            "custom_syntax": "\n**Sintaxe Personalizada:**\n• `t frase` - Confirmação com frase (canais & DMs)\n• `@{string}` - Confirmação com string (só DMs)\n• `anuncio` - Enviar anúncio flood (só DM, espera 1h)"
+            "usage_examples": "\nExemplos de Uso:\n• `ajuda @` - Ajuda pra sintaxe @{string}\n• `ajuda t` - Ajuda pra sintaxe t {string}\n• `ajuda anuncio` - Ajuda pro comando anuncio\n• `ajuda teste` - Ajuda pro comando teste\n• `ajuda ping` - Ajuda pro comando ping",
+            "custom_syntax": "\nSintaxe Personalizada:\n• `t frase` - Confirmação com frase (canais & DMs)\n• `@{string}` - Confirmação com string (só DMs)\n• `anuncio` - Enviar anúncio flood (só DM, espera 1h)"
         },
         "ping": {
             "description": "Responde 'ping' com 'Pong!'",

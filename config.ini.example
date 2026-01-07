@@ -72,7 +72,7 @@ dm_max_flood_attempts = 2
 dm_flood_after = 2
 
 # Timezone for bot operations
-# Use standard timezone names (e.g., "America/New_York", "Europe/London", "UTC")
+# Use standard timezone names (e.g., America/New_York, Europe/London, UTC)
 # Leave empty to use system timezone
 timezone = 
 
@@ -126,8 +126,17 @@ translation_path = translations/
 [Admin_ACL]
 # Admin Access Control List (ACL) for restricted commands
 # Only users with public keys listed here can execute admin commands
-# Format: comma-separated list of public keys (without spaces)
-# Example: 3e14a5fa9c52e7b6b8e14f987cd12ab1e3dc9fb64a2bbf0e19dca85e9f43a120, another key here
+#
+# SECURITY IMPORTANT:
+# - Public keys MUST be exactly 64 hexadecimal characters (ed25519 format)
+# - Invalid formats will be rejected with error logs
+# - Empty or whitespace-only values disable admin access
+# - Keys are case-insensitive (normalized to lowercase)  
+#
+# Format: comma-separated list of 64-character hex public keys (without spaces)
+# Example: f5d2b56d19b24412756933e917d4632e088cdd5daeadc9002feca73bf5d2b56d,1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+#
+# IMPORTANT: Leave blank to disable all admin commands. Set your actual admin pubkey(s) here.
 admin_pubkeys = 
 
 # Commands that require admin access (comma-separated)
@@ -254,73 +263,6 @@ colored_output = true
 # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 meshcore_log_level = INFO
 
-[Greeter_Command]
-# Enable or disable the greeter command
-# true: Bot will greet users on their first public channel message
-# false: Greeter is disabled
-enabled = false
-
-# Channels where greetings should occur (comma-separated)
-# IMPORTANT: Leave commented out (or omit entirely) to use global monitor_channels (default behavior)
-# If uncommented with empty value (channels = ), command will be DM-only
-# Comma-separated list to restrict to specific channels (only greeter command works there)
-# Example: channels = general,welcome,newbies
-# If not specified, uses the channels from [Channels] monitor_channels setting
-# channels = 
-
-# Greeting message template (default for all channels)
-# Available fields: {sender} - the user's name/ID
-# For multi-part greetings, separate messages with pipe (|)
-# Example (single): "Welcome to the mesh, @[{sender}]!"
-# Example (multi-part): "Welcome to the mesh, @[{sender}]!|This is a great place to chat.|Use !help for commands."
-greeting_message = Welcome to the mesh, @[{sender}]!
-
-# Channel-specific greeting messages (optional)
-# Format: channel_name:greeting_message,channel_name2:greeting_message2
-# If a channel has a specific greeting, it will be used instead of the default greeting_message
-# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
-# Multi-part greetings are supported per channel using pipe (|) separator
-# Leave empty to use greeting_message for all channels
-channel_greetings = 
-
-# Per-channel greetings (tracking behavior)
-# false: Greet each user only once globally (default - user gets one greeting total)
-# true: Greet each user once per channel (user can be greeted on each channel separately)
-# Note: This controls tracking, not the greeting message itself. Use channel_greetings for different messages.
-per_channel_greetings = false
-
-# Include mesh network information in greeting
-# true: Add mesh statistics to greeting (total contacts, repeaters, etc.)
-# false: Only send the greeting message
-include_mesh_info = true
-
-# Mesh info format template
-# Available fields: {total_contacts}, {repeaters}, {companions}, {recent_activity_24h}
-# Example: "\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters"
-# Note: Mesh info is appended to the last greeting message part
-mesh_info_format = \n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters, {recent_activity_24h} active in last 24h
-
-# Rollout period in days
-# When greeter is first enabled on an active mesh, this sets how many days
-# to listen and mark all active users as already greeted before beginning
-# to greet new users. This prevents greeting everyone on an established mesh.
-# Set to 0 to disable rollout (will greet all new users immediately)
-# Note: Use auto_backfill to mark historical users and shorten/eliminate rollout period
-rollout_days = 7
-
-# Auto-backfill from historical message_stats data
-# true: Automatically mark all users who have posted on public channels in the past
-# false: Only mark users during rollout period (default)
-# This allows shortening or eliminating the rollout period by using existing data
-auto_backfill = false
-
-# Backfill lookback period in days
-# Number of days to look back when auto-backfilling (0 = all time)
-# Only used if auto_backfill = true
-# Example: 30 = only mark users who posted in last 30 days
-# Example: 0 = mark all users who have ever posted (all time)
-backfill_lookback_days = 30
-
 [Custom_Syntax]
 # Custom syntax patterns for special message formats
 # Format: pattern = "response_format"
@@ -332,7 +274,6 @@ backfill_lookback_days = 30
 # Note: The "t" command is now handled by the test command as an alias
 # "t phrase" works the same as "test phrase" - both use the test response format
 # Example: "t hello world" -> "ack {sender}: hello world | {connection_info}"
-
 
 [External_Data]
 # Weather API key (future feature)
@@ -363,8 +304,7 @@ forecast_solar_api_key =
 
 # Repeater prefix API URL for prefix command
 # Leave empty to disable prefix command functionality
-# Example: https://map.w0z.is/api/stats/repeater-prefixes?region=seattle
-# Note: w0z.is is regionally available - configure your own regional API
+# Configure your own regional API endpoint
 repeater_prefix_api_url = 
 
 # Repeater prefix cache duration in hours
@@ -398,7 +338,7 @@ prefix_heard_days = 7
 # Number of days to look back when determining which prefixes are "free"
 # Only repeaters heard within this window will be considered as using a prefix
 # Repeaters not heard in this window will be excluded from used prefixes list
-prefix_free_days = 30
+prefix_free_days = 7
 
 # Maximum range for prefix filtering (kilometers)
 # Repeaters beyond this distance from bot location will be excluded from prefix lookups
@@ -610,6 +550,73 @@ hacker_enabled = false
 # Example: "Found {path_count} unique path(s) for @[{sender}]:\n{paths}"
 response_format = 
 
+[Greeter_Command]
+# Enable or disable the greeter command
+# true: Bot will greet users on their first public channel message
+# false: Greeter is disabled
+enabled = false
+
+# Channels where greetings should occur (comma-separated)
+# IMPORTANT: Leave commented out (or omit entirely) to use global monitor_channels (default behavior)
+# If uncommented with empty value (channels = ), command will be DM-only
+# Comma-separated list to restrict to specific channels (only greeter command works there)
+# Example: channels = general,welcome,newbies
+# If not specified, uses the channels from [Channels] monitor_channels setting
+# channels = 
+
+# Greeting message template (default for all channels)
+# Available fields: {sender} - the user's name/ID
+# For multi-part greetings, separate messages with pipe (|)
+# Example (single): "Welcome to the mesh, @[{sender}]!"
+# Example (multi-part): "Welcome to the mesh, @[{sender}]!|This is a great place to chat.|Use !help for commands."
+greeting_message = Welcome to the mesh, @[{sender}]!
+
+# Channel-specific greeting messages (optional)
+# Format: channel_name:greeting_message,channel_name2:greeting_message2
+# If a channel has a specific greeting, it will be used instead of the default greeting_message
+# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
+# Multi-part greetings are supported per channel using pipe (|) separator
+# Leave empty to use greeting_message for all channels
+channel_greetings = 
+
+# Per-channel greetings (tracking behavior)
+# false: Greet each user only once globally (default - user gets one greeting total)
+# true: Greet each user once per channel (user can be greeted on each channel separately)
+# Note: This controls tracking, not the greeting message itself. Use channel_greetings for different messages.
+per_channel_greetings = false
+
+# Include mesh network information in greeting
+# true: Add mesh statistics to greeting (total contacts, repeaters, etc.)
+# false: Only send the greeting message
+include_mesh_info = true
+
+# Mesh info format template
+# Available fields: {total_contacts}, {repeaters}, {companions}, {recent_activity_24h}
+# Example: "\n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters"
+# Note: Mesh info is appended to the last greeting message part
+mesh_info_format = \n\nMesh Info: {total_contacts} contacts, {repeaters} repeaters, {recent_activity_24h} active in last 24h
+
+# Rollout period in days
+# When greeter is first enabled on an active mesh, this sets how many days
+# to listen and mark all active users as already greeted before beginning
+# to greet new users. This prevents greeting everyone on an established mesh.
+# Set to 0 to disable rollout (will greet all new users immediately)
+# Note: Use auto_backfill to mark historical users and shorten/eliminate rollout period
+rollout_days = 7
+
+# Auto-backfill from historical message_stats data
+# true: Automatically mark all users who have posted on public channels in the past
+# false: Only mark users during rollout period (default)
+# This allows shortening or eliminating the rollout period by using existing data
+auto_backfill = false
+
+# Backfill lookback period in days
+# Number of days to look back when auto-backfilling (0 = all time)
+# Only used if auto_backfill = true
+# Example: 30 = only mark users who posted in last 30 days
+# Example: 0 = mark all users who have ever posted (all time)
+backfill_lookback_days = 30
+
 [Alert_Command]
 # Enable or disable the alert command
 # true: Alert command is available
@@ -634,25 +641,37 @@ alert_enabled = false
 
 [Web_Viewer]
 # Enable or disable the web data viewer
+# SECURITY NOTE: Web viewer has NO AUTHENTICATION built-in
+# Only enable if you understand the security implications
 # true: web viewer is available for viewing bot data
-# false: web viewer is disabled
-enabled = true
+# false: web viewer is disabled (RECOMMENDED for production)
+enabled = false
 
 # Web viewer host address
-# 127.0.0.1: Only accessible from localhost
-# 0.0.0.0: Accessible from any network interface
+# SECURITY WARNING:
+# - 127.0.0.1: Only accessible from localhost (SECURE - recommended)
+# - 0.0.0.0: Accessible from any network interface (INSECURE - exposes all bot data to network)
+# 
+# Using 0.0.0.0 will expose:
+# - All messages and their contents
+# - Contact list and repeater information
+# - Real-time packet stream
+# - Bot configuration details
+#
+# WITHOUT ANY AUTHENTICATION OR ENCRYPTION
 host = 127.0.0.1
 
 # Web viewer port
-# Default: 8080 (viewer uses port 8080)
+# Must be between 1024-65535 (non-privileged ports)
+# Default: 8080
 port = 8080
 
 # Enable debug mode for the web viewer
 # true: Enable Flask debug mode (auto-reload on changes)
-# false: Production mode
+# false: Production mode (recommended)
 debug = false
 
 # Auto-start web viewer with bot
 # true: Start web viewer automatically when bot starts
-# false: Start web viewer manually
+# false: Start web viewer manually (recommended)
 auto_start = false

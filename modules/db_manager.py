@@ -6,6 +6,7 @@ Provides common database operations and table management for the MeshCore Bot
 
 import sqlite3
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
@@ -13,6 +14,20 @@ from pathlib import Path
 
 class DBManager:
     """Generalized database manager for common operations"""
+    
+    # Whitelist of allowed tables for security
+    ALLOWED_TABLES = {
+        'geocoding_cache',
+        'generic_cache', 
+        'bot_metadata',
+        'packet_stream',
+        'message_stats',
+        'greeted_users',
+        'repeater_contacts',
+        'complete_contact_tracking',  # Repeater manager
+        'daily_stats',  # Repeater manager
+        'purging_log',  # Repeater manager
+    }
     
     def __init__(self, bot, db_path: str = "meshcore_bot.db"):
         self.bot = bot
@@ -59,12 +74,135 @@ class DBManager:
                     )
                 ''')
                 
+                # Create feed_subscriptions table for RSS/API feed subscriptions
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS feed_subscriptions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        feed_type TEXT NOT NULL,
+                        feed_url TEXT NOT NULL,
+                        channel_name TEXT NOT NULL,
+                        feed_name TEXT,
+                        last_item_id TEXT,
+                        last_check_time TIMESTAMP,
+                        check_interval_seconds INTEGER DEFAULT 300,
+                        enabled BOOLEAN DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        api_config TEXT,
+                        rss_config TEXT,
+                        output_format TEXT,
+                        message_send_interval_seconds REAL DEFAULT 2.0,
+                        UNIQUE(feed_url, channel_name)
+                    )
+                ''')
+                
+                # Add new columns if they don't exist (for existing databases)
+                try:
+                    cursor.execute('ALTER TABLE feed_subscriptions ADD COLUMN output_format TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                try:
+                    cursor.execute('ALTER TABLE feed_subscriptions ADD COLUMN message_send_interval_seconds REAL DEFAULT 2.0')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                try:
+                    cursor.execute('ALTER TABLE feed_subscriptions ADD COLUMN filter_config TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                try:
+                    cursor.execute('ALTER TABLE feed_subscriptions ADD COLUMN sort_config TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                
+                # Create feed_activity table for tracking processed items
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS feed_activity (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        feed_id INTEGER NOT NULL,
+                        item_id TEXT NOT NULL,
+                        item_title TEXT,
+                        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        message_sent BOOLEAN DEFAULT 1,
+                        FOREIGN KEY (feed_id) REFERENCES feed_subscriptions(id) ON DELETE CASCADE
+                    )
+                ''')
+                
+                # Create feed_errors table for tracking feed errors
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS feed_errors (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        feed_id INTEGER NOT NULL,
+                        error_type TEXT NOT NULL,
+                        error_message TEXT,
+                        occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        resolved_at TIMESTAMP,
+                        FOREIGN KEY (feed_id) REFERENCES feed_subscriptions(id) ON DELETE CASCADE
+                    )
+                ''')
+                
+                # Create channels table for storing channel information
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS channels (
+                        channel_idx INTEGER PRIMARY KEY,
+                        channel_name TEXT NOT NULL,
+                        channel_type TEXT,
+                        channel_key_hex TEXT,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(channel_idx)
+                    )
+                ''')
+                
+                # Create channel_operations queue table for web viewer -> bot communication
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS channel_operations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        operation_type TEXT NOT NULL,
+                        channel_idx INTEGER,
+                        channel_name TEXT,
+                        channel_key_hex TEXT,
+                        status TEXT DEFAULT 'pending',
+                        error_message TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        processed_at TIMESTAMP,
+                        result_data TEXT
+                    )
+                ''')
+                
+                # Create feed_message_queue table for queuing feed messages
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS feed_message_queue (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        feed_id INTEGER NOT NULL,
+                        channel_name TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        item_id TEXT,
+                        item_title TEXT,
+                        priority INTEGER DEFAULT 0,
+                        queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        sent_at TIMESTAMP,
+                        FOREIGN KEY (feed_id) REFERENCES feed_subscriptions(id) ON DELETE CASCADE
+                    )
+                ''')
+                
                 # Create indexes for better performance
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_geocoding_query ON geocoding_cache(query)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_geocoding_expires ON geocoding_cache(expires_at)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_generic_key ON generic_cache(cache_key)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_generic_type ON generic_cache(cache_type)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_generic_expires ON generic_cache(expires_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_subscriptions_enabled ON feed_subscriptions(enabled)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_subscriptions_type ON feed_subscriptions(feed_type)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_subscriptions_last_check ON feed_subscriptions(last_check_time)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_activity_feed_id ON feed_activity(feed_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_activity_processed_at ON feed_activity(processed_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_errors_feed_id ON feed_errors(feed_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_errors_occurred_at ON feed_errors(occurred_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_errors_resolved ON feed_errors(resolved_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(channel_name)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_channel_ops_status ON channel_operations(status, created_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_message_queue_feed_id ON feed_message_queue(feed_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_message_queue_sent ON feed_message_queue(sent_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_feed_message_queue_priority ON feed_message_queue(priority DESC, queued_at ASC)')
                 
                 conn.commit()
                 self.logger.info("Database manager initialized successfully")
@@ -94,13 +232,18 @@ class DBManager:
     def cache_geocoding(self, query: str, latitude: float, longitude: float, cache_hours: int = 720):
         """Cache geocoding result for future use (default: 30 days)"""
         try:
+            # Validate cache_hours to prevent SQL injection
+            if not isinstance(cache_hours, int) or cache_hours < 1 or cache_hours > 87600:  # Max 10 years
+                raise ValueError(f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Use parameter binding instead of string formatting
                 cursor.execute('''
                     INSERT OR REPLACE INTO geocoding_cache 
                     (query, latitude, longitude, expires_at) 
-                    VALUES (?, ?, ?, datetime('now', '+{} hours'))
-                '''.format(cache_hours), (query, latitude, longitude))
+                    VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'))
+                ''', (query, latitude, longitude, cache_hours))
                 conn.commit()
         except Exception as e:
             self.logger.error(f"Error caching geocoding: {e}")
@@ -126,13 +269,18 @@ class DBManager:
     def cache_value(self, cache_key: str, cache_value: str, cache_type: str, cache_hours: int = 24):
         """Cache a value for future use"""
         try:
+            # Validate cache_hours to prevent SQL injection
+            if not isinstance(cache_hours, int) or cache_hours < 1 or cache_hours > 87600:  # Max 10 years
+                raise ValueError(f"cache_hours must be an integer between 1 and 87600, got: {cache_hours}")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Use parameter binding instead of string formatting
                 cursor.execute('''
                     INSERT OR REPLACE INTO generic_cache 
                     (cache_key, cache_value, cache_type, expires_at) 
-                    VALUES (?, ?, ?, datetime('now', '+{} hours'))
-                '''.format(cache_hours), (cache_key, cache_value, cache_type))
+                    VALUES (?, ?, ?, datetime('now', '+' || ? || ' hours'))
+                ''', (cache_key, cache_value, cache_type, cache_hours))
                 conn.commit()
         except Exception as e:
             self.logger.error(f"Error caching value: {e}")
@@ -240,26 +388,49 @@ class DBManager:
     
     # Table management methods
     def create_table(self, table_name: str, schema: str):
-        """Create a custom table with the given schema"""
+        """Create a custom table with the given schema (whitelist-protected)"""
         try:
+            # Validate table name against whitelist
+            if table_name not in self.ALLOWED_TABLES:
+                raise ValueError(f"Table name '{table_name}' not in allowed tables whitelist")
+            
+            # Additional validation: ensure table name follows safe naming convention
+            if not re.match(r'^[a-z_][a-z0-9_]*$', table_name):
+                raise ValueError(f"Invalid table name format: {table_name}")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Table names cannot be parameterized, but we've validated against whitelist
                 cursor.execute(f'CREATE TABLE IF NOT EXISTS {table_name} ({schema})')
                 conn.commit()
                 self.logger.info(f"Created table: {table_name}")
         except Exception as e:
             self.logger.error(f"Error creating table {table_name}: {e}")
+            raise
     
     def drop_table(self, table_name: str):
-        """Drop a table (use with caution)"""
+        """Drop a table (whitelist-protected, use with extreme caution)"""
         try:
+            # Validate table name against whitelist
+            if table_name not in self.ALLOWED_TABLES:
+                raise ValueError(f"Table name '{table_name}' not in allowed tables whitelist")
+            
+            # Additional validation: ensure table name follows safe naming convention
+            if not re.match(r'^[a-z_][a-z0-9_]*$', table_name):
+                raise ValueError(f"Invalid table name format: {table_name}")
+            
+            # Extra safety: log critical action
+            self.logger.warning(f"CRITICAL: Dropping table '{table_name}'")
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Table names cannot be parameterized, but we've validated against whitelist
                 cursor.execute(f'DROP TABLE IF EXISTS {table_name}')
                 conn.commit()
                 self.logger.info(f"Dropped table: {table_name}")
         except Exception as e:
             self.logger.error(f"Error dropping table {table_name}: {e}")
+            raise
     
     def execute_query(self, query: str, params: Tuple = ()) -> List[Dict]:
         """Execute a custom query and return results as list of dictionaries"""

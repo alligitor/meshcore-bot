@@ -228,12 +228,12 @@
     "commands": {
         "help": {
             "description": "Affiche les commandes. Utilisez 'help <commande>' pour les détails.",
-            "general": "**Aide du Bot MeshCore**\n\n**Commandes disponibles :**\n{commands_list}",
-            "unknown": "**Commande inconnue : '{command}'**\n\nCommandes disponibles :\n{available}",
-            "specific": "**Aide pour '{command}' :**\n{help_text}",
+            "general": "Aide du Bot MeshCore\n\nCommandes disponibles :\n{commands_list}",
+            "unknown": "Commande inconnue : '{command}'\n\nCommandes disponibles :\n{available}",
+            "specific": "Aide pour '{command}' :\n{help_text}",
             "no_help": "Aucune aide disponible",
-            "usage_examples": "\n**Exemples d'utilisation :**\n• `help @` - Obtenir de l'aide pour la syntaxe @{string}\n• `help t` - Obtenir de l'aide pour la syntaxe t {string}\n• `help advert` - Obtenir de l'aide pour la commande advert\n• `help test` - Obtenir de l'aide pour la commande test\n• `help ping` - Obtenir de l'aide pour la commande ping",
-            "custom_syntax": "\n**Syntaxe personnalisée :**\n• `t phrase` - Accusé de réception avec phrase (canaux et MD)\n• `@{string}` - Accusé de réception avec chaîne (MD seulement)\n• `advert` - Envoyer une annonce diffusée (MD seulement, délai d'attente de 1 heure)"
+            "usage_examples": "\nExemples d'utilisation :\n• `help @` - Obtenir de l'aide pour la syntaxe @{string}\n• `help t` - Obtenir de l'aide pour la syntaxe t {string}\n• `help advert` - Obtenir de l'aide pour la commande advert\n• `help test` - Obtenir de l'aide pour la commande test\n• `help ping` - Obtenir de l'aide pour la commande ping",
+            "custom_syntax": "\nSyntaxe personnalisée :\n• `t phrase` - Accusé de réception avec phrase (canaux et MD)\n• `@{string}` - Accusé de réception avec chaîne (MD seulement)\n• `advert` - Envoyer une annonce diffusée (MD seulement, délai d'attente de 1 heure)"
         },
         "ping": {
             "description": "Répond à 'ping' avec 'Pong!'",
