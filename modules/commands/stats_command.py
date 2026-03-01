@@ -61,7 +61,7 @@ class StatsCommand(BaseCommand):
         don't already exist. Also sets up necessary indexes for performance.
         """
         try:
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Create message_stats table for tracking all messages
@@ -144,7 +144,7 @@ class StatsCommand(BaseCommand):
                 import hashlib
                 sender_id = f"user_{hashlib.md5(sender_id.encode()).hexdigest()[:8]}"
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO message_stats 
@@ -184,7 +184,7 @@ class StatsCommand(BaseCommand):
                 import hashlib
                 sender_id = f"user_{hashlib.md5(sender_id.encode()).hexdigest()[:8]}"
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO command_stats 
@@ -230,7 +230,7 @@ class StatsCommand(BaseCommand):
             # Format the path string properly (e.g., "75,24,1d,5f,bd")
             path_string = self._format_path_for_display(message.path)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO path_stats 
@@ -393,7 +393,7 @@ class StatsCommand(BaseCommand):
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Bot commands received
@@ -462,7 +462,7 @@ class StatsCommand(BaseCommand):
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Top bot users (people who triggered commands)
@@ -503,7 +503,7 @@ class StatsCommand(BaseCommand):
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Top channels by message count with unique user counts
@@ -549,7 +549,7 @@ class StatsCommand(BaseCommand):
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Top longest paths (one per user, more results with compact format)
@@ -610,7 +610,7 @@ class StatsCommand(BaseCommand):
             str: Formatted leaderboard string.
         """
         try:
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Check if daily_stats table exists
@@ -778,7 +778,7 @@ class StatsCommand(BaseCommand):
         try:
             cutoff_time = int(time.time()) - (days_to_keep * 24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Clean up old message stats
@@ -809,7 +809,7 @@ class StatsCommand(BaseCommand):
             Dict[str, Any]: Dictionary containing summary statistics.
         """
         try:
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Total messages

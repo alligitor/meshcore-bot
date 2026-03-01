@@ -6,6 +6,7 @@ Pytest fixtures for meshcore-bot tests
 import pytest
 import sqlite3
 import configparser
+from contextlib import closing
 from unittest.mock import Mock, MagicMock, AsyncMock
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -205,7 +206,7 @@ def test_db(mock_logger, tmp_path):
     # Create indexes (after tables are created)
     # Create indexes (db_manager created tables in same db_path)
     try:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             cursor = conn.cursor()
             # Check if table exists before creating indexes
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='mesh_connections'")

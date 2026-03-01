@@ -161,7 +161,7 @@ class RepeaterManager:
             ''')
             
             # Create indexes for better performance
-            with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            with self.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_public_key ON repeater_contacts(public_key)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_device_type ON repeater_contacts(device_type)')
@@ -218,7 +218,7 @@ class RepeaterManager:
         Important for web viewer: migration runs when RepeaterManager is created, so contacts page
         works for users who open the viewer without having started the bot after upgrade.
         """
-        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+        with self.db_manager.connection() as conn:
             cursor = conn.cursor()
 
             # repeater_contacts: add location columns only if table exists

@@ -178,7 +178,7 @@ class MessageScheduler:
             # Get recent activity from message_stats if available
             if info['recent_activity_24h'] == 0:
                 try:
-                    with sqlite3.connect(self.bot.db_manager.db_path, timeout=30.0) as conn:
+                    with self.bot.db_manager.connection() as conn:
                         cursor = conn.cursor()
                         # Check if message_stats table exists
                         cursor.execute('''
@@ -202,7 +202,7 @@ class MessageScheduler:
             # Query devices first heard in the last 7 days, grouped by role
             # Also calculate devices active in last 30 days (last_heard)
             try:
-                with sqlite3.connect(self.bot.db_manager.db_path, timeout=30.0) as conn:
+                with self.bot.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     # Check if complete_contact_tracking table exists
                     cursor.execute('''
@@ -573,10 +573,8 @@ class MessageScheduler:
     async def _process_channel_operations(self):
         """Process pending channel operations from the web viewer"""
         try:
-            db_path = str(self.bot.db_manager.db_path)  # Ensure string, not Path object
-            
             # Get pending operations
-            with sqlite3.connect(db_path, timeout=30.0) as conn:
+            with self.bot.db_manager.connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
@@ -635,7 +633,7 @@ class MessageScheduler:
                             error_msg = "Failed to remove channel"
                     
                     # Update operation status
-                    with sqlite3.connect(db_path, timeout=30.0) as conn:
+                    with self.bot.db_manager.connection() as conn:
                         cursor = conn.cursor()
                         if success:
                             cursor.execute('''
@@ -659,7 +657,7 @@ class MessageScheduler:
                     self.logger.error(f"Error processing channel operation {op_id}: {e}")
                     # Mark as failed
                     try:
-                        with sqlite3.connect(db_path, timeout=30.0) as conn:
+                        with self.bot.db_manager.connection() as conn:
                             cursor = conn.cursor()
                             cursor.execute('''
                                 UPDATE channel_operations

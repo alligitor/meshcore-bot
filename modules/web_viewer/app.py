@@ -11,6 +11,7 @@ import configparser
 import logging
 import subprocess
 import threading
+from contextlib import contextmanager, closing
 from datetime import datetime, timedelta, date
 from flask import Flask, render_template, jsonify, request, send_from_directory, make_response
 from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect
@@ -284,9 +285,8 @@ class BotDataViewer:
     
     def _init_packet_stream_table(self):
         """Initialize the packet_stream table in the web viewer database (same as [Bot] db_path by default)."""
-        conn = None
         try:
-            with sqlite3.connect(self.db_path, timeout=60) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=60)) as conn:
                 cursor = conn.cursor()
                 
                 # Create packet_stream table with schema matching the INSERT statements
@@ -334,6 +334,18 @@ class BotDataViewer:
         except Exception as e:
             self.logger.error(f"Failed to create database connection: {e}")
             raise
+    
+    @contextmanager
+    def _with_db_connection(self):
+        """Context manager that yields a configured connection and closes it on exit.
+        Use this instead of _get_db_connection() in with-statements to avoid leaking file descriptors.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=60)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
     
     def _resolve_path(self, path_input: str) -> Dict[str, Any]:
         """Resolve a hex path to repeater names and locations using the same algorithm as PathCommand.
@@ -1590,7 +1602,7 @@ class BotDataViewer:
                 # Get commands from last 60 minutes
                 cutoff_time = time.time() - (60 * 60)  # 60 minutes ago
                 
-                with sqlite3.connect(self.db_path, timeout=60) as conn:
+                with closing(sqlite3.connect(self.db_path, timeout=60)) as conn:
                     cursor = conn.cursor()
                     
                     cursor.execute('''
@@ -2721,10 +2733,45 @@ class BotDataViewer:
                         continue
                     
                     # Connect to database with timeout to prevent hanging
-                    # Use check_same_thread=False for thread safety, but be careful
                     try:
-                        conn = sqlite3.connect(self.db_path, timeout=60, check_same_thread=False)
-                        conn.row_factory = sqlite3.Row
+                        with closing(sqlite3.connect(self.db_path, timeout=60, check_same_thread=False)) as conn:
+                            conn.row_factory = sqlite3.Row
+                            cursor = conn.cursor()
+                            
+                            # Get new data since last poll
+                            cursor.execute('''
+                                SELECT timestamp, data, type FROM packet_stream 
+                                WHERE timestamp > ? 
+                                ORDER BY timestamp ASC
+                            ''', (last_timestamp,))
+                            
+                            rows = cursor.fetchall()
+                            
+                            # Process new data
+                            for row in rows:
+                                try:
+                                    timestamp = row[0]
+                                    data_json = row[1]
+                                    data_type = row[2]
+                                    data = json.loads(data_json)
+                                    
+                                    # Broadcast based on type
+                                    if data_type == 'command':
+                                        self._handle_command_data(data)
+                                    elif data_type == 'packet':
+                                        self._handle_packet_data(data)
+                                    elif data_type == 'routing':
+                                        self._handle_packet_data(data)  # Treat routing as packet data
+                                        
+                                except Exception as e:
+                                    self.logger.warning(f"Error processing database data: {e}")
+                            
+                            # Update last timestamp
+                            if rows:
+                                last_timestamp = rows[-1][0]
+                            
+                            # Reset error counter on success
+                            consecutive_errors = 0
                     except sqlite3.OperationalError as conn_error:
                         error_msg = str(conn_error)
                         if "locked" in error_msg.lower() or "database is locked" in error_msg.lower():
@@ -2733,48 +2780,7 @@ class BotDataViewer:
                                 self.logger.warning(f"Database is locked, waiting: {self.db_path}")
                             time.sleep(2)
                             continue
-                        else:
-                            raise
-                    
-                    try:
-                        cursor = conn.cursor()
-                        
-                        # Get new data since last poll
-                        cursor.execute('''
-                            SELECT timestamp, data, type FROM packet_stream 
-                            WHERE timestamp > ? 
-                            ORDER BY timestamp ASC
-                        ''', (last_timestamp,))
-                        
-                        rows = cursor.fetchall()
-                        
-                        # Process new data
-                        for row in rows:
-                            try:
-                                timestamp = row[0]
-                                data_json = row[1]
-                                data_type = row[2]
-                                data = json.loads(data_json)
-                                
-                                # Broadcast based on type
-                                if data_type == 'command':
-                                    self._handle_command_data(data)
-                                elif data_type == 'packet':
-                                    self._handle_packet_data(data)
-                                elif data_type == 'routing':
-                                    self._handle_packet_data(data)  # Treat routing as packet data
-                                    
-                            except Exception as e:
-                                self.logger.warning(f"Error processing database data: {e}")
-                        
-                        # Update last timestamp
-                        if rows:
-                            last_timestamp = rows[-1][0]
-                        
-                        # Reset error counter on success
-                        consecutive_errors = 0
-                    finally:
-                        conn.close()
+                        raise  # Re-raise non-locked OperationalErrors for outer handler to log/backoff
                     
                     # Sleep before next poll (back off to reduce lock contention with bot writes)
                     time.sleep(2.0)  # Poll every 2s
@@ -2875,7 +2881,6 @@ class BotDataViewer:
     def _cleanup_old_data(self, days_to_keep: Optional[int] = None):
         """Clean up old packet stream data to prevent database bloat.
         Uses [Data_Retention] packet_stream_retention_days when days_to_keep is not provided."""
-        conn = None
         try:
             import sqlite3
             import time
@@ -2891,51 +2896,41 @@ class BotDataViewer:
             cutoff_time = time.time() - (days_to_keep * 24 * 60 * 60)
             
             # Use DEFERRED isolation; longer timeout to wait out bot writes
-            conn = sqlite3.connect(self.db_path, timeout=60, isolation_level='DEFERRED')
-            cursor = conn.cursor()
-            
-            # Use WAL mode for better concurrent access (if not already set)
-            try:
-                cursor.execute('PRAGMA journal_mode=WAL')
-            except sqlite3.OperationalError:
-                pass  # Ignore if database is locked - WAL may already be set
-            
-            # Delete in smaller batches to avoid long locks
-            # This prevents blocking the polling thread for extended periods
-            batch_size = 1000
-            total_deleted = 0
-            
-            while True:
-                cursor.execute(
-                    'DELETE FROM packet_stream WHERE id IN '
-                    '(SELECT id FROM packet_stream WHERE timestamp < ? LIMIT ?)',
-                    (cutoff_time, batch_size)
-                )
-                deleted_count = cursor.rowcount
-                conn.commit()
+            with closing(sqlite3.connect(self.db_path, timeout=60, isolation_level='DEFERRED')) as conn:
+                cursor = conn.cursor()
                 
-                if deleted_count == 0:
-                    break
+                # Use WAL mode for better concurrent access (if not already set)
+                try:
+                    cursor.execute('PRAGMA journal_mode=WAL')
+                except sqlite3.OperationalError:
+                    pass  # Ignore if database is locked - WAL may already be set
+                
+                # Delete in smaller batches to avoid long locks
+                batch_size = 1000
+                total_deleted = 0
+                
+                while True:
+                    cursor.execute(
+                        'DELETE FROM packet_stream WHERE id IN '
+                        '(SELECT id FROM packet_stream WHERE timestamp < ? LIMIT ?)',
+                        (cutoff_time, batch_size)
+                    )
+                    deleted_count = cursor.rowcount
+                    conn.commit()
                     
-                total_deleted += deleted_count
+                    if deleted_count == 0:
+                        break
+                    total_deleted += deleted_count
+                    if deleted_count == batch_size:
+                        time.sleep(0.1)
                 
-                # Brief sleep between batches to allow other operations
-                if deleted_count == batch_size:
-                    time.sleep(0.1)
-            
-            if total_deleted > 0:
-                self.logger.info(f"Cleaned up {total_deleted} old packet stream entries (older than {days_to_keep} days)")
+                if total_deleted > 0:
+                    self.logger.info(f"Cleaned up {total_deleted} old packet stream entries (older than {days_to_keep} days)")
             
         except sqlite3.OperationalError as e:
             self.logger.warning(f"Database busy during cleanup (will retry next cycle): {e}")
         except Exception as e:
             self.logger.error(f"Error cleaning up old packet stream data: {e}", exc_info=True)
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
     
     def _get_database_stats(self, top_users_window='all', top_commands_window='all', 
                            top_paths_window='all', top_channels_window='all'):

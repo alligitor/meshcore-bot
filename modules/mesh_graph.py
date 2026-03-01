@@ -776,46 +776,34 @@ class MeshGraph:
             updates = list(self.pending_updates)
             self.pending_updates.clear()
 
-        conn = None
         location_cache: Dict[str, Tuple[float, float]] = {}
         try:
-            conn = self.db_manager.get_connection()
-            cursor = conn.cursor()
-            for edge_key in updates:
-                if edge_key not in self.edges:
-                    continue
-                edge = self.edges[edge_key]
-                # Recalculate distance if we have public keys
-                if edge.get('from_public_key') or edge.get('to_public_key'):
-                    recalculated = self._recalculate_distance_if_needed(
-                        edge, conn=conn, location_cache=location_cache
+            with self.db_manager.connection() as conn:
+                cursor = conn.cursor()
+                for edge_key in updates:
+                    if edge_key not in self.edges:
+                        continue
+                    edge = self.edges[edge_key]
+                    # Recalculate distance if we have public keys
+                    if edge.get('from_public_key') or edge.get('to_public_key'):
+                        recalculated = self._recalculate_distance_if_needed(
+                            edge, conn=conn, location_cache=location_cache
+                        )
+                        if recalculated is not None:
+                            edge['geographic_distance'] = recalculated
+                    # Check if edge exists in DB
+                    cursor.execute(
+                        'SELECT 1 FROM mesh_connections WHERE from_prefix = ? AND to_prefix = ?',
+                        (edge_key[0], edge_key[1]),
                     )
-                    if recalculated is not None:
-                        edge['geographic_distance'] = recalculated
-                # Check if edge exists in DB
-                cursor.execute(
-                    'SELECT 1 FROM mesh_connections WHERE from_prefix = ? AND to_prefix = ?',
-                    (edge_key[0], edge_key[1]),
-                )
-                is_new = cursor.fetchone() is None
-                # Distance was already recalculated above — tell _write_edge_to_db to skip it
-                self._write_edge_to_db(edge_key, is_new, conn=conn, location_cache=location_cache,
-                                       skip_distance_recalc=True)
-            if conn:
+                    is_new = cursor.fetchone() is None
+                    # Distance was already recalculated above — tell _write_edge_to_db to skip it
+                    self._write_edge_to_db(edge_key, is_new, conn=conn, location_cache=location_cache,
+                                           skip_distance_recalc=True)
                 conn.commit()
         except Exception as e:
             self.logger.warning(f"Error flushing graph updates: {e}")
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+            # Connection already closed by context manager; rollback happened on exit if needed
         
         if updates:
             self.logger.debug(f"Flushed {len(updates)} pending graph edge updates")

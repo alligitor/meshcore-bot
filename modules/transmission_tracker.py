@@ -5,6 +5,7 @@ Tracks transmitted message hashes and detects repeats from neighboring repeaters
 """
 
 import time
+from contextlib import closing
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -198,7 +199,7 @@ class TransmissionTracker:
                 from pathlib import Path
                 db_path = Path(self.bot.db_manager.db_path).resolve()
             
-            with sqlite3.connect(str(db_path), timeout=30.0) as conn:
+            with closing(sqlite3.connect(str(db_path), timeout=30.0)) as conn:
                 cursor = conn.cursor()
                 
                 # Find the command entry by command_id

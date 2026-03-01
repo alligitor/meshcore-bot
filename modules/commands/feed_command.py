@@ -308,7 +308,7 @@ feed status 1"""
         """Create a new feed subscription"""
         import sqlite3
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.bot.db_manager.connection() as conn:
             cursor = conn.cursor()
             
             # Get default check interval
@@ -329,7 +329,7 @@ feed status 1"""
         """Delete subscription by ID"""
         import sqlite3
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.bot.db_manager.connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM feed_subscriptions WHERE id = ?', (feed_id,))
             conn.commit()
@@ -339,7 +339,7 @@ feed status 1"""
         """Delete subscription by URL and channel"""
         import sqlite3
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.bot.db_manager.connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 DELETE FROM feed_subscriptions 
@@ -352,7 +352,7 @@ feed status 1"""
         """Get all subscriptions, optionally filtered by channel"""
         import sqlite3
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.bot.db_manager.connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
@@ -375,7 +375,7 @@ feed status 1"""
         """Get subscription by ID"""
         import sqlite3
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.bot.db_manager.connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM feed_subscriptions WHERE id = ?', (feed_id,))
@@ -386,7 +386,7 @@ feed status 1"""
         """Enable or disable a subscription"""
         import sqlite3
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.bot.db_manager.connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE feed_subscriptions
@@ -400,7 +400,7 @@ feed status 1"""
         """Update subscription settings"""
         import sqlite3
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self.bot.db_manager.connection() as conn:
             cursor = conn.cursor()
             
             if interval:
