@@ -278,34 +278,45 @@ class StatsCommand(BaseCommand):
         return False
     
     def _format_path_for_display(self, path: str) -> str:
-        """Format path string for display (e.g., '75,24,1d,5f,bd').
-        
+        """Format path string for display (e.g., '75,24,1d,5f,bd' or '0102,5f7e' for 2-byte hops).
+
+        Uses bot.prefix_hex_chars for multi-byte path support; falls back to 2-char (1-byte)
+        chunks when length is not divisible or for legacy paths.
+
         Args:
-            path: The raw path string.
-            
+            path: The raw path string (hex, possibly with commas).
+
         Returns:
             str: The formatted path string.
         """
         if not path:
             return "Direct"
-        
+
         # If path already contains commas, it's likely already formatted
         if ',' in path:
             return path
-        
-        # If path contains descriptive text (like "Routed through X hops"), 
+
+        # If path contains descriptive text (like "Routed through X hops"),
         # extract just the numeric part or return as-is
         if ' ' in path and not all(c in '0123456789abcdefABCDEF' for c in path.replace(' ', '')):
             # This looks like descriptive text, return as-is
             return path
-        
-        # If path is a hex string without separators, add commas every 2 characters
-        # But only if it looks like a hex string (all hex characters)
+
+        # Use configured hex chars per node for multi-byte path support (2 = 1 byte, 4 = 2 bytes, 6 = 3 bytes)
+        hex_chars = getattr(self.bot, 'prefix_hex_chars', 2)
+        if hex_chars <= 0:
+            hex_chars = 2
+
+        # If path is a hex string without separators, chunk by hex_chars per hop
         if len(path) > 2 and ',' not in path and all(c in '0123456789abcdefABCDEF' for c in path):
-            # Split into 2-character chunks and join with commas
-            formatted = ','.join([path[i:i+2] for i in range(0, len(path), 2)])
-            return formatted
-        
+            if (len(path) % hex_chars) == 0:
+                formatted = ','.join([path[i:i + hex_chars] for i in range(0, len(path), hex_chars)])
+                if formatted:
+                    return formatted
+            # Legacy fallback: length not divisible by hex_chars, use 2-char (1-byte) chunks
+            formatted = ','.join([path[i:i + 2] for i in range(0, len(path), 2)])
+            return formatted if formatted else path
+
         # If it's already a single node ID or short path, return as-is
         return path
     
@@ -566,13 +577,18 @@ class StatsCommand(BaseCommand):
                     for i, (sender, path_len, path_str) in enumerate(longest_paths, 1):
                         # Truncate sender name to fit more data
                         display_sender = sender[:8] + "..." if len(sender) > 11 else sender
-                        # Compact format: "1 Gundam 56,1c,98,1a,aa,cd,5f"
-                        new_line = self.translate('commands.stats.paths.format', rank=i, sender=display_sender, path=path_str) + "\n"
-                        
+                        # Full line: rank + sender + ": " + path (same as format template)
+                        full_line = self.translate('commands.stats.paths.format', rank=i, sender=display_sender, path=path_str) + "\n"
+                        # When a single path line would exceed the message limit, use synopsis (rank + sender + hop count only)
+                        if len(full_line) > max_length:
+                            new_line = self.translate('commands.stats.paths.synopsis', rank=i, sender=display_sender, hops=path_len) + "\n"
+                        else:
+                            new_line = full_line
+
                         # Check if adding this line would exceed the limit
                         if len(response + new_line) > max_length:
                             break
-                        
+
                         response += new_line
                 else:
                     response = self.translate('commands.stats.paths.none') + "\n"

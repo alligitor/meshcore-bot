@@ -201,7 +201,8 @@
       },
       "paths": {
         "none": "No path data",
-        "format": "{rank} {sender} {path}"
+        "format": "{rank} {sender} {path}",
+        "synopsis": "{rank} {sender}: {hops} hops"
       },
       "adverts": {
         "header": "Top Advert Nodes (24h):",
