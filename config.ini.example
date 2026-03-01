@@ -1505,3 +1505,32 @@ avatar_style = color
 # bridge.general = https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRST
 # bridge.emergency = https://discord.com/api/webhooks/987654321098765432/ZYXWVUTSRQPONMLKJIHGFEDCBA0987654321zyxwvutsrqponmlkjihgf
 # bridge.wx = https://discord.com/api/webhooks/111222333444555666/WeatherChannelWebhookTokenGoesHere1234567890abcdefghijklmno
+
+[TelegramBridge]
+# Enable Telegram bridge service
+# Posts MeshCore channel messages to Telegram via the Bot API (one-way, read-only)
+# true: Enable Telegram bridge
+# false: Telegram bridge disabled (default)
+enabled = false
+
+# IMPORTANT: Direct messages (DMs) are NEVER bridged to Telegram (hardcoded for privacy)
+
+# Bot API token from @BotFather. Can also be set via TELEGRAM_BOT_TOKEN env var (env takes precedence).
+# Rotate token in @BotFather if it was ever exposed.
+# api_token = YOUR_BOT_TOKEN_HERE
+
+# Optional: parse_mode for message formatting (HTML, Markdown, or MarkdownV2). Default: HTML
+# parse_mode = HTML
+
+# Optional: disable link previews in bridged messages (true/false). Default: false
+# disable_web_page_preview = false
+
+# Optional: max message length (1-4096). Telegram limit is 4096. Default: 4096
+# max_message_length = 4096
+
+# Channel mappings: bridge.<meshcore_channel> = <telegram_chat_id>
+# chat_id: @channelusername for public channels, or numeric ID (e.g. -100xxxxxxxxxx) for private
+# Add bot to channel as Administrator with "Post Messages" permission
+# See docs/telegram-bridge.md for setup
+# bridge.Public = @YourChannelName
+# bridge.emergency = -1001234567890
