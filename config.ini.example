@@ -157,6 +157,12 @@ respond_to_dms = true
 # Set a custom prefix length for the public keys to identify repeaters
 prefix_bytes = 1
 
+# Flood scope for channel messages (MeshCore regions; optional)
+# Empty, * or 0: classic flood (default). Set to a region name (e.g. west) to limit
+# channel sends to that scope. Dynamic "reply with same scope as sender" is not
+# supported until the protocol exposes scope on received channel messages.
+# flood_scope =
+
 [Banned_Users]
 # List of banned sender names (comma-separated). Matching is prefix (starts-with):
 # "Awful Username" also matches "Awful Username 🍆". No bot responses in channels or DMs.

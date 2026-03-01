@@ -23,9 +23,6 @@ from dataclasses import dataclass
 import meshcore
 from meshcore import EventType
 
-# Import command functions from meshcore-cli
-from meshcore_cli.meshcore_cli import send_cmd, send_chan_msg
-
 # Import our modules
 from .rate_limiter import RateLimiter, BotTxRateLimiter, PerUserRateLimiter, NominatimRateLimiter
 from .message_handler import MessageHandler

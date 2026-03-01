@@ -890,20 +890,13 @@ class CommandManager:
         command_id: Optional[str] = None,
         skip_user_rate_limit: bool = False,
         rate_limit_key: Optional[str] = None,
+        scope: Optional[str] = None,
     ) -> bool:
-        """Send a channel message using meshcore-cli command.
+        """Send a channel message using meshcore_py (optional flood scope).
         
         Resolves channel names to numbers and handles rate limiting.
-        
-        Args:
-            channel: The channel name (e.g., "LongFast").
-            content: The message content to send.
-            command_id: Optional command_id for repeat tracking (if not provided, one will be generated).
-            skip_user_rate_limit: If True, skip user rate limiter checks (for automated responses).
-            rate_limit_key: Optional key for per-user rate limiting (e.g. from get_rate_limit_key(message)).
-            
-        Returns:
-            bool: True if sent successfully, False otherwise.
+        If [Channels] flood_scope is set (or scope is passed), uses that scope
+        for this send then restores global flood. Scope values "" / "*" / "0" mean global.
         """
         if not self.bot.connected or not self.bot.meshcore:
             return False
@@ -943,9 +936,21 @@ class CommandManager:
                 self.logger.debug(f"Error recording transmission for repeat tracking: {e}")
                 # Don't fail the send if transmission tracking fails
             
-            # Use meshcore-cli send_chan_msg function
-            from meshcore_cli.meshcore_cli import send_chan_msg
-            result = await send_chan_msg(self.bot.meshcore, channel_num, content)
+            # Optional flood scope (region): set before send, restore after
+            scope_cfg = ""
+            if self.bot.config.has_section("Channels") and self.bot.config.has_option("Channels", "flood_scope"):
+                scope_cfg = (self.bot.config.get("Channels", "flood_scope") or "").strip()
+            scope_to_use = (scope if scope is not None else scope_cfg) or ""
+            scope_is_global = scope_to_use in ("", "*", "0", "None")
+            if not scope_is_global and hasattr(self.bot.meshcore.commands, "set_flood_scope"):
+                await self.bot.meshcore.commands.set_flood_scope(scope_to_use)
+            
+            try:
+                # Use meshcore_py directly (no meshcore-cli for channel sends)
+                result = await self.bot.meshcore.commands.send_chan_msg(channel_num, content)
+            finally:
+                if not scope_is_global and hasattr(self.bot.meshcore.commands, "set_flood_scope"):
+                    await self.bot.meshcore.commands.set_flood_scope("*")
             
             # Handle result using unified handler
             target = f"{channel} (channel {channel_num})"
