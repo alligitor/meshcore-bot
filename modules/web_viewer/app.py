@@ -695,7 +695,7 @@ class BotDataViewer:
             best_method = None
             
             for repeater in repeaters:
-                candidate_prefix = repeater.get('public_key', '')[:self.bot.prefix_hex_chars].lower() if repeater.get('public_key') else None
+                candidate_prefix = repeater.get('public_key', '')[:prefix_hex_chars].lower() if repeater.get('public_key') else None
                 candidate_public_key = repeater.get('public_key', '').lower() if repeater.get('public_key') else None
                 if not candidate_prefix:
                     continue
@@ -1162,9 +1162,12 @@ class BotDataViewer:
         @self.app.route('/mesh')
         def mesh():
             """Mesh graph visualization page"""
+            prefix_hex_chars = self.config.getint('Bot', 'prefix_bytes', fallback=1) * 2
+            if prefix_hex_chars <= 0:
+                prefix_hex_chars = 2
             return render_template(
                 'mesh.html',
-                prefix_hex_chars=self.bot.prefix_hex_chars
+                prefix_hex_chars=prefix_hex_chars
             )
         
         # Favicon routes
@@ -5339,7 +5342,7 @@ class BotDataViewer:
             best_method = None
             
             for repeater in repeaters:
-                candidate_prefix = repeater.get('public_key', '')[:self.bot.prefix_hex_chars].lower() if repeater.get('public_key') else None
+                candidate_prefix = repeater.get('public_key', '')[:prefix_hex_chars].lower() if repeater.get('public_key') else None
                 candidate_public_key = repeater.get('public_key', '').lower() if repeater.get('public_key') else None
                 if not candidate_prefix:
                     continue
