@@ -2028,7 +2028,8 @@ def format_elapsed_display(ts: Any, translator: Any = None) -> str:
         ts_f = float(ts)
     except (TypeError, ValueError):
         return _sync_str()
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
+    UTC = timezone.utc
     elapsed_ms = (datetime.now(UTC).timestamp() - ts_f) * 1000
     if elapsed_ms < 0 or elapsed_ms > _ELAPSED_MS_MAX:
         return _sync_str()
