@@ -437,8 +437,9 @@ class PathCommand(BaseCommand):
                         
                         # Try graph-based selection if enabled
                         if self.graph_based_validation and hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph:
+                            path_prefix_hex_chars = len(node_id)
                             graph_repeater, graph_confidence, selection_method = self._select_repeater_by_graph(
-                                recent_repeaters, node_id, node_ids
+                                recent_repeaters, node_id, node_ids, path_prefix_hex_chars=path_prefix_hex_chars
                             )
                         
                         # Get geographic proximity selection
@@ -1281,17 +1282,24 @@ class PathCommand(BaseCommand):
         
         return None, 0.0
     
-    def _select_repeater_by_graph(self, repeaters: List[Dict[str, Any]], node_id: str, 
-                                  path_context: List[str]) -> Tuple[Optional[Dict[str, Any]], float, str]:
+    def _select_repeater_by_graph(self, repeaters: List[Dict[str, Any]], node_id: str,
+                                  path_context: List[str],
+                                  path_prefix_hex_chars: Optional[int] = None) -> Tuple[Optional[Dict[str, Any]], float, str]:
         """Select repeater based on graph evidence.
-        
+
         Uses enhanced direct-edge validation and multi-hop path inference.
-        
+        When the path was decoded with two-byte or three-byte hops, pass path_prefix_hex_chars
+        (e.g. 4 or 6) so candidate matching uses the full node_id; graph lookups are normalized
+        to the configured prefix length.
+
         Args:
             repeaters: List of repeaters to choose from
-            node_id: The current node ID being processed
+            node_id: The current node ID being processed (2, 4, or 6 hex chars depending on path)
             path_context: Full path for context
-        
+            path_prefix_hex_chars: Optional. When the path is multi-byte (2 or 3 bytes per hop),
+                pass hex chars per node (4 or 6). Used for candidate_prefix; graph lookups use
+                bot.prefix_hex_chars. When None, uses bot.prefix_hex_chars for both.
+
         Returns:
             Tuple of (selected_repeater, confidence_score, method_name)
             confidence_score: 0.0 to 1.0, where 1.0 is very confident
@@ -1299,63 +1307,71 @@ class PathCommand(BaseCommand):
         """
         if not self.graph_based_validation or not hasattr(self.bot, 'mesh_graph') or not self.bot.mesh_graph:
             return None, 0.0, None
-        
+
         mesh_graph = self.bot.mesh_graph
+        graph_n = getattr(self.bot, 'prefix_hex_chars', 2)
+        if graph_n <= 0:
+            graph_n = 2
+        # When path has longer node IDs (multi-byte), use that for candidate prefix; normalize for graph
+        prefix_n = path_prefix_hex_chars if path_prefix_hex_chars is not None and path_prefix_hex_chars >= 2 else graph_n
         
         # Find current node position in path
         try:
             current_index = path_context.index(node_id) if node_id in path_context else -1
-        except:
+        except Exception:
             current_index = -1
-        
+
         if current_index == -1:
             return None, 0.0, None
-        
-        # Get previous and next node IDs
+
+        # Get previous and next node IDs; normalize to graph prefix length for edge lookups
         prev_node_id = path_context[current_index - 1] if current_index > 0 else None
         next_node_id = path_context[current_index + 1] if current_index < len(path_context) - 1 else None
-        
+        prev_norm = (prev_node_id[:graph_n].lower() if prev_node_id and len(prev_node_id) > graph_n else (prev_node_id.lower() if prev_node_id else None))
+        next_norm = (next_node_id[:graph_n].lower() if next_node_id and len(next_node_id) > graph_n else (next_node_id.lower() if next_node_id else None))
+
         # Score each candidate based on enhanced graph evidence
         best_repeater = None
         best_score = 0.0
         best_method = None
-        
+
         for repeater in repeaters:
             pk = repeater.get('public_key') or ''
-            candidate_prefix = self.bot.key_prefix(pk).lower() if pk else None
+            candidate_prefix = (pk[:prefix_n].lower() if pk else None)
             candidate_public_key = repeater.get('public_key', '').lower() if repeater.get('public_key') else None
             if not candidate_prefix:
                 continue
-            
-            # First attempt: Enhanced direct-edge validation
+            candidate_norm = candidate_prefix[:graph_n].lower() if len(candidate_prefix) > graph_n else candidate_prefix
+
+            # First attempt: Enhanced direct-edge validation (use normalized IDs for graph)
             graph_score = mesh_graph.get_candidate_score(
-                candidate_prefix, prev_node_id, next_node_id, self.min_edge_observations,
+                candidate_norm, prev_norm, next_norm, self.min_edge_observations,
                 hop_position=current_index if self.graph_use_hop_position else None,
                 use_bidirectional=self.graph_use_bidirectional,
                 use_hop_position=self.graph_use_hop_position
             )
-            
+
             # Check if edges have stored public keys that match this candidate
             # This indicates high confidence in the edge and should be prioritized
             stored_key_bonus = 0.0
             if self.graph_prefer_stored_keys and candidate_public_key:
                 # Check edge from previous node to candidate
-                if prev_node_id:
-                    prev_to_candidate_edge = mesh_graph.get_edge(prev_node_id, candidate_prefix)
+                if prev_norm:
+                    prev_to_candidate_edge = mesh_graph.get_edge(prev_norm, candidate_norm)
                     if prev_to_candidate_edge:
                         stored_to_key = prev_to_candidate_edge.get('to_public_key', '').lower() if prev_to_candidate_edge.get('to_public_key') else None
                         if stored_to_key and stored_to_key == candidate_public_key:
                             stored_key_bonus = max(stored_key_bonus, 0.4)  # Strong bonus for matching stored key
-                            self.logger.debug(f"Found stored public key match for {repeater.get('name', 'unknown')} in edge {prev_node_id}->{candidate_prefix}")
-                
+                            self.logger.debug(f"Found stored public key match for {repeater.get('name', 'unknown')} in edge {prev_norm}->{candidate_norm}")
+
                 # Check edge from candidate to next node
-                if next_node_id:
-                    candidate_to_next_edge = mesh_graph.get_edge(candidate_prefix, next_node_id)
+                if next_norm:
+                    candidate_to_next_edge = mesh_graph.get_edge(candidate_norm, next_norm)
                     if candidate_to_next_edge:
                         stored_from_key = candidate_to_next_edge.get('from_public_key', '').lower() if candidate_to_next_edge.get('from_public_key') else None
                         if stored_from_key and stored_from_key == candidate_public_key:
                             stored_key_bonus = max(stored_key_bonus, 0.4)  # Strong bonus for matching stored key
-                            self.logger.debug(f"Found stored public key match for {repeater.get('name', 'unknown')} in edge {candidate_prefix}->{next_node_id}")
+                            self.logger.debug(f"Found stored public key match for {repeater.get('name', 'unknown')} in edge {candidate_norm}->{next_norm}")
             
             # Zero-hop bonus: If this repeater has been heard directly by the bot (zero-hop advert),
             # it's strong evidence it's close and should be preferred, even for intermediate hops.
@@ -1449,16 +1465,16 @@ class PathCommand(BaseCommand):
             
             # Second attempt: Multi-hop inference if direct edges have low confidence
             multi_hop_score = 0.0
-            if self.graph_multi_hop_enabled and graph_score_with_bonus < 0.6 and prev_node_id and next_node_id:
+            if self.graph_multi_hop_enabled and graph_score_with_bonus < 0.6 and prev_norm and next_norm:
                 # Try to find intermediate nodes that connect prev to next
                 intermediate_candidates = mesh_graph.find_intermediate_nodes(
-                    prev_node_id, next_node_id, self.min_edge_observations,
+                    prev_norm, next_norm, self.min_edge_observations,
                     max_hops=self.graph_multi_hop_max_hops
                 )
-                
+
                 # Check if our candidate appears in the intermediate nodes list
                 for intermediate_prefix, intermediate_score in intermediate_candidates:
-                    if intermediate_prefix == candidate_prefix:
+                    if intermediate_prefix == candidate_norm:
                         multi_hop_score = intermediate_score
                         break
             
@@ -1468,16 +1484,16 @@ class PathCommand(BaseCommand):
             
             # Apply distance penalty for intermediate hops (prevents selecting very distant repeaters)
             # This is especially important when graph has strong evidence for long-distance links
-            if self.graph_distance_penalty_enabled and next_node_id is not None:  # Not final hop
+            if self.graph_distance_penalty_enabled and next_norm is not None:  # Not final hop
                 repeater_lat = repeater.get('latitude')
                 repeater_lon = repeater.get('longitude')
-                
+
                 if repeater_lat is not None and repeater_lon is not None:
                     max_distance = 0.0
-                    
+
                     # Check distance from previous node to candidate (use stored edge distance if available)
-                    if prev_node_id:
-                        prev_to_candidate_edge = mesh_graph.get_edge(prev_node_id, candidate_prefix)
+                    if prev_norm:
+                        prev_to_candidate_edge = mesh_graph.get_edge(prev_norm, candidate_norm)
                         if prev_to_candidate_edge and prev_to_candidate_edge.get('geographic_distance'):
                             # Use stored geographic distance from edge (most accurate)
                             distance = prev_to_candidate_edge.get('geographic_distance')
@@ -1488,10 +1504,10 @@ class PathCommand(BaseCommand):
                             # Note: This is a limitation - we'd need to track previous selections
                             # For now, we'll rely on edge distances which are stored when paths are observed
                             pass
-                    
+
                     # Check distance from candidate to next node (use stored edge distance if available)
-                    if next_node_id:
-                        candidate_to_next_edge = mesh_graph.get_edge(candidate_prefix, next_node_id)
+                    if next_norm:
+                        candidate_to_next_edge = mesh_graph.get_edge(candidate_norm, next_norm)
                         if candidate_to_next_edge and candidate_to_next_edge.get('geographic_distance'):
                             distance = candidate_to_next_edge.get('geographic_distance')
                             max_distance = max(max_distance, distance)
@@ -1513,8 +1529,8 @@ class PathCommand(BaseCommand):
                             small_penalty = (max_distance - self.graph_max_reasonable_hop_distance_km * 0.8) / (self.graph_max_reasonable_hop_distance_km * 0.2) * self.graph_distance_penalty_strength * 0.5
                             candidate_score = candidate_score * (1.0 - small_penalty)
             
-            # For final hop (next_node_id is None), add bot location proximity bonus
-            if next_node_id is None and self.graph_final_hop_proximity_enabled:
+            # For final hop (next_norm is None), add bot location proximity bonus
+            if next_norm is None and self.graph_final_hop_proximity_enabled:
                 if self.bot_latitude is not None and self.bot_longitude is not None:
                     repeater_lat = repeater.get('latitude')
                     repeater_lon = repeater.get('longitude')

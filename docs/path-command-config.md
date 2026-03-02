@@ -52,6 +52,10 @@ path_selection_preset = balanced
 
 ## Graph-Based Selection
 
+**Prefix length and graph conflation**
+
+The graph stores edges using the bot’s prefix length ([Bot] `prefix_bytes`). Paths from packets can be 1-, 2-, or 3-byte encoded (per sender); when we record edges we normalize to the bot’s prefix. If the bot uses **prefix_bytes=1** (2 hex chars) and the mesh often uses 2-byte paths, **distinct links can be merged**: e.g. 7E42→8611 and 7E99→86FF both become a single edge (7e, 86). That can overcount observations and make path resolution ambiguous when several repeaters share the same short prefix. **Recommendation:** set `prefix_bytes` to match the mesh (e.g. 2 if most traffic is 2-byte) so the graph keeps finer resolution and the mesh viewer shows one node per prefix instead of collapsing many repeaters into one.
+
 **`graph_based_validation`** (boolean)
 - Enable graph-based path validation using observed mesh connections
 - Default: `true`

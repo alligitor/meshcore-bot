@@ -1790,9 +1790,13 @@ class MessageHandler:
     
     def _update_mesh_graph(self, path_nodes: List[str], packet_info: Dict[str, Any]):
         """Update mesh graph with edges from a message path.
-        
+
+        path_nodes may be 2, 4, or 6 hex chars per node depending on the packet's
+        bytes_per_hop (sender setting). add_edge stores at the resolution provided;
+        no truncation, so distinct links (e.g. 7e42→8611 and 7e99→86ff) stay separate.
+
         Args:
-            path_nodes: List of node prefixes in path order.
+            path_nodes: List of node prefixes in path order (length per node from packet's bytes_per_hop).
             packet_info: Packet information dictionary with routing data.
         """
         if not path_nodes or len(path_nodes) < 2:

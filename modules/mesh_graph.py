@@ -3,6 +3,14 @@
 Mesh Graph Module
 Tracks observed connections between repeaters to improve path guessing accuracy.
 Persists graph state across bot restarts for development scenarios.
+
+Multi-resolution storage:
+  Edges are stored at the resolution observed (2, 4, or 6 hex chars per node). No
+  truncation on write; lookup supports prefix matching so get_edge(7e, 86) can
+  return stored (7e42, 8611). Distinct links (e.g. 7e42→8611 and 7e99→86ff) stay
+  separate. When multiple edges match a short-prefix query, we return one edge by
+  tie-break (most specific, then observation_count, then last_seen); we never sum
+  observation counts across candidates.
 """
 
 import sqlite3
@@ -73,6 +81,54 @@ class MeshGraph:
             return max(2, int(n))
         except (TypeError, ValueError):
             return 2
+
+    def _valid_prefix_length(self, prefix: str) -> bool:
+        """Return True if prefix has 2, 4, or 6 hex chars (after stripping)."""
+        if not prefix or not isinstance(prefix, str):
+            return False
+        s = prefix.strip().lower()
+        if len(s) not in (2, 4, 6):
+            return False
+        return all(c in '0123456789abcdef' for c in s)
+
+    def _prefix_match(self, a: str, b: str) -> bool:
+        """Return True if a and b match: exact or one is a prefix of the other (after lowercasing)."""
+        if not a or not b:
+            return False
+        a, b = a.lower().strip(), b.lower().strip()
+        return a == b or a.startswith(b) or b.startswith(a)
+
+    def _get_edge_by_prefix_match(self, from_q: str, to_q: str) -> Optional[Dict]:
+        """Return the best matching edge for a prefix query. Single edge only; never merge counts.
+        Tie-break: exact key if present, else longest combined prefix length, then max
+        observation_count, then most recent last_seen.
+        """
+        from_q = from_q.lower().strip()
+        to_q = to_q.lower().strip()
+        candidates = []
+        for edge_key, edge in self.edges.items():
+            from_p, to_p = edge_key
+            if self._prefix_match(from_p, from_q) and self._prefix_match(to_p, to_q):
+                candidates.append(edge)
+        if not candidates:
+            return None
+        # Prefer exact match
+        for e in candidates:
+            if e['from_prefix'] == from_q and e['to_prefix'] == to_q:
+                return e
+        # Tie-break: longest combined prefix length, then max observation_count, then most recent last_seen
+        def key(e):
+            spec = len(e['from_prefix']) + len(e['to_prefix'])
+            obs = e.get('observation_count', 0)
+            last = e.get('last_seen')
+            if isinstance(last, str):
+                try:
+                    last = datetime.fromisoformat(last.replace('Z', '+00:00'))
+                except ValueError:
+                    last = datetime.min
+            last_ts = last if isinstance(last, datetime) else datetime.min
+            return (spec, obs, last_ts)
+        return max(candidates, key=key)
 
     def _load_from_database(self):
         """Load graph edges from database on startup."""
@@ -159,9 +215,13 @@ class MeshGraph:
                  prefix_bytes: int = 1):
         """Add or update an edge in the graph.
 
+        Prefixes are stored at the resolution provided (2, 4, or 6 hex chars).
+        No truncation; the same physical link can be recorded at different
+        resolutions and will create/update the matching edge.
+
         Args:
-            from_prefix: Source node prefix (2 hex chars, or 4 when prefix_bytes=2).
-            to_prefix: Destination node prefix (2 hex chars, or 4 when prefix_bytes=2).
+            from_prefix: Source node prefix (2, 4, or 6 hex chars depending on path encoding).
+            to_prefix: Destination node prefix (2, 4, or 6 hex chars depending on path encoding).
             from_public_key: Full public key of source node (optional).
             to_public_key: Full public key of destination node (optional).
             hop_position: Position in path where this edge was observed (optional).
@@ -175,9 +235,11 @@ class MeshGraph:
         if not self.capture_enabled:
             return
 
-        # Normalize prefixes to lowercase
-        from_prefix = from_prefix.lower()[:self._prefix_len()]
-        to_prefix = to_prefix.lower()[:self._prefix_len()]
+        # Normalize to lowercase; validate length (2, 4, or 6 hex chars). No truncation.
+        from_prefix = from_prefix.lower().strip()
+        to_prefix = to_prefix.lower().strip()
+        if not self._valid_prefix_length(from_prefix) or not self._valid_prefix_length(to_prefix):
+            return
 
         # Intern public key strings so repeated identical keys share one object in RAM
         if from_public_key:
@@ -813,74 +875,70 @@ class MeshGraph:
         self._flush_pending_updates_sync()
     
     def has_edge(self, from_prefix: str, to_prefix: str) -> bool:
-        """Check if an edge exists in the graph.
-        
+        """Check if an edge exists in the graph (exact or prefix match).
+
         Args:
             from_prefix: Source node prefix.
             to_prefix: Destination node prefix.
-            
+
         Returns:
             bool: True if edge exists.
         """
-        from_prefix = from_prefix.lower()[:self._prefix_len()]
-        to_prefix = to_prefix.lower()[:self._prefix_len()]
-        return (from_prefix, to_prefix) in self.edges
-    
+        return self.get_edge(from_prefix, to_prefix) is not None
+
     def get_edge(self, from_prefix: str, to_prefix: str) -> Optional[Dict]:
-        """Get edge data if it exists.
-        
+        """Get edge data if it exists (exact key first, then prefix match).
+
         Args:
             from_prefix: Source node prefix.
             to_prefix: Destination node prefix.
-            
+
         Returns:
             Dict with edge data or None if not found.
         """
-        from_prefix = from_prefix.lower()[:self._prefix_len()]
-        to_prefix = to_prefix.lower()[:self._prefix_len()]
-        return self.edges.get((from_prefix, to_prefix))
+        from_norm = from_prefix.lower().strip() if from_prefix else ""
+        to_norm = to_prefix.lower().strip() if to_prefix else ""
+        if not from_norm or not to_norm:
+            return None
+        # Exact key first
+        exact = self.edges.get((from_norm, to_norm))
+        if exact is not None:
+            return exact
+        return self._get_edge_by_prefix_match(from_norm, to_norm)
     
     def get_outgoing_edges(self, prefix: str) -> List[Dict]:
-        """Get all edges originating from a node.
-
-        Uses the adjacency index for O(1) lookup instead of a full scan.
+        """Get all edges originating from a node (prefix match: returns edges where from_prefix matches prefix).
 
         Args:
-            prefix: Node prefix.
+            prefix: Node prefix (2, 4, or 6 hex chars).
 
         Returns:
             List of edge dictionaries.
         """
-        prefix = prefix.lower()[:self._prefix_len()]
-        to_prefixes = self._outgoing_index.get(prefix)
-        if not to_prefixes:
+        prefix = prefix.lower().strip() if prefix else ""
+        if not prefix:
             return []
         result = []
-        for to_prefix in to_prefixes:
-            edge = self.edges.get((prefix, to_prefix))
-            if edge is not None:
+        for edge in self.edges.values():
+            if self._prefix_match(edge['from_prefix'], prefix):
                 result.append(edge)
         return result
 
     def get_incoming_edges(self, prefix: str) -> List[Dict]:
-        """Get all edges ending at a node.
-
-        Uses the adjacency index for O(1) lookup instead of a full scan.
+        """Get all edges ending at a node (prefix match: returns edges where to_prefix matches prefix).
 
         Args:
-            prefix: Node prefix.
+            prefix: Node prefix (2, 4, or 6 hex chars).
 
         Returns:
             List of edge dictionaries.
         """
-        prefix = prefix.lower()[:self._prefix_len()]
-        from_prefixes = self._incoming_index.get(prefix)
-        if not from_prefixes:
+        prefix = prefix.lower().strip() if prefix else ""
+        if not prefix:
             return []
         result = []
-        for from_prefix in from_prefixes:
-            edge = self.edges.get((from_prefix, prefix))
-            if edge is not None:
+        for edge in self.edges.values():
+            if self._prefix_match(edge['to_prefix'], prefix):
                 result.append(edge)
         return result
     
@@ -1077,9 +1135,11 @@ class MeshGraph:
             List of (candidate_prefix, score) tuples sorted by score (highest first).
             Score is 0.0-1.0 based on path strength.
         """
-        from_prefix = from_prefix.lower()[:self._prefix_len()]
-        to_prefix = to_prefix.lower()[:self._prefix_len()]
-        
+        from_prefix = from_prefix.lower().strip() if from_prefix else ""
+        to_prefix = to_prefix.lower().strip() if to_prefix else ""
+        if not from_prefix or not to_prefix:
+            return []
+
         candidates: Dict[str, float] = {}
         
         # Try 2-hop paths first: from_prefix -> intermediate -> to_prefix

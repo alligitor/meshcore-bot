@@ -1324,25 +1324,29 @@ class ModernContactsManager {
     async decodePathInModal(pathHex, pathIndex) {
         const decodedDiv = document.getElementById(`decoded-path-${pathIndex}`);
         const button = document.querySelector(`#path-item-${pathIndex} button`);
-        
+
         if (!decodedDiv || !button) return;
-        
+
         // Show loading state
         const originalHtml = button.innerHTML;
         button.disabled = true;
         button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Decoding...';
         decodedDiv.style.display = 'block';
         decodedDiv.innerHTML = '<div class="text-muted"><i class="fas fa-spinner fa-spin"></i> Decoding path...</div>';
-        
+
         try {
+            // Use contact's out_bytes_per_hop when path came from a packet with multi-byte hops
+            const bytesPerHop = this.currentModalContact?.out_bytes_per_hop || null;
+            const body = { path_hex: pathHex };
+            if (bytesPerHop != null && [1, 2, 3].includes(Number(bytesPerHop))) {
+                body.bytes_per_hop = Number(bytesPerHop);
+            }
             const response = await fetch('/api/decode-path', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    path_hex: pathHex
-                })
+                body: JSON.stringify(body)
             });
             
             const data = await response.json();
