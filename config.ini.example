@@ -1502,6 +1502,10 @@ enabled = false
 # Default: color
 avatar_style = color
 
+# Profanity handling for bridged message content and usernames: drop (default), censor, or off
+# drop = do not bridge messages that contain profanity; censor = replace with **** and bridge; off = no filtering
+# filter_profanity = drop
+
 # Channel mappings: bridge.<meshcore_channel> = <discord_webhook_url>
 # Only channels explicitly listed here will be bridged to Discord
 # Get webhook URLs from Discord: Channel Settings → Integrations → Webhooks → Create Webhook
@@ -1537,6 +1541,10 @@ enabled = false
 
 # Optional: max message length (1-4096). Telegram limit is 4096. Default: 4096
 # max_message_length = 4096
+
+# Profanity handling for bridged message content and usernames: drop (default), censor, or off
+# drop = do not bridge messages that contain profanity; censor = replace with **** and bridge; off = no filtering
+# filter_profanity = drop
 
 # Channel mappings: bridge.<meshcore_channel> = <telegram_chat_id>
 # chat_id: @channelusername for public channels, or numeric ID (e.g. -100xxxxxxxxxx) for private

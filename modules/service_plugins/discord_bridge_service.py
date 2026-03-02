@@ -34,6 +34,7 @@ except ImportError:
 
 # Import base service
 from .base_service import BaseServicePlugin
+from ..profanity_filter import censor, contains_profanity
 
 
 @dataclass
@@ -98,6 +99,12 @@ class DiscordBridgeService(BaseServicePlugin):
             self.avatar_style = 'color'
 
         self.logger.info(f"Avatar style: {self.avatar_style}")
+
+        # Profanity filter: drop (default), censor, or off
+        raw_filter = self.bot.config.get('DiscordBridge', 'filter_profanity', fallback='drop').strip().lower()
+        if raw_filter not in ('drop', 'censor', 'off'):
+            raw_filter = 'drop'
+        self.filter_profanity = raw_filter
 
         # Rate limit tracking per webhook
         # Discord webhooks: 30 messages per minute per webhook
@@ -371,6 +378,15 @@ class DiscordBridgeService(BaseServicePlugin):
 
             # Clean up MeshCore @ mentions: @[username] → **@username**
             message_text = self._format_mentions(message_text)
+
+            # Profanity filter: drop (don't bridge), censor (replace with ****), or off
+            if self.filter_profanity == 'drop':
+                if contains_profanity(sender_name, self.logger) or contains_profanity(message_text, self.logger):
+                    self.logger.debug(f"Discord bridge: dropping message with profanity from [{channel_name}]")
+                    return
+            elif self.filter_profanity == 'censor':
+                sender_name = censor(sender_name, self.logger)
+                message_text = censor(message_text, self.logger)
 
             # Queue message for posting (with rate limiting and retry logic)
             await self._queue_message(webhook_url, message_text, channel_name, sender_name)

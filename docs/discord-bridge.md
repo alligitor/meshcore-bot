@@ -80,6 +80,14 @@ Control how user avatars appear in Discord:
 
 Preview: `https://api.dicebear.com/7.x/{style}/png?seed=YourName`
 
+### Profanity filter
+
+- **`filter_profanity`** (optional): How to handle profanity in bridged message content and usernames.
+  - **drop** (default): Do not bridge messages that contain profanity (message is dropped).
+  - **censor**: Replace profanity with `****` and bridge the message.
+  - **off**: No filtering; bridge all messages as-is.
+- Requires the `better-profanity` package (see `requirements.txt`). If the package is not installed and `filter_profanity` is `drop` or `censor`, a warning is logged and messages are bridged without filtering.
+
 ---
 
 ## Security & Privacy

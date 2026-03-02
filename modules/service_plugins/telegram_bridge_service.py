@@ -31,6 +31,7 @@ except ImportError:
     REQUESTS_AVAILABLE = False
 
 from .base_service import BaseServicePlugin
+from ..profanity_filter import censor, contains_profanity
 
 
 # Telegram API
@@ -101,6 +102,12 @@ class TelegramBridgeService(BaseServicePlugin):
             'TelegramBridge', 'max_message_length', fallback=TELEGRAM_MAX_MESSAGE_LENGTH
         )
         self.max_message_length = min(self.max_message_length, TELEGRAM_MAX_MESSAGE_LENGTH)
+
+        # Profanity filter: drop (default), censor, or off
+        raw_filter = self.bot.config.get('TelegramBridge', 'filter_profanity', fallback='drop').strip().lower()
+        if raw_filter not in ('drop', 'censor', 'off'):
+            raw_filter = 'drop'
+        self.filter_profanity = raw_filter
 
         # Rate limiting: ~1 message per second per chat
         self.message_queues: Dict[str, List[QueuedMessage]] = {}
@@ -264,6 +271,15 @@ class TelegramBridgeService(BaseServicePlugin):
             else:
                 sender_name = sender
                 message_text = text
+
+            # Profanity filter: drop (don't bridge), censor (replace with ****), or off
+            if self.filter_profanity == 'drop':
+                if contains_profanity(sender_name, self.logger) or contains_profanity(message_text, self.logger):
+                    self.logger.debug(f"Telegram bridge: dropping message with profanity from [{channel_name}]")
+                    return
+            elif self.filter_profanity == 'censor':
+                sender_name = censor(sender_name, self.logger)
+                message_text = censor(message_text, self.logger)
 
             full_text = self._build_message_text(sender_name, message_text, channel_name)
             full_text = self._truncate_text(full_text)
