@@ -76,7 +76,7 @@ Send a message on the bridged MeshCore channel — it should appear in the Teleg
 | `parse_mode` | No | `HTML` (default), `Markdown`, or `MarkdownV2` |
 | `disable_web_page_preview` | No | `true`/`false` — disable link previews (default: false) |
 | `max_message_length` | No | 1–4096; truncate longer messages (default: 4096) |
-| `filter_profanity` | No | Profanity handling: `drop` (default, do not bridge), `censor` (replace with ****), or `off`. Requires `better-profanity` package. |
+| `filter_profanity` | No | Profanity handling: `drop` (default), `censor`, or `off`. Word list via `better-profanity`; hate symbols (e.g. 卐/卍) are always blocked/censored. |
 
 \* Either `api_token` in config or `TELEGRAM_BOT_TOKEN` in the environment must be set when the bridge is enabled.
 

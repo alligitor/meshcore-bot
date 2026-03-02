@@ -36,6 +36,22 @@ class TestProfanityFilterEdgeCases:
     def test_contains_profanity_non_string_returns_false(self):
         assert contains_profanity(123) is False
 
+    def test_hate_symbol_swastika_detected(self):
+        """CJK swastika Unicode in text is detected as profanity (no better_profanity needed)."""
+        assert contains_profanity("\u5350") is True   # 卐
+        assert contains_profanity("\u534d") is True   # 卍
+        assert contains_profanity("User\u5350name") is True
+        assert contains_profanity("Hello \u534d world") is True
+
+    def test_hate_symbol_swastika_censored(self):
+        """CJK swastika Unicode is replaced with *** (no better_profanity needed)."""
+        assert censor("\u5350") == "***"
+        assert censor("\u534d") == "***"
+        assert censor("User\u5350name") == "User***name"
+        assert "***" in censor("Hello \u534d world")
+        assert "\u5350" not in censor("User\u5350name")
+        assert "\u534d" not in censor("Hello \u534d world")
+
 
 class TestProfanityFilterWithLibrary:
     """Tests that require better_profanity to be installed (skip if not)."""
@@ -125,3 +141,10 @@ class TestProfanityFilterFallbackWhenLibraryUnavailable:
                 censor("hello", logger=logger)
                 logger.warning.assert_called_once()
                 assert "better-profanity" in logger.warning.call_args[0][0]
+
+    def test_hate_symbol_still_detected_and_censored_when_library_unavailable(self):
+        """Hate symbols (e.g. swastika) are detected and replaced even when better_profanity is not installed."""
+        import modules.profanity_filter as pf
+        with patch.object(pf, "_profanity_available", False):
+            assert contains_profanity("\u5350") is True
+            assert censor("\u5350") == "***"

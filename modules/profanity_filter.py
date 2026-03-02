@@ -5,9 +5,17 @@ Shared profanity filter for bridge services (Discord, Telegram).
 Uses better-profanity when available; gracefully falls back to no-op if not installed.
 Uses unidecode when available to normalize Unicode (e.g. homoglyphs) to ASCII so
 better-profanity can detect them.
+Also checks for hate symbols (e.g. swastika Unicode) that word lists do not catch.
 """
 
 from typing import Optional
+
+# Unicode code points for symbols we treat as profanity (e.g. swastika forms).
+# These are checked in addition to better-profanity's word list.
+_HATE_SYMBOL_CODEPOINTS = frozenset({
+    0x5350,  # 卐 CJK swastika
+    0x534D,  # 卍 CJK swastika (reversed)
+})
 
 _profanity_available = False
 _profanity_initialized = False
@@ -25,6 +33,22 @@ try:
     _unidecode_available = True
 except ImportError:
     unidecode = None  # type: ignore
+
+
+def _has_hate_symbols(text: str) -> bool:
+    """Return True if text contains any blocked hate-symbol code point."""
+    for cp in _HATE_SYMBOL_CODEPOINTS:
+        if chr(cp) in text:
+            return True
+    return False
+
+
+def _replace_hate_symbols(text: str, replacement: str = "***") -> str:
+    """Replace any hate-symbol code point in text with replacement."""
+    result = text
+    for cp in _HATE_SYMBOL_CODEPOINTS:
+        result = result.replace(chr(cp), replacement)
+    return result
 
 
 def _normalize_for_profanity(text: str) -> str:
@@ -55,6 +79,7 @@ def _ensure_initialized(logger: Optional[object] = None) -> bool:
 def censor(text: Optional[str], logger: Optional[object] = None) -> str:
     """
     Replace profanity in text with ****. Returns original text if library unavailable.
+    Hate symbols (e.g. swastika Unicode) are replaced with ***.
 
     Args:
         text: Input string (message or username).
@@ -69,6 +94,8 @@ def censor(text: Optional[str], logger: Optional[object] = None) -> str:
         return str(text)
     if not text.strip():
         return text
+    # Replace hate symbols first (no dependency on better-profanity)
+    text = _replace_hate_symbols(text)
     if not _ensure_initialized(logger):
         return text
     normalized = _normalize_for_profanity(text)
@@ -77,17 +104,19 @@ def censor(text: Optional[str], logger: Optional[object] = None) -> str:
 
 def contains_profanity(text: Optional[str], logger: Optional[object] = None) -> bool:
     """
-    Return True if text contains any word from the profanity wordlist.
+    Return True if text contains any word from the profanity wordlist or a blocked hate symbol.
 
     Args:
         text: Input string to check.
         logger: Optional logger for one-time warning when better_profanity is not installed.
 
     Returns:
-        True if profanity detected, False otherwise or if library unavailable.
+        True if profanity or hate symbol detected, False otherwise or if library unavailable.
     """
     if text is None or not isinstance(text, str) or not text.strip():
         return False
+    if _has_hate_symbols(text):
+        return True
     if not _ensure_initialized(logger):
         return False
     normalized = _normalize_for_profanity(text)
