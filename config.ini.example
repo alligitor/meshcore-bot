@@ -303,14 +303,16 @@ pong = "Ping!"
 # triggers.<key> = csv list of trigger words
 # file.<key> = path to text file
 # prefix.<key> = string prepended to the chosen line (often an emoji)
+# channel.<key> or channels.<key> = comma-separated channel names; if set, trigger only works in those channels (e.g. channel.momjoke = #jokes)
 
 # default prefix (blank = no prefix)
 prefix.default =
 
-# Mom Jokes
+# Mom Jokes (only in #jokes)
 triggers.momjoke = momjoke,momjokes,mom joke,mom jokes,mom-joke,mom-jokes
 file.momjoke = data/randomlines/momjokes.txt
 prefix.momjoke = 🥸
+# channel.momjoke = #jokes
 
 # Fun Facts
 triggers.funfact = funfact,funfacts,fun fact,fun facts,fun-fact,fun-facts

@@ -719,8 +719,26 @@ class CommandManager:
             if not self.bot.config.getboolean('Channels', 'respond_to_dms', fallback=True):
                 return None
         else:
-            if message.channel not in self.monitor_channels:
-                return None
+            # Optional per-trigger channel list: channel.<key> or channels.<key> (e.g. channel.momjoke = #jokes)
+            # When set, trigger is allowed only in those channels (even if not in global monitor_channels)
+            channel_opt = self.bot.config.get('RandomLine', f'channel.{key}', fallback='').strip()
+            if not channel_opt:
+                channel_opt = self.bot.config.get('RandomLine', f'channels.{key}', fallback='').strip()
+            if channel_opt:
+                allowed = [ch.strip() for ch in channel_opt.split(',') if ch.strip()]
+                if allowed:
+                    # Normalize for comparison: lowercase, strip optional #
+                    msg_ch = (message.channel or '').lower().strip().lstrip('#')
+                    allowed_normalized = {ch.lower().strip().lstrip('#') for ch in allowed}
+                    if msg_ch not in allowed_normalized:
+                        return None
+                    # Per-trigger channels allowed even when not in monitor_channels; skip global check
+                else:
+                    if message.channel not in self.monitor_channels:
+                        return None
+            else:
+                if message.channel not in self.monitor_channels:
+                    return None
             if not self._is_channel_trigger_allowed(key, message):
                 return None
 
