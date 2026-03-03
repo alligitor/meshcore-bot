@@ -16,7 +16,7 @@ import signal
 import atexit
 import sqlite3
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Callable
 from dataclasses import dataclass
 
 # Import the official meshcore package
@@ -172,7 +172,10 @@ class MeshCoreBot:
         # Load max_channels from config (default 40, MeshCore supports up to 40 channels)
         max_channels = self.config.getint('Bot', 'max_channels', fallback=40)
         self.channel_manager = ChannelManager(self, max_channels=max_channels)
-        
+
+        # Callbacks invoked when the bot sends a channel message (e.g. Discord/Telegram bridges)
+        self.channel_sent_listeners: List[Callable] = []
+
         self.scheduler = MessageScheduler(self)
         
         # Initialize feed manager

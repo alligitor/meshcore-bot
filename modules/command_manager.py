@@ -972,9 +972,23 @@ class CommandManager:
             
             # Handle result using unified handler
             target = f"{channel} (channel {channel_num})"
-            return self._handle_send_result(
+            success = self._handle_send_result(
                 result, "Channel message", target, rate_limit_key=rate_limit_key
             )
+            if success and getattr(self.bot, 'channel_sent_listeners', None):
+                bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
+                payload = {'channel_idx': channel_num, 'text': f'{bot_name}: {content}'}
+                synthetic_event = type('Event', (), {'payload': payload})()
+                for cb in list(self.bot.channel_sent_listeners):
+                    async def _run_listener(listener, event):
+                        try:
+                            await listener(event, None)
+                        except Exception as e:
+                            self.logger.warning(
+                                "Channel sent listener error: %s", e, exc_info=True
+                            )
+                    asyncio.create_task(_run_listener(cb, synthetic_event))
+            return success
                 
         except Exception as e:
             self.logger.error(f"Failed to send channel message: {e}")

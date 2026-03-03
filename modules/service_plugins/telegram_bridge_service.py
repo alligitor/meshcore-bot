@@ -109,6 +109,11 @@ class TelegramBridgeService(BaseServicePlugin):
             raw_filter = 'drop'
         self.filter_profanity = raw_filter
 
+        # Bridge bot's own channel responses to Telegram (default: true)
+        self.bridge_bot_responses = self.bot.config.getboolean(
+            'TelegramBridge', 'bridge_bot_responses', fallback=True
+        )
+
         # Rate limiting: ~1 message per second per chat
         self.message_queues: Dict[str, List[QueuedMessage]] = {}
         self.send_times: Dict[str, deque] = {}
@@ -209,6 +214,11 @@ class TelegramBridgeService(BaseServicePlugin):
             self.logger.error("Cannot subscribe to events - meshcore not available")
             return
 
+        # Register for bot-sent channel messages so bot responses are bridged too
+        if self.bridge_bot_responses and getattr(self.bot, 'channel_sent_listeners', None) is not None:
+            self.bot.channel_sent_listeners.append(self._on_mesh_channel_message)
+            self.logger.info("Registered for bot channel-sent events (bridge_bot_responses=true)")
+
         for chat_id in self.channel_chat_ids.values():
             self.message_queues[chat_id] = []
             self.send_times[chat_id] = deque()
@@ -222,6 +232,14 @@ class TelegramBridgeService(BaseServicePlugin):
     async def stop(self) -> None:
         self.logger.info("Stopping Telegram bridge service...")
         self._running = False
+
+        # Unregister bot channel-sent listener
+        if getattr(self.bot, 'channel_sent_listeners', None) is not None:
+            try:
+                self.bot.channel_sent_listeners.remove(self._on_mesh_channel_message)
+            except ValueError:
+                pass
+
         if self._queue_processor_task:
             self._queue_processor_task.cancel()
             try:

@@ -278,3 +278,87 @@ class TestInternetStatusCache:
         lock1 = cache._get_lock()
         lock2 = cache._get_lock()
         assert lock1 is lock2
+
+
+class TestSendChannelMessageListeners:
+    """Tests for channel_sent_listeners invocation when bot sends a channel message."""
+
+    @pytest.mark.asyncio
+    async def test_successful_send_invokes_listeners_with_synthetic_event(self, cm_bot, mock_logger):
+        """When send_channel_message succeeds, each channel_sent_listener is called with event.payload shape (channel_idx, text)."""
+        import asyncio
+        from meshcore import EventType
+
+        cm_bot.connected = True
+        cm_bot.channel_manager = Mock()
+        cm_bot.channel_manager.get_channel_number = Mock(return_value=3)
+        cm_bot.meshcore = Mock()
+        cm_bot.meshcore.commands = Mock()
+        cm_bot.meshcore.commands.send_chan_msg = AsyncMock(return_value=Mock(type=EventType.MSG_SENT, payload=None))
+        cm_bot.bot_tx_rate_limiter.wait_for_tx = AsyncMock(return_value=None)
+        cm_bot.channel_sent_listeners = []
+        received = []
+
+        async def capture_listener(event, metadata=None):
+            received.append(getattr(event, 'payload', None))
+
+        cm_bot.channel_sent_listeners.append(capture_listener)
+
+        created_tasks = []
+
+        with patch("modules.command_manager.asyncio.create_task") as mock_create_task:
+            def capture_and_run(coro):
+                t = asyncio.get_event_loop().create_task(coro)
+                created_tasks.append(t)
+                return t
+
+            mock_create_task.side_effect = capture_and_run
+
+            manager = make_manager(cm_bot)
+            result = await manager.send_channel_message("general", "Hello mesh")
+
+            for t in created_tasks:
+                await t
+
+        assert result is True
+        assert len(received) == 1
+        assert received[0] == {"channel_idx": 3, "text": "TestBot: Hello mesh"}
+
+    @pytest.mark.asyncio
+    async def test_failed_send_does_not_invoke_listeners(self, cm_bot):
+        """When send_channel_message fails (e.g. channel not found), listeners are not called."""
+        cm_bot.connected = True
+        cm_bot.channel_manager = Mock()
+        cm_bot.channel_manager.get_channel_number = Mock(return_value=None)
+        cm_bot.channel_sent_listeners = []
+        received = []
+
+        async def capture_listener(event, metadata=None):
+            received.append(getattr(event, 'payload', None))
+
+        cm_bot.channel_sent_listeners.append(capture_listener)
+
+        manager = make_manager(cm_bot)
+        result = await manager.send_channel_message("nonexistent", "Hi")
+
+        assert result is False
+        assert len(received) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_listeners_no_error(self, cm_bot):
+        """When channel_sent_listeners is missing or empty, send_channel_message still returns success."""
+        from meshcore import EventType
+
+        cm_bot.connected = True
+        cm_bot.channel_manager = Mock()
+        cm_bot.channel_manager.get_channel_number = Mock(return_value=1)
+        cm_bot.meshcore = Mock()
+        cm_bot.meshcore.commands = Mock()
+        cm_bot.meshcore.commands.send_chan_msg = AsyncMock(return_value=Mock(type=EventType.MSG_SENT, payload=None))
+        cm_bot.bot_tx_rate_limiter.wait_for_tx = AsyncMock(return_value=None)
+        cm_bot.channel_sent_listeners = []
+
+        manager = make_manager(cm_bot)
+        result = await manager.send_channel_message("general", "Hi")
+
+        assert result is True

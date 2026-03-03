@@ -1508,6 +1508,9 @@ avatar_style = color
 # drop = do not bridge messages that contain profanity; censor = replace with **** and bridge; off = no filtering
 # filter_profanity = drop
 
+# Bridge the bot's own channel responses (e.g. command replies) to Discord. true (default) = bridge; false = only bridge other users' messages
+# bridge_bot_responses = true
+
 # Channel mappings: bridge.<meshcore_channel> = <discord_webhook_url>
 # Only channels explicitly listed here will be bridged to Discord
 # Get webhook URLs from Discord: Channel Settings → Integrations → Webhooks → Create Webhook
@@ -1547,6 +1550,9 @@ enabled = false
 # Profanity handling for bridged message content and usernames: drop (default), censor, or off
 # drop = do not bridge messages that contain profanity; censor = replace with **** and bridge; off = no filtering
 # filter_profanity = drop
+
+# Bridge the bot's own channel responses (e.g. command replies) to Telegram. true (default) = bridge; false = only bridge other users' messages
+# bridge_bot_responses = true
 
 # Channel mappings: bridge.<meshcore_channel> = <telegram_chat_id>
 # chat_id: @channelusername for public channels, or numeric ID (e.g. -100xxxxxxxxxx) for private
