@@ -543,6 +543,8 @@ admin_commands = repeater
 # {rssi}: Received signal strength indicator in dBm
 # {timestamp}: Message timestamp in HH:MM:SS format
 # {path}: Message routing path (e.g., "01,5f (2 hops)")
+# {hops}: Total hop count only (e.g., "2" or "0"); same value as in path/connection_info
+# {hops_label}: Same as hops with "hop"/"hops" and pluralization (e.g., "1 hop", "2 hops")
 # {path_distance}: Total distance between all hops in path with locations (e.g., "123.4km (3 segs, 1 no-loc)")
 # {firstlast_distance}: Distance between first and last repeater in path (e.g., "45.6km" or empty if locations missing)
 test = "ack [@{sender}]{phrase_part} | {connection_info} | Received at: {timestamp}"

@@ -2099,6 +2099,27 @@ def format_keyword_response_with_placeholders(
                 time_str = "Unknown"
             
             replacements['timestamp'] = time_str
+            
+            # Total hops: use message.hops when set, else parse from path string (e.g. "01,5f (2 hops)")
+            hops_val = getattr(message, 'hops', None)
+            if hops_val is not None and isinstance(hops_val, int):
+                replacements['hops'] = str(hops_val)
+            else:
+                path_str = message.path or ""
+                hop_match = re.search(r'\((\d+)\s*hops?', path_str, re.IGNORECASE)
+                if hop_match:
+                    replacements['hops'] = hop_match.group(1)
+                elif re.search(r'\bdirect\b|\b0\s*hops?\b', path_str, re.IGNORECASE):
+                    replacements['hops'] = "0"
+                else:
+                    replacements['hops'] = "?"
+            # Pluralized label: "1 hop", "2 hops", or "?" when unknown
+            h = replacements['hops']
+            if h == "?":
+                replacements['hops_label'] = "?"
+            else:
+                n = int(h)
+                replacements['hops_label'] = "1 hop" if n == 1 else f"{n} hops"
         else:
             # No message - use defaults for message-based placeholders
             replacements['sender'] = "Unknown"
@@ -2110,6 +2131,8 @@ def format_keyword_response_with_placeholders(
             replacements['path_distance'] = ""
             replacements['firstlast_distance'] = ""
             replacements['timestamp'] = "Unknown"
+            replacements['hops'] = "?"
+            replacements['hops_label'] = "?"
         
         # Mesh-info-based placeholders (from scheduled messages)
         if mesh_info:
