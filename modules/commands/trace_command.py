@@ -195,7 +195,7 @@ class TraceCommand(BaseCommand):
         # Use reciprocal path for tracer (always) or when no path given (so round-trip completes)
         if is_tracer or path_arg is None:
             path_nodes = self._build_reciprocal_path(path_nodes)
-            path_nodes = path_nodes[: self.maximum_hops]
+            # Do not cap here: outbound was already capped above; truncating would drop the return path
 
         if not self.bot.connected or not self.bot.meshcore:
             await self.send_response(message, "Not connected to radio.")
