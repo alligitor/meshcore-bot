@@ -2,6 +2,15 @@
 
 This document explains all configuration parameters for the Path Command, which decodes hex path data to identify repeaters in message routing paths.
 
+## Multi-byte path support
+
+The path command supports **1-, 2-, and 3-byte-per-hop** paths (2, 4, or 6 hex characters per node).
+
+- **`path` with no arguments**: Uses the current message’s decoded path when available (from routing info). No re-parsing; node list and hop size come from the packet.
+- **`path <hex>` with arguments**:
+  - **Comma-separated** (e.g. `path 0102,5f7e`): Hop size is inferred from token length. All tokens must be the same length (2, 4, or 6 hex chars). Example: `0102,5f7e` → two 2-byte hops.
+  - **Continuous hex** (e.g. `path 01025f7e`): The bot’s [Bot] **`prefix_bytes`** is used (2 hex chars = 1 byte, 4 = 2 bytes, 6 = 3 bytes). Use comma-separated input to force a multi-byte interpretation when the bot is in 1-byte mode.
+
 ## Quick Start: Presets
 
 The Path Command supports three presets that configure multiple related settings:

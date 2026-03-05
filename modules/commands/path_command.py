@@ -10,7 +10,7 @@ import asyncio
 from typing import List, Optional, Dict, Any, Tuple, Callable
 from .base_command import BaseCommand
 from ..models import MeshMessage
-from ..utils import calculate_distance
+from ..utils import calculate_distance, parse_path_string
 
 
 class PathCommand(BaseCommand):
@@ -217,39 +217,39 @@ class PathCommand(BaseCommand):
         return True
     
     async def _decode_path(self, path_input: str) -> str:
-        """Decode hex path data to repeater names"""
+        """Decode hex path data to repeater names.
+        Comma-separated tokens infer hop size (2, 4, or 6 hex chars per node).
+        Otherwise uses bot.prefix_hex_chars via parse_path_string().
+        """
         try:
-            # Parse the path input - handle various formats
-            # Examples: "11,98,a4,49,cd,5f,01" or "11 98 a4 49 cd 5f 01" or "1198a449cd5f01"
-            path_input = path_input.replace(',', ' ').replace(':', ' ')
-            
-            # Extract hex values using regex
-            # Try configured width first
-            n = getattr(self.bot, "prefix_hex_chars", 2)
-            hex_pattern = rf'[0-9a-fA-F]{{{n}}}'
-            hex_matches = re.findall(hex_pattern, path_input)
+            # Strip hop-count suffix if present (e.g. "01,5f (2 hops)")
+            path_input = re.sub(r'\s*\([^)]*hops?[^)]*\)', '', path_input, flags=re.IGNORECASE)
+            path_input = path_input.strip()
 
-            # Backward compatibility:
-            # if no matches and we're expecting >2 chars, try legacy 2-char paths
-            if not hex_matches and n > 2:
-                legacy_pattern = r'[0-9a-fA-F]{2}'
-                hex_matches = re.findall(legacy_pattern, path_input)
-            
-            if not hex_matches:
+            node_ids = None
+            # Comma-separated: infer hex chars per node from token length (2, 4, or 6)
+            if ',' in path_input:
+                tokens = [t.strip() for t in path_input.split(',') if t.strip()]
+                if tokens:
+                    lengths = {len(t) for t in tokens}
+                    valid_hex = all(
+                        len(t) in (2, 4, 6) and all(c in '0123456789aAbBcCdDeEfF' for c in t)
+                        for t in tokens
+                    )
+                    if valid_hex and len(lengths) == 1 and next(iter(lengths)) in (2, 4, 6):
+                        node_ids = [t.upper() for t in tokens]
+
+            if node_ids is None:
+                prefix_hex_chars = getattr(self.bot, 'prefix_hex_chars', 2)
+                node_ids = parse_path_string(path_input, prefix_hex_chars=prefix_hex_chars)
+
+            if not node_ids:
                 return self.translate('commands.path.no_valid_hex')
-            
-            # Convert to uppercase for consistency
-            # hex_matches preserves the order from the original path
-            node_ids = [match.upper() for match in hex_matches]
-            
+
             self.logger.info(f"Decoding path with {len(node_ids)} nodes: {','.join(node_ids)}")
-            
-            # Look up repeater names for each node ID (order preserved)
             repeater_info = await self._lookup_repeater_names(node_ids)
-            
-            # Format the response
             return self._format_path_response(node_ids, repeater_info)
-            
+
         except Exception as e:
             self.logger.error(f"Error decoding path: {e}")
             return self.translate('commands.path.error_decoding', error=str(e))
@@ -1418,24 +1418,28 @@ class PathCommand(BaseCommand):
                     if stored_paths:
                         # Build the path we're decoding (full path context)
                         decoded_path_hex = ''.join([node.lower() for node in path_context])
-                        
+                        path_n = len(path_context[0]) if path_context else 0  # hex chars per node in current path
+
                         # Check if any stored path shares common segments with decoded path
-                        # This is useful for prefix collision resolution
                         for stored_path in stored_paths:
                             stored_hex = stored_path.get('path_hex', '').lower()
                             obs_count = stored_path.get('observation_count', 1)
-                            
-                            if stored_hex:
-                                # Chunk using stored bytes_per_hop (multi-byte path support)
-                                n = (stored_path.get('bytes_per_hop') or 1) * 2
-                                if n <= 0:
-                                    n = 2
-                                stored_nodes = [stored_hex[i:i+n] for i in range(0, len(stored_hex), n)]
-                                if (len(stored_hex) % n) != 0:
-                                    stored_nodes = [stored_hex[i:i+2] for i in range(0, len(stored_hex), 2)]
-                                decoded_nodes = [decoded_path_hex[i:i+n] for i in range(0, len(decoded_path_hex), n)]
-                                if (len(decoded_path_hex) % n) != 0:
-                                    decoded_nodes = [decoded_path_hex[i:i+2] for i in range(0, len(decoded_path_hex), 2)]
+
+                            if not stored_hex:
+                                continue
+                            # Chunk stored path by its bytes_per_hop
+                            stored_n = (stored_path.get('bytes_per_hop') or 1) * 2
+                            if stored_n <= 0:
+                                stored_n = 2
+                            # Only compare when same hop size (otherwise 1-byte vs 2-byte would mismatch)
+                            if path_n != stored_n:
+                                continue
+                            stored_nodes = [stored_hex[i:i+stored_n] for i in range(0, len(stored_hex), stored_n)]
+                            if (len(stored_hex) % stored_n) != 0:
+                                stored_nodes = [stored_hex[i:i+2] for i in range(0, len(stored_hex), 2)]
+                            decoded_nodes = [decoded_path_hex[i:i+path_n] for i in range(0, len(decoded_path_hex), path_n)]
+                            if (len(decoded_path_hex) % path_n) != 0:
+                                decoded_nodes = [decoded_path_hex[i:i+2] for i in range(0, len(decoded_path_hex), 2)]
                                 
                                 # Count how many nodes appear in both paths (in order)
                                 common_segments = 0
@@ -1717,42 +1721,48 @@ class PathCommand(BaseCommand):
                 await self.send_response(message, current_message, skip_user_rate_limit=True)
     
     async def _extract_path_from_recent_messages(self) -> str:
-        """Extract path from the current message's path information (same as test command)"""
+        """Extract path from the current message's path information (same as test command).
+        Prefers already-extracted routing_info.path_nodes when present (multi-byte path support).
+        """
         try:
-            # Use the path information from the current message being processed
-            # This is the same reliable source that the test command uses
-            if hasattr(self, '_current_message') and self._current_message and self._current_message.path:
-                path_string = self._current_message.path
-                
-                # Check if it's a direct connection
-                if "Direct" in path_string or "0 hops" in path_string:
-                    return self.translate('commands.path.direct_connection')
-                
-                # Try to extract path nodes from the path string
-                # Path strings are typically in format: "node1,node2,node3 via ROUTE_TYPE_*"
-                if " via ROUTE_TYPE_" in path_string:
-                    # Extract just the path part before the route type
-                    path_part = path_string.split(" via ROUTE_TYPE_")[0]
-                else:
-                    path_part = path_string
-                
-                # Check if it looks like a comma-separated path
-                if ',' in path_part:
-                    path_input = path_part
-                    return await self._decode_path(path_input)
-                else:
-                    # Try to decode even single nodes (e.g., "01" should be decoded to a repeater name)
-                    # Check if path_part looks like it contains hex values
-                    hex_pattern = rf'[0-9a-fA-F]{{{self.bot.prefix_hex_chars}}}'
-                    if re.search(hex_pattern, path_part):
-                        # Looks like hex values, try to decode
-                        return await self._decode_path(path_part)
-                    else:
-                        # Unknown format - just show the raw path string
-                        return self.translate('commands.path.path_prefix', path_string=path_string)
-            else:
+            if not hasattr(self, '_current_message') or not self._current_message:
                 return self.translate('commands.path.no_path')
-                
+
+            msg = self._current_message
+
+            # Prefer routing_info when present (no re-parsing; preserves bytes_per_hop)
+            routing_info = getattr(msg, 'routing_info', None)
+            if routing_info is not None:
+                path_length = routing_info.get('path_length', 0)
+                if path_length == 0:
+                    return self.translate('commands.path.direct_connection')
+                path_nodes = routing_info.get('path_nodes', [])
+                if path_nodes:
+                    node_ids = [n.upper() for n in path_nodes]
+                    self.logger.info(f"Decoding path from routing_info with {len(node_ids)} nodes: {','.join(node_ids)}")
+                    repeater_info = await self._lookup_repeater_names(node_ids)
+                    return self._format_path_response(node_ids, repeater_info)
+
+            # Fallback: parse message.path string (e.g. no routing_info or legacy path)
+            if not msg.path:
+                return self.translate('commands.path.no_path')
+
+            path_string = msg.path
+            if "Direct" in path_string or "0 hops" in path_string:
+                return self.translate('commands.path.direct_connection')
+
+            if " via ROUTE_TYPE_" in path_string:
+                path_part = path_string.split(" via ROUTE_TYPE_")[0]
+            else:
+                path_part = path_string
+
+            if ',' in path_part:
+                return await self._decode_path(path_part)
+            hex_pattern = rf'[0-9a-fA-F]{{{getattr(self.bot, "prefix_hex_chars", 2)}}}'
+            if re.search(hex_pattern, path_part):
+                return await self._decode_path(path_part)
+            return self.translate('commands.path.path_prefix', path_string=path_string)
+
         except Exception as e:
             self.logger.error(f"Error extracting path from current message: {e}")
             return self.translate('commands.path.error_extracting', error=str(e))

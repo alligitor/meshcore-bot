@@ -825,25 +825,32 @@ class BaseCommand(ABC):
         """Check if this command can execute right now (permissions, cooldown, etc.)"""
         return self.can_execute(message)
     
+    def get_path_display_string(self, message: MeshMessage) -> str:
+        """Get path string for display (test/ack placeholders). Prefers message.routing_info for multi-byte and direct."""
+        routing_info = getattr(message, 'routing_info', None)
+        if routing_info is not None:
+            path_length = routing_info.get('path_length', 0)
+            if path_length == 0:
+                return "Direct"
+            path_nodes = routing_info.get('path_nodes', [])
+            if path_nodes:
+                path_str = ','.join(str(n).lower() for n in path_nodes)
+                return f"{path_str} ({len(path_nodes)} hops)"
+        if not message.path:
+            return "Unknown"
+        path_string = message.path
+        if " via ROUTE_TYPE_" in path_string:
+            path_string = path_string.split(" via ROUTE_TYPE_")[0]
+        return path_string.strip() or "Unknown"
+
     def build_enhanced_connection_info(self, message: MeshMessage) -> str:
-        """Build enhanced connection info with SNR, RSSI, and parsed route information"""
-        # Extract just the hops and path info without the route type
-        routing_info = message.path or "Unknown routing"
-        
-        # Clean up the routing info to remove the "via ROUTE_TYPE_*" part
-        if "via ROUTE_TYPE_" in routing_info:
-            # Extract just the hops and path part
-            parts = routing_info.split(" via ROUTE_TYPE_")
-            if len(parts) > 0:
-                routing_info = parts[0]
-        
-        # Add SNR and RSSI
+        """Build enhanced connection info with SNR, RSSI, and parsed route information.
+        Uses message.routing_info when present (multi-byte path, direct) for path part.
+        """
+        path_part = self.get_path_display_string(message)
         snr_info = f"SNR: {message.snr or 'Unknown'} dB"
         rssi_info = f"RSSI: {message.rssi or 'Unknown'} dBm"
-        
-        # Build enhanced connection info
-        connection_info = f"{routing_info} | {snr_info} | {rssi_info}"
-        
+        connection_info = f"{path_part} | {snr_info} | {rssi_info}"
         return connection_info
     
     def format_timestamp(self, message: MeshMessage) -> str:

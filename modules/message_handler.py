@@ -371,6 +371,7 @@ class MessageHandler:
             # If we have RF data with routing information, update the path with that instead
             if recent_rf_data and recent_rf_data.get('routing_info'):
                 rf_routing = recent_rf_data['routing_info']
+                message.routing_info = rf_routing  # Path command uses this for multi-byte path (no re-parse)
                 if rf_routing.get('path_length', 0) > 0:
                     path_nodes = rf_routing.get('path_nodes', [])
                     route_type = rf_routing.get('route_type', 'Unknown')
@@ -763,13 +764,39 @@ class MessageHandler:
                                 'payload_type': decoded_packet.get('payload_type_name', 'Unknown'),
                                 'packet_hash': packet_hash  # Store hash for packet tracking
                             }
-                            
+                            # Validate path consistency (path_byte_length, path_hex, path_nodes, bytes_per_hop)
+                            path_len = routing_info['path_length']
+                            path_byte_len = routing_info.get('path_byte_length')
+                            path_hex_str = routing_info.get('path_hex', '')
+                            path_nodes_list = routing_info.get('path_nodes') or []
+                            bph = routing_info.get('bytes_per_hop', 1) or 1
+                            expected_hex_len = (path_byte_len * 2) if path_byte_len is not None else (path_len * bph * 2)
+                            if path_len > 0 and path_hex_str:
+                                if len(path_hex_str) != expected_hex_len:
+                                    self.logger.warning(
+                                        "Path length mismatch: path_hex has %d hex chars, expected %d (path_byte_length=%s, path_length=%s, bytes_per_hop=%s)",
+                                        len(path_hex_str), expected_hex_len, path_byte_len, path_len, bph
+                                    )
+                                if path_nodes_list and len(path_nodes_list) != path_len:
+                                    self.logger.warning(
+                                        "Path nodes count mismatch: %d nodes, path_length=%d",
+                                        len(path_nodes_list), path_len
+                                    )
+                                if path_nodes_list and bph >= 1 and any(len(str(n)) != bph * 2 for n in path_nodes_list):
+                                    self.logger.warning(
+                                        "Path node width mismatch: bytes_per_hop=%d expects %d hex chars per node, nodes=%s",
+                                        bph, bph * 2, path_nodes_list[:5]
+                                    )
                             # Log the routing information for analysis
                             if routing_info['path_length'] > 0:
-                                # Format path with configured node length (match decode layer)
-                                path_hex = routing_info['path_hex']
-                                path_nodes_fmt = self._path_hex_to_nodes(path_hex)
-                                formatted_path = ','.join(path_nodes_fmt)
+                                # Use path_nodes when present (multi-byte); else chunk path_hex
+                                path_nodes_list = routing_info.get('path_nodes') or []
+                                if path_nodes_list:
+                                    formatted_path = ','.join(str(n).lower() for n in path_nodes_list)
+                                else:
+                                    path_hex = routing_info['path_hex']
+                                    path_nodes_fmt = self._path_hex_to_nodes(path_hex)
+                                    formatted_path = ','.join(path_nodes_fmt)
                                 path_bytes_str = decoded_packet.get('path_byte_length', routing_info['path_length'])
                                 log_message = f"🛣️  ROUTING INFO: {routing_info['route_type']} | Path: {formatted_path} ({routing_info['path_length']} hops, {path_bytes_str} bytes) | Payload: {routing_info['payload_length']} bytes | Type: {routing_info['payload_type']}"
                                 self.logger.info(log_message)
@@ -1375,6 +1402,55 @@ class MessageHandler:
             nodes = [path_hex[i:i + 2].lower() for i in range(0, len(path_hex), 2)]
         return nodes
 
+    def _get_path_from_rf_data(
+        self,
+        rf_data: Dict[str, Any],
+        payload_hex: Optional[str] = None,
+        packet_info: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Optional[str], Optional[List[str]], int]:
+        """Get path string, path nodes, and hop count from RF data (single source for path extraction).
+        
+        Prefers routing_info.path_nodes when present (no re-decode; correct multi-byte).
+        Otherwise decodes (or uses provided packet_info) and gets path from decoder's 'path'
+        or chunks path_hex using bytes_per_hop from the packet.
+        
+        Returns:
+            (path_string, path_nodes, hops). path_nodes is a list for mesh graph; hops is path_length or 255.
+        """
+        routing_info = rf_data.get('routing_info') or {}
+        path_nodes_list = routing_info.get('path_nodes')
+        if path_nodes_list:
+            path_str = ','.join(str(n).lower() for n in path_nodes_list)
+            return (path_str, list(path_nodes_list), len(path_nodes_list))
+        raw_hex = rf_data.get('raw_hex')
+        if not raw_hex:
+            return (None, None, 255)
+        if packet_info is None:
+            payload = payload_hex or rf_data.get('payload')
+            packet_info = self.decode_meshcore_packet(raw_hex, payload)
+        if not packet_info:
+            return (None, None, 255)
+        hops = packet_info.get('path_len', 255)
+        path_nodes_list = packet_info.get('path_nodes') or packet_info.get('path') or []
+        if path_nodes_list:
+            path_str = ','.join(str(n).lower() for n in path_nodes_list)
+            return (path_str, list(path_nodes_list), len(path_nodes_list))
+        path_hex = packet_info.get('path_hex', '')
+        if path_hex and len(path_hex) >= 2:
+            bytes_per_hop = packet_info.get('bytes_per_hop', 1)
+            n = (bytes_per_hop * 2) if bytes_per_hop and bytes_per_hop >= 1 else 2
+            path_nodes_list = [path_hex[i:i + n].lower() for i in range(0, len(path_hex), n)]
+            if (len(path_hex) % n) != 0:
+                path_nodes_list = [path_hex[i:i + 2].lower() for i in range(0, len(path_hex), 2)]
+            if path_nodes_list:
+                return (','.join(path_nodes_list), path_nodes_list, len(path_nodes_list))
+        path_info = packet_info.get('path_info') or {}
+        path_nodes_list = path_info.get('path') or []
+        if path_nodes_list:
+            path_str = ','.join(str(n).lower() for n in path_nodes_list)
+            return (path_str, list(path_nodes_list), len(path_nodes_list))
+        return (None, None, hops)
+
     def _process_packet_path(self, path_bytes: bytes, payload: bytes, 
                              route_type: RouteType, payload_type: PayloadType) -> dict:
         """
@@ -1637,96 +1713,45 @@ class MessageHandler:
                     rssi = recent_rf_data['rssi']
                     self.logger.debug(f"Using RSSI from RF data: {rssi}")
                 
-                # Try to extract path information from raw hex directly
+                # Single path source: prefer routing_info, else decode/fallback via helper
                 path_string = None
                 hops = payload.get('path_len', 255)
-                
-                # First try the packet decoder
-                # Use payload field if available, otherwise use raw_hex
                 payload_hex = recent_rf_data.get('payload')
                 packet_info = self.decode_meshcore_packet(raw_hex, payload_hex)
-                
-                # Get packet_hash from recent_rf_data if available (for trace correlation)
                 packet_hash = recent_rf_data.get('packet_hash')
                 if packet_hash and packet_info:
                     packet_info['packet_hash'] = packet_hash
-                
                 if packet_info and packet_info.get('path_len') is not None:
-                    # Valid packet decoded - use the results even if path is empty (0 hops = direct)
                     hops = packet_info.get('path_len', 0)
-                    
-                    # Check if this is a TRACE packet with SNR data
                     if packet_info.get('payload_type') == 9:  # TRACE packet
-                        # For TRACE packets, extract routing path from payload pathHashes
-                        # The path field contains SNR data, but the actual routing path is in payload
                         path_info = packet_info.get('path_info', {})
                         path_hashes = path_info.get('path_hashes') or path_info.get('path', [])
-                        
                         if path_hashes:
-                            # Convert pathHashes to path string
                             path_string = ','.join(path_hashes)
-                            self.logger.info(f"🎯 EXTRACTED PATH FROM TRACE PACKET: {path_string} ({len(path_hashes)} hops)")
-                            
-                            # Update mesh graph with trace path - bot is the destination, so we can confirm these edges
-                            # Since the bot received this trace packet, it's the destination node
+                            self.logger.debug(f"Path from TRACE packet: {path_string} ({len(path_hashes)} hops)")
                             if hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph and self.bot.mesh_graph.capture_enabled:
                                 self._update_mesh_graph_from_trace(path_hashes, packet_info)
                         else:
                             path_string = "Direct" if hops == 0 else f"Unknown routing ({hops} hops)"
-                            self.logger.info(f"🎯 EXTRACTED PATH FROM TRACE PACKET: {path_string}")
+                            self.logger.debug(f"Path from TRACE packet: {path_string}")
                     else:
-                        # For all other packet types, try multiple methods to get the path
-                        path_string = None
-                        
-                        # Method 1: Try path_nodes field first
-                        path_nodes = packet_info.get('path_nodes', [])
-                        if path_nodes:
-                            path_string = ','.join(path_nodes)
-                            self.logger.info(f"🎯 EXTRACTED PATH FROM PACKET: {path_string} ({hops} hops)")
-                            # Update mesh graph with path edges
-                            if hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph and self.bot.mesh_graph.capture_enabled:
-                                self._update_mesh_graph(path_nodes, packet_info)
-                        else:
-                            # Method 2: Try path_hex field
-                            path_hex = packet_info.get('path_hex', '')
-                            if path_hex and len(path_hex) >= 2:
-                                path_nodes = self._path_hex_to_nodes(path_hex)
-                                path_string = ','.join(path_nodes)
-                                self.logger.info(f"🎯 EXTRACTED PATH FROM PACKET HEX: {path_string} ({hops} hops)")
-                                # Update mesh graph with path edges
-                                if hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph and self.bot.mesh_graph.capture_enabled:
-                                    self._update_mesh_graph(path_nodes, packet_info)
-                            else:
-                                # Method 3: Try path_info.path field
-                                path_info = packet_info.get('path_info', {})
-                                if path_info and path_info.get('path'):
-                                    path_nodes = path_info['path']
-                                    path_string = ','.join(path_nodes)
-                                    self.logger.info(f"🎯 EXTRACTED PATH FROM PATH_INFO: {path_string} ({hops} hops)")
-                                    # Update mesh graph with path edges
-                                    if hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph and self.bot.mesh_graph.capture_enabled:
-                                        self._update_mesh_graph(path_nodes, packet_info)
-                                else:
-                                    # No path found - this is truly unknown
-                                    path_string = "Direct" if hops == 0 else "Unknown routing"
-                                    self.logger.info(f"🎯 EXTRACTED PATH FROM PACKET: {path_string} ({hops} hops)")
+                        had_routing_nodes = bool((recent_rf_data.get('routing_info') or {}).get('path_nodes'))
+                        path_string, path_nodes, hops = self._get_path_from_rf_data(
+                            recent_rf_data, payload_hex=payload_hex, packet_info=packet_info
+                        )
+                        if path_string and path_nodes and hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph and self.bot.mesh_graph.capture_enabled:
+                            self._update_mesh_graph(path_nodes, packet_info)
+                        if path_string and not had_routing_nodes:
+                            self.logger.debug(f"Path from fallback decode: {path_string} ({hops} hops)")
                 else:
-                    # Packet decoding failed - try to extract path directly from raw hex
-                    self.logger.debug("Packet decoding failed, trying direct hex parsing")
+                    self.logger.debug("Packet decoding failed, trying direct hex or routing_info fallback")
                     path_string = self.extract_path_from_raw_hex(raw_hex, hops)
-                    if path_string:
-                        self.logger.info(f"🎯 EXTRACTED PATH FROM RAW HEX: {path_string} ({hops} hops)")
-                    else:
-                        # Try to use routing info from RF data as fallback
-                        if recent_rf_data.get('routing_info') and recent_rf_data['routing_info'].get('path_nodes'):
-                            routing_info = recent_rf_data['routing_info']
-                            hops = len(routing_info['path_nodes'])
-                            path_string = ','.join(routing_info['path_nodes'])
-                            self.logger.info(f"🎯 EXTRACTED PATH FROM RF ROUTING INFO: {path_string} ({hops} hops)")
-                        else:
-                            # Final fallback to basic path info
-                            self.logger.debug("No path info available, using basic path info")
-                            path_string = None
+                    if not path_string and recent_rf_data.get('routing_info') and recent_rf_data['routing_info'].get('path_nodes'):
+                        routing_info = recent_rf_data['routing_info']
+                        path_nodes = routing_info['path_nodes']
+                        hops = len(path_nodes)
+                        path_string = ','.join(str(n).lower() for n in path_nodes)
+                        self.logger.debug(f"Path from RF routing_info fallback: {path_string} ({hops} hops)")
             else:
                 self.logger.warning("❌ NO RF DATA found for channel message after all correlation attempts")
                 hops = payload.get('path_len', 255)
@@ -1760,6 +1785,8 @@ class MessageHandler:
                 elapsed=_elapsed,
                 is_dm=False
             )
+            if recent_rf_data and recent_rf_data.get('routing_info'):
+                message.routing_info = recent_rf_data['routing_info']
             
             # Path information is now set directly in the MeshMessage constructor from RF data
             # No need for additional path extraction since we're using the actual routing data
