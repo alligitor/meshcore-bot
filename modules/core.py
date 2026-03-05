@@ -213,7 +213,9 @@ class MeshCoreBot:
         # Initialize service plugin loader and load all services
         self.logger.info("Initializing service plugin loader")
         try:
-            self.service_loader = ServicePluginLoader(self)
+            self.service_loader = ServicePluginLoader(
+                self, local_services_dir=str(self.bot_root / "local" / "service_plugins")
+            )
             self.services = self.service_loader.load_all_services()
             self.logger.info(f"Service plugin loader initialized with {len(self.services)} service(s)")
         except (OSError, ImportError, AttributeError, ValueError) as e:
@@ -267,7 +269,11 @@ class MeshCoreBot:
         
         # Force UTF-8 so emoji and non-ASCII characters in config.ini parse on Windows.
         self.config.read(self.config_file, encoding="utf-8")
-    
+        # Merge local config if present (user plugins/services settings)
+        local_config = self.bot_root / "local" / "config.ini"
+        if local_config.exists():
+            self.config.read(local_config, encoding="utf-8")
+
     def _get_radio_settings(self) -> Dict[str, Any]:
         """Get current radio/connection settings from config.
         
@@ -329,6 +335,9 @@ class MeshCoreBot:
             
             # Reload the config
             self.config.read(self.config_file, encoding="utf-8")
+            local_config = self.bot_root / "local" / "config.ini"
+            if local_config.exists():
+                self.config.read(local_config, encoding="utf-8")
             
             # Update rate limiters
             new_rate_limit = self.config.getint('Bot', 'rate_limit_seconds', fallback=10)

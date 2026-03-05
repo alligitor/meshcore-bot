@@ -221,6 +221,10 @@ admin_commands = repeater,webviewer,reload
 # 
 # Note: The alternative plugin must have the same 'name' metadata as the command
 # it's replacing, or the override will use the alternative plugin's name instead.
+#
+# Local plugins: You can add your own command and service plugins without editing
+# bot code. Put command plugins in local/commands/ and service plugins in
+# local/service_plugins/. Use local/config.ini for their settings. See docs/local-plugins.md.
 
 [Companion_Purge]
 # Enable companion contact purging
@@ -1562,3 +1566,24 @@ enabled = false
 # See docs/telegram-bridge.md for setup
 # bridge.Public = @YourChannelName
 # bridge.emergency = -1001234567890
+
+# -----------------------------------------------------------------------------
+# Check-in service (local plugin: local/service_plugins/checkin_service.py)
+# Put [CheckIn] in local/config.ini to keep main config clean. See docs/checkin-api.md for API contract.
+# -----------------------------------------------------------------------------
+# [CheckIn]
+# enabled = true
+# Channel to collect check-ins from (default: #meshmonday)
+# channel = #meshmonday
+# When to collect: monday (only Mondays) or daily
+# check_in_days = monday
+# If any_message_counts = true, any message in the channel counts as a check-in.
+# If false, only messages containing require_phrase (case-insensitive) count.
+# any_message_counts = false
+# require_phrase = check in
+# Time of day to flush collected check-ins and submit to API (HH:MM or HHMM). Uses [Bot] timezone.
+# flush_time = 23:59
+# Optional: submit check-ins to a web API (POST). If set, api_key or CHECKIN_API_KEY env is required.
+# api_url = https://example.com/checkins
+# api_key = YOUR_API_KEY
+# Or set CHECKIN_API_KEY in the environment (takes precedence).

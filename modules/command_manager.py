@@ -89,7 +89,9 @@ class CommandManager:
         self.command_prefix = self.load_command_prefix()
         
         # Initialize plugin loader and load all plugins
-        self.plugin_loader = PluginLoader(bot)
+        self.plugin_loader = PluginLoader(
+            bot, local_commands_dir=str(bot.bot_root / "local" / "commands")
+        )
         self.commands = self.plugin_loader.load_all_plugins()
         
         # Cache for internet connectivity status to avoid checking on every command

@@ -154,3 +154,10 @@ config-pymc.ini
 data/*
 !data/.gitkeep
 
+# Local user plugins and config (keep README and .gitkeep only)
+local/config.ini
+local/commands/*
+!local/commands/.gitkeep
+local/service_plugins/*
+!local/service_plugins/.gitkeep
+
