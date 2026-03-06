@@ -3569,6 +3569,7 @@ class BotDataViewer:
                     MAX(c.last_advert_timestamp) as last_message,
                     GROUP_CONCAT(op.path_hex, '|||') as all_paths_hex,
                     GROUP_CONCAT(op.path_length, '|||') as all_paths_length,
+                    GROUP_CONCAT(COALESCE(op.bytes_per_hop, 1), '|||') as all_paths_bytes_per_hop,
                     GROUP_CONCAT(op.observation_count, '|||') as all_paths_observations,
                     GROUP_CONCAT(op.last_seen, '|||') as all_paths_last_seen
                 FROM complete_contact_tracking c
@@ -3606,14 +3607,24 @@ class BotDataViewer:
                 if row['all_paths_hex']:
                     paths_hex = row['all_paths_hex'].split('|||')
                     paths_length = row['all_paths_length'].split('|||') if row['all_paths_length'] else []
+                    paths_bph = row['all_paths_bytes_per_hop'].split('|||') if row.get('all_paths_bytes_per_hop') else []
                     paths_observations = row['all_paths_observations'].split('|||') if row['all_paths_observations'] else []
                     paths_last_seen = row['all_paths_last_seen'].split('|||') if row['all_paths_last_seen'] else []
                     
                     for i, path_hex in enumerate(paths_hex):
                         if path_hex:  # Skip empty strings
+                            bph = None
+                            if i < len(paths_bph) and paths_bph[i]:
+                                try:
+                                    bph = int(paths_bph[i])
+                                    if bph not in (1, 2, 3):
+                                        bph = 1
+                                except (TypeError, ValueError):
+                                    bph = 1
                             all_paths.append({
                                 'path_hex': path_hex,
                                 'path_length': int(paths_length[i]) if i < len(paths_length) and paths_length[i] else 0,
+                                'bytes_per_hop': bph,
                                 'observation_count': int(paths_observations[i]) if i < len(paths_observations) and paths_observations[i] else 1,
                                 'last_seen': paths_last_seen[i] if i < len(paths_last_seen) and paths_last_seen[i] else None
                             })
