@@ -310,6 +310,13 @@ class MessageScheduler:
         self.scheduler_thread = threading.Thread(target=self.run_scheduler, daemon=True)
         self.scheduler_thread.start()
     
+    def join(self, timeout: float = 5.0) -> None:
+        """Wait for the scheduler thread to finish (e.g. during shutdown)."""
+        if self.scheduler_thread and self.scheduler_thread.is_alive():
+            self.scheduler_thread.join(timeout=timeout)
+            if self.scheduler_thread.is_alive():
+                self.logger.debug("Scheduler thread did not finish within %s s", timeout)
+    
     def run_scheduler(self):
         """Run the scheduler in a separate thread"""
         self.logger.info("Scheduler thread started")

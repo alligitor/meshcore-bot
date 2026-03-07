@@ -1355,8 +1355,21 @@ long_jokes = false
             except (AttributeError, TypeError):
                 print("Web viewer stopped")
         
+        # Wait for scheduler thread to exit (it checks self.connected)
+        if hasattr(self, 'scheduler') and self.scheduler and self.scheduler.scheduler_thread:
+            self.scheduler.join(timeout=5.0)
+        
         if self.meshcore:
-            await self.meshcore.disconnect()
+            disconnect_timeout = self.config.getfloat('Bot', 'disconnect_timeout_seconds', fallback=10.0)
+            try:
+                await asyncio.wait_for(self.meshcore.disconnect(), timeout=disconnect_timeout)
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    "MeshCore disconnect timed out after %.1fs; continuing shutdown",
+                    disconnect_timeout,
+                )
+            except Exception as e:
+                self.logger.warning("Error during meshcore disconnect: %s", e)
         
         try:
             self.logger.info("Bot stopped")
