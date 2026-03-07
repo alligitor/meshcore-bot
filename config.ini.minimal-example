@@ -143,6 +143,9 @@ auto_manage_contacts = false
 # Default: meshcore_bot.db
 db_path = meshcore_bot.db
 
+# Local plugins directory (optional). Default: local. See config.ini.example.
+#local_dir_path = local
+
 [Localization]
 # Language code for bot responses (en, es, es-MX, es-ES, fr, de, ja, etc.)
 # Default: en (English)

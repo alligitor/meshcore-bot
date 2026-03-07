@@ -214,7 +214,7 @@ class MeshCoreBot:
         self.logger.info("Initializing service plugin loader")
         try:
             self.service_loader = ServicePluginLoader(
-                self, local_services_dir=str(self.bot_root / "local" / "service_plugins")
+                self, local_services_dir=str(self._local_root / "service_plugins")
             )
             self.services = self.service_loader.load_all_services()
             self.logger.info(f"Service plugin loader initialized with {len(self.services)} service(s)")
@@ -269,8 +269,15 @@ class MeshCoreBot:
         
         # Force UTF-8 so emoji and non-ASCII characters in config.ini parse on Windows.
         self.config.read(self.config_file, encoding="utf-8")
+        # Resolve local plugins directory from [Bot] local_dir_path (default: local)
+        self._local_root = Path(
+            resolve_path(
+                self.config.get("Bot", "local_dir_path", fallback="local"),
+                self.bot_root,
+            )
+        )
         # Merge local config if present (user plugins/services settings)
-        local_config = self.bot_root / "local" / "config.ini"
+        local_config = self._local_root / "config.ini"
         if local_config.exists():
             self.config.read(local_config, encoding="utf-8")
 
@@ -335,7 +342,7 @@ class MeshCoreBot:
             
             # Reload the config
             self.config.read(self.config_file, encoding="utf-8")
-            local_config = self.bot_root / "local" / "config.ini"
+            local_config = self._local_root / "config.ini"
             if local_config.exists():
                 self.config.read(local_config, encoding="utf-8")
             

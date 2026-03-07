@@ -130,6 +130,12 @@ auto_manage_contacts = bot
 # Default: meshcore_bot.db
 db_path = meshcore_bot.db
 
+# Local plugins directory (optional)
+# Directory containing commands/, service_plugins/, and optional config.ini.
+# Relative paths are resolved from the bot root; absolute paths used as-is.
+# Default: local (i.e. bot_root/local). Changing this requires a bot restart.
+#local_dir_path = local
+
 # Seconds to wait after a failed service restart before retrying (default: 300)
 service_restart_backoff_seconds = 300
 

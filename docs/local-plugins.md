@@ -1,6 +1,6 @@
 # Local plugins and services
 
-You can add your own **command plugins** and **service plugins** without modifying the bot’s code by placing them in the **`local/`** directory. Their configuration can live in **`local/config.ini`** so it stays separate from the main `config.ini`.
+You can add your own **command plugins** and **service plugins** without modifying the bot’s code by placing them in a **local** directory. By default that directory is **`local/`** next to your main config.ini; you can change it with **`[Bot]` `local_dir_path`** (see below). Their configuration can live in **`local/config.ini`** so it stays separate from the main `config.ini`.
 
 ## Directories
 
@@ -11,6 +11,8 @@ You can add your own **command plugins** and **service plugins** without modifyi
 | **local/config.ini** | Optional. Merged with main config; use it for your plugins’ sections. |
 
 Local plugins are **additive**: they are loaded after built-in (and alternative) plugins. If a local plugin or service has the same logical **name** as one already loaded, it is **skipped** and a warning is logged. There is no override-by-name for local code.
+
+**Custom local path:** In `config.ini`, under `[Bot]`, you can set **`local_dir_path`** to a directory that contains `commands/`, `service_plugins/`, and optional `config.ini`. Use a relative path (resolved from the bot root) or an absolute path so the local folder can live outside the install directory (e.g. `/home/user/meshcore-local`). Changing `local_dir_path` requires a **bot restart**.
 
 ## Minimal command plugin
 
