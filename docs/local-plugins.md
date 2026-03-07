@@ -80,6 +80,37 @@ Restart the bot so the service is loaded and started.
 
 If a local command or service has the same **name** as an already-loaded plugin or service (e.g. you add `local/commands/ping.py` with `name = "ping"`), the local one is **skipped** and a warning is logged. Choose a different name (e.g. `pinglocal`) to avoid the conflict.
 
+## Sending multiple messages (chunking)
+
+When a service plugin sends a long message by splitting it into chunks and calling `send_channel_message` multiple times, the bot’s **rate limiters** can block the second and later sends. You’ll see a warning like “Rate limited. Wait X seconds.”
+
+**What’s going on**
+
+- **Global rate limit** (`[Bot]` `rate_limit_seconds`, default 10): minimum time between *any* two bot replies. If you don’t skip it, the first send uses the “slot” and the next send within that window is blocked.
+- **Bot TX rate limit** (`bot_tx_rate_limit_seconds`, default 1.0): minimum time between bot transmissions on the mesh. This is always enforced.
+
+**What to do**
+
+1. **Use `skip_user_rate_limit=True`** for every chunk. That skips the global (and per-user) limits so automated service messages aren’t blocked by the “10 second” global window.
+2. **Space chunks in time** so the bot TX limit is satisfied: before each chunk after the first, wait for the bot TX rate limiter and then sleep. Same pattern as the greeter and other multi-part senders:
+
+```python
+import asyncio
+
+# chunks = ["first part...", "second part...", ...]
+for i, chunk in enumerate(chunks):
+    if i > 0:
+        await self.bot.bot_tx_rate_limiter.wait_for_tx()
+        rate_limit = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+        sleep_time = max(rate_limit + 0.5, 1.0)
+        await asyncio.sleep(sleep_time)
+    await self.bot.command_manager.send_channel_message(
+        self.channel, chunk, skip_user_rate_limit=True
+    )
+```
+
+So you are allowed to send multiple messages in sequence; you do **not** need 10 seconds between chunks. Use `skip_user_rate_limit=True` and about 1–1.5 seconds (or your configured `bot_tx_rate_limit_seconds` + buffer) between chunks.
+
 ## References
 
 - [Service plugins](service-plugins.md) — built-in services and how they are enabled.
