@@ -1342,16 +1342,19 @@ class BotDataViewer:
         
         @self.app.route('/api/mesh/nodes')
         def api_mesh_nodes():
-            """Get all repeater nodes with locations and metadata"""
+            """Get all repeater nodes with locations and metadata. Prefix length follows [Bot] prefix_bytes (2/4/6 hex chars)."""
             conn = None
             try:
+                prefix_hex_chars = self.config.getint('Bot', 'prefix_bytes', fallback=1) * 2
+                if prefix_hex_chars <= 0:
+                    prefix_hex_chars = 2
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
                 
-                query = '''
+                query = f'''
                     SELECT 
                         public_key,
-                        SUBSTR(public_key, 1, 2) as prefix,
+                        SUBSTR(public_key, 1, {prefix_hex_chars}) as prefix,
                         name,
                         latitude,
                         longitude,
@@ -3556,8 +3559,15 @@ class BotDataViewer:
                     where_clause = " WHERE c.last_heard >= datetime('now', '-90 days')"
                 params = ()
             
-            # Query with LEFT JOIN to get all paths from observed_paths
+            # Query with LEFT JOIN to a limited set of paths per contact (max 50 most recent per contact)
+            # to keep GROUP_CONCAT and load time bounded when observed_paths is large.
             cursor.execute("""
+                WITH recent_paths AS (
+                    SELECT public_key, path_hex, path_length, bytes_per_hop, observation_count, last_seen,
+                           ROW_NUMBER() OVER (PARTITION BY public_key ORDER BY last_seen DESC) as rn
+                    FROM observed_paths
+                    WHERE packet_type = 'advert' AND public_key IS NOT NULL
+                )
                 SELECT 
                     c.public_key, c.name, c.role, c.device_type, 
                     c.latitude, c.longitude, c.city, c.state, c.country,
@@ -3573,8 +3583,10 @@ class BotDataViewer:
                     GROUP_CONCAT(op.observation_count, '|||') as all_paths_observations,
                     GROUP_CONCAT(op.last_seen, '|||') as all_paths_last_seen
                 FROM complete_contact_tracking c
-                LEFT JOIN observed_paths op ON c.public_key = op.public_key 
-                    AND op.packet_type = 'advert'
+                LEFT JOIN (
+                    SELECT public_key, path_hex, path_length, bytes_per_hop, observation_count, last_seen
+                    FROM recent_paths WHERE rn <= 50
+                ) op ON c.public_key = op.public_key
                 """ + where_clause + """
                 GROUP BY c.public_key, c.name, c.role, c.device_type, 
                          c.latitude, c.longitude, c.city, c.state, c.country,
@@ -3607,7 +3619,7 @@ class BotDataViewer:
                 if row['all_paths_hex']:
                     paths_hex = row['all_paths_hex'].split('|||')
                     paths_length = row['all_paths_length'].split('|||') if row['all_paths_length'] else []
-                    paths_bph = row['all_paths_bytes_per_hop'].split('|||') if row.get('all_paths_bytes_per_hop') else []
+                    paths_bph = row['all_paths_bytes_per_hop'].split('|||') if row['all_paths_bytes_per_hop'] else []
                     paths_observations = row['all_paths_observations'].split('|||') if row['all_paths_observations'] else []
                     paths_last_seen = row['all_paths_last_seen'].split('|||') if row['all_paths_last_seen'] else []
                     
