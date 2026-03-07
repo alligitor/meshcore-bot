@@ -91,7 +91,18 @@ When a service plugin sends a long message by splitting it into chunks and calli
 
 **What to do**
 
-1. **Use `skip_user_rate_limit=True`** for every chunk. That skips the global (and per-user) limits so automated service messages aren’t blocked by the “10 second” global window.
+**Easiest:** use the built-in chunked helper so spacing and rate limits are handled for you:
+
+```python
+# Service plugin: send long text to your channel in chunks (no manual delay loop)
+await self.bot.command_manager.send_channel_messages_chunked(self.channel, chunks)
+```
+
+Commands that reply to a message (channel or DM) can use `await self.send_response_chunked(message, chunks)`.
+
+**Alternatively**, implement the spacing yourself:
+
+1. **Use `skip_user_rate_limit=True`** for every chunk. That skips the global (and per-user) limits so automated service messages are not blocked by the 10 second global window. That skips the global (and per-user) limits so automated service messages aren’t blocked by the “10 second” global window.
 2. **Space chunks in time** so the bot TX limit is satisfied: before each chunk after the first, wait for the bot TX rate limiter and then sleep. Same pattern as the greeter and other multi-part senders:
 
 ```python

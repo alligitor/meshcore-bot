@@ -996,6 +996,59 @@ class CommandManager:
             self.logger.error(f"Failed to send channel message: {e}")
             return False
     
+    async def send_channel_messages_chunked(
+        self,
+        channel: str,
+        chunks: List[str],
+        *,
+        command_id: Optional[str] = None,
+        skip_user_rate_limit: bool = True,
+        rate_limit_key: Optional[str] = None,
+        scope: Optional[str] = None,
+    ) -> bool:
+        """Send multiple channel messages with rate-limit spacing between chunks.
+        
+        Uses bot_tx_rate_limiter and configured bot_tx_rate_limit_seconds so each
+        chunk after the first is spaced correctly. For the first chunk, uses the
+        provided skip_user_rate_limit and rate_limit_key; subsequent chunks
+        always use skip_user_rate_limit=True so automated multi-part sends work.
+        
+        Args:
+            channel: Channel name to send to.
+            chunks: List of message strings to send in order.
+            command_id: Optional command_id for repeat tracking.
+            skip_user_rate_limit: If True, skip user/global rate limit for first chunk (default True for services).
+            rate_limit_key: Optional key for per-user rate limit on first chunk only.
+            scope: Optional flood scope for send (see send_channel_message).
+        
+        Returns:
+            bool: True if all chunks were sent successfully, False on first failure.
+        """
+        if not chunks:
+            return True
+        rate_limit_seconds = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+        sleep_time = max(rate_limit_seconds + 0.5, 1.0)
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                await self.bot.bot_tx_rate_limiter.wait_for_tx()
+                await asyncio.sleep(sleep_time)
+            skip_first = skip_user_rate_limit if i == 0 else True
+            key_first = rate_limit_key if i == 0 else None
+            success = await self.send_channel_message(
+                channel,
+                chunk,
+                command_id=command_id,
+                skip_user_rate_limit=skip_first,
+                rate_limit_key=key_first,
+                scope=scope,
+            )
+            if not success:
+                self.logger.warning(
+                    "Chunked channel send failed at chunk %d of %d to %s", i + 1, len(chunks), channel
+                )
+                return False
+        return True
+    
     def get_help_for_command(self, command_name: str, message: MeshMessage = None) -> str:
         """Get help text for a specific command (LoRa-friendly compact format).
         
@@ -1212,6 +1265,55 @@ class CommandManager:
         except Exception as e:
             self.logger.error(f"Failed to send response: {e}")
             return False
+    
+    async def send_response_chunked(
+        self, message: MeshMessage, chunks: List[str], *, skip_user_rate_limit_first: bool = True
+    ) -> bool:
+        """Send multiple response messages (channel or DM) with rate-limit spacing.
+        
+        For channel: delegates to send_channel_messages_chunked. For DM: loops
+        with wait_for_tx + sleep between chunks and send_dm per chunk. First chunk
+        may count against user rate limit depending on skip_user_rate_limit_first;
+        subsequent chunks always skip user rate limit.
+        
+        Args:
+            message: The original message being responded to.
+            chunks: List of message strings to send in order.
+            skip_user_rate_limit_first: If True, skip user rate limit for first chunk too (default).
+            
+        Returns:
+            bool: True if all chunks were sent successfully, False on first failure.
+        """
+        if not chunks:
+            return True
+        rate_limit_key = self.get_rate_limit_key(message)
+        if message.is_dm:
+            rate_limit_seconds = self.bot.config.getfloat('Bot', 'bot_tx_rate_limit_seconds', fallback=1.0)
+            sleep_time = max(rate_limit_seconds + 0.5, 1.0)
+            for i, chunk in enumerate(chunks):
+                if i > 0:
+                    await self.bot.bot_tx_rate_limiter.wait_for_tx()
+                    await asyncio.sleep(sleep_time)
+                skip = skip_user_rate_limit_first if i == 0 else True
+                success = await self.send_dm(
+                    message.sender_id,
+                    chunk,
+                    skip_user_rate_limit=skip,
+                    rate_limit_key=rate_limit_key,
+                )
+                if not success:
+                    self.logger.warning(
+                        "Chunked DM send failed at chunk %d of %d to %s",
+                        i + 1, len(chunks), message.sender_id,
+                    )
+                    return False
+            return True
+        return await self.send_channel_messages_chunked(
+            message.channel,
+            chunks,
+            skip_user_rate_limit=skip_user_rate_limit_first,
+            rate_limit_key=rate_limit_key,
+        )
     
     async def execute_commands(self, message):
         """Execute command objects that handle their own responses.

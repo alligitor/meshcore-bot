@@ -463,6 +463,27 @@ class BaseCommand(ABC):
             self.logger.error(f"Failed to send response: {e}")
             return False
     
+    async def send_response_chunked(
+        self, message: MeshMessage, chunks: List[str], *, skip_user_rate_limit_first: bool = True
+    ) -> bool:
+        """Send multiple response messages (channel or DM) with rate-limit spacing.
+        
+        Args:
+            message: The message to respond to.
+            chunks: List of message strings to send in order.
+            skip_user_rate_limit_first: If True, skip user rate limit for first chunk too (default).
+            
+        Returns:
+            bool: True if all chunks were sent successfully, False on first failure.
+        """
+        try:
+            return await self.bot.command_manager.send_response_chunked(
+                message, chunks, skip_user_rate_limit_first=skip_user_rate_limit_first
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to send chunked response: {e}")
+            return False
+    
     def get_max_message_length(self, message: MeshMessage) -> int:
         """Calculate the maximum message length dynamically based on message type and bot username.
         
