@@ -43,3 +43,5 @@ Shorter retention (e.g. 2–3 days for `packet_stream`) is enough for the web vi
    - Deletes old rows from **mesh_connections** (mesh graph).
 
 So as long as the bot is running, the database is pruned on a schedule regardless of whether you run the standalone web viewer or the stats command.
+
+**Log files** (`[Logging] log_file`, e.g. `meshcore_bot.log`) use rotating file logging: the bot rotates at 5 MB and keeps up to 3 backup files (same policy as the web viewer), so log disk use stays bounded.
