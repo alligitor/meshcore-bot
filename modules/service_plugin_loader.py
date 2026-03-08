@@ -6,6 +6,7 @@ Handles scanning, loading, and registering service plugins
 
 import os
 import sys
+import types
 import importlib
 import importlib.util
 import inspect
@@ -143,6 +144,9 @@ class ServicePluginLoader:
     
     def load_service_from_path(self, file_path: Path) -> Optional[BaseServicePlugin]:
         """Load a single service plugin from a file path (e.g. local/service_plugins/my_service.py)."""
+        # Ensure parent package exists so relative/absolute imports of "local_services" work
+        if "local_services" not in sys.modules:
+            sys.modules["local_services"] = types.ModuleType("local_services")
         stem = file_path.stem
         module_name = f"local_services.{stem}"
         try:
