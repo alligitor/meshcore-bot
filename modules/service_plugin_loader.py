@@ -148,7 +148,8 @@ class ServicePluginLoader:
         # Set __path__ so Python treats it as a package and can load submodules (e.g. local_services.utils).
         if "local_services" not in sys.modules:
             pkg = types.ModuleType("local_services")
-            pkg.__path__ = [str(file_path.parent)]
+            builtin_services_dir = getattr(self, 'services_dir', None) or os.path.join(os.path.dirname(__file__), 'service_plugins')
+            pkg.__path__ = [str(file_path.parent), builtin_services_dir]
             sys.modules["local_services"] = pkg
         stem = file_path.stem
         module_name = f"local_services.{stem}"
@@ -161,10 +162,19 @@ class ServicePluginLoader:
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
             service_class = None
+            # Accept BaseServicePlugin from built-in (modules.service_plugins) or from local_services.base_service
+            # (same code loaded as different module when plugin does "from .base_service import BaseServicePlugin")
+            bases = [BaseServicePlugin]
+            local_base_module = sys.modules.get("local_services.base_service")
+            if local_base_module is not None:
+                local_base = getattr(local_base_module, "BaseServicePlugin", None)
+                if local_base is not None:
+                    bases.append(local_base)
             for _name, obj in inspect.getmembers(module, inspect.isclass):
+                if obj in bases:
+                    continue
                 if (
-                    issubclass(obj, BaseServicePlugin)
-                    and obj != BaseServicePlugin
+                    any(issubclass(obj, b) for b in bases)
                     and obj.__module__ == module_name
                 ):
                     service_class = obj
