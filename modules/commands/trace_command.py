@@ -156,19 +156,23 @@ class TraceCommand(BaseCommand):
         nodes = result.path_nodes
         for i, node in enumerate(nodes):
             s = node.get("snr")
-            h = node.get("hash")
-            label = h if h else self.bot_label
+            # Left label = source of this hop: bot for first hop, else previous node's hash
+            if i == 0:
+                from_label = self.bot_label
+            else:
+                prev_h = nodes[i - 1].get("hash")
+                from_label = prev_h if prev_h else "—"
             if i == 0:
                 # First hop: bot → SNR db →
                 snr_str = f"{s:.1f} db" if s is not None else "—"
-                lines.append(f"{label} → {snr_str} →")
+                lines.append(f"{from_label} → {snr_str} →")
             elif i == len(nodes) - 1:
-                # Last hop: node → SNR → bot
+                # Last hop: from_node → SNR → bot
                 snr_str = f"{s:.1f}" if s is not None else "—"
-                lines.append(f"{label} → {snr_str} → {self.bot_label}")
+                lines.append(f"{from_label} → {snr_str} → {self.bot_label}")
             else:
                 snr_str = f"{s:.1f}" if s is not None else "—"
-                lines.append(f"{label} → {snr_str} →")
+                lines.append(f"{from_label} → {snr_str} →")
         return "\n".join(lines)
 
     async def execute(self, message: MeshMessage) -> bool:
