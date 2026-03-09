@@ -9,6 +9,7 @@ import sys
 import inspect
 import importlib
 import importlib.util
+import types
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Type
 import logging
@@ -247,6 +248,12 @@ class PluginLoader:
     
     def load_plugin_from_path(self, file_path: Path) -> Optional[BaseCommand]:
         """Load a single plugin from a file path (e.g. local/commands/my_command.py)."""
+        # Ensure parent package exists so relative/absolute imports of "local_plugins" work.
+        # Set __path__ so Python treats it as a package and can load submodules (e.g. local_plugins.utils).
+        if "local_plugins" not in sys.modules:
+            pkg = types.ModuleType("local_plugins")
+            pkg.__path__ = [str(file_path.parent)]
+            sys.modules["local_plugins"] = pkg
         stem = file_path.stem
         module_name = f"local_plugins.{stem}"
         try:

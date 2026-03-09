@@ -370,6 +370,17 @@ class MeshGraph:
                 return
 
             if best_spec < new_spec:
+                # Don't promote 1-byte to 3-byte when the existing 1-byte edge has no public_key:
+                # keep the 1-byte edge so we don't attribute its observations to one specific 3-byte node
+                # (other e0 repeaters would otherwise have no edges and appear removed).
+                best_is_1byte = len(best_key[0]) == 2 and len(best_key[1]) == 2
+                if best_is_1byte and not best_edge.get("from_public_key") and not best_edge.get("to_public_key"):
+                    self._update_edge_data(
+                        best_edge, now, hop_position,
+                        from_public_key, to_public_key, geographic_distance, prefix_bytes,
+                    )
+                    self._persist_and_notify_edge(best_key, is_new_edge=False)
+                    return
                 # Promote: remove old edge, add new at higher resolution with merged count
                 merged_count = best_edge["observation_count"] + 1
                 first_seen = best_edge.get("first_seen") or now

@@ -1342,10 +1342,12 @@ class BotDataViewer:
         
         @self.app.route('/api/mesh/nodes')
         def api_mesh_nodes():
-            """Get all repeater nodes with locations and metadata. Prefix length follows [Bot] prefix_bytes (2/4/6 hex chars)."""
+            """Get all repeater nodes with locations and metadata. Prefix length from query param or [Bot] prefix_bytes."""
             conn = None
             try:
-                prefix_hex_chars = self.config.getint('Bot', 'prefix_bytes', fallback=1) * 2
+                prefix_hex_chars = request.args.get('prefix_hex_chars', type=int)
+                if prefix_hex_chars not in (2, 4, 6):
+                    prefix_hex_chars = self.config.getint('Bot', 'prefix_bytes', fallback=1) * 2
                 if prefix_hex_chars <= 0:
                     prefix_hex_chars = 2
                 conn = self._get_db_connection()
@@ -1448,10 +1450,13 @@ class BotDataViewer:
                 rows = cursor.fetchall()
                 
                 edges = []
+                prefix_hex_chars = 2  # default 1 byte
                 for row in rows:
+                    fp, tp = row['from_prefix'], row['to_prefix']
+                    prefix_hex_chars = max(prefix_hex_chars, len(fp) if fp else 0, len(tp) if tp else 0)
                     edges.append({
-                        'from_prefix': row['from_prefix'].lower(),
-                        'to_prefix': row['to_prefix'].lower(),
+                        'from_prefix': fp.lower() if fp else '',
+                        'to_prefix': tp.lower() if tp else '',
                         'from_public_key': row['from_public_key'],
                         'to_public_key': row['to_public_key'],
                         'observation_count': row['observation_count'],
@@ -1461,7 +1466,7 @@ class BotDataViewer:
                         'geographic_distance': row['geographic_distance']
                     })
                 
-                return jsonify({'edges': edges})
+                return jsonify({'edges': edges, 'prefix_hex_chars': prefix_hex_chars or 2})
             except Exception as e:
                 self.logger.error(f"Error getting mesh edges: {e}")
                 return jsonify({'error': str(e)}), 500

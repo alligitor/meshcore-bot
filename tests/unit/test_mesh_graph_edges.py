@@ -215,11 +215,25 @@ class TestMeshGraphMultiByteMerge:
         assert edge['observation_count'] == 2
 
     def test_promote_one_byte_to_three_byte(self, mesh_graph):
-        """When 3-byte observation follows 1-byte, promote: remove 1-byte edge, add 3-byte with merged count."""
-        mesh_graph.add_edge('01', '86')  # 1-byte
+        """When 3-byte observation follows 1-byte and 1-byte has no public_key, do NOT promote: keep 1-byte edge and merge count (preserves other e0 nodes)."""
+        mesh_graph.add_edge('01', '86')  # 1-byte, no public_key
         assert len(mesh_graph.edges) == 1
         assert ('01', '86') in mesh_graph.edges
-        mesh_graph.add_edge('0101c1', '86ab12')  # 3-byte: best match is less specific -> promote
+        mesh_graph.add_edge('0101c1', '86ab12')  # 3-byte: would promote, but 1-byte has no public_key -> merge into 1-byte
+        assert len(mesh_graph.edges) == 1
+        assert ('01', '86') in mesh_graph.edges
+        edge = mesh_graph.get_edge('01', '86')
+        assert edge is not None
+        assert edge['from_prefix'] == '01'
+        assert edge['to_prefix'] == '86'
+        assert edge['observation_count'] == 2
+
+    def test_promote_one_byte_to_three_byte_when_1byte_has_public_key(self, mesh_graph):
+        """When 3-byte observation follows 1-byte and 1-byte edge has public_key, promote: remove 1-byte, add 3-byte with merged count."""
+        mesh_graph.add_edge('01', '86', from_public_key='01' * 32, to_public_key='86' * 32)  # 1-byte with keys
+        assert len(mesh_graph.edges) == 1
+        assert ('01', '86') in mesh_graph.edges
+        mesh_graph.add_edge('0101c1', '86ab12')  # 3-byte: best match has public_key -> promote
         assert len(mesh_graph.edges) == 1
         assert ('01', '86') not in mesh_graph.edges
         edge = mesh_graph.get_edge('01', '86')

@@ -144,9 +144,12 @@ class ServicePluginLoader:
     
     def load_service_from_path(self, file_path: Path) -> Optional[BaseServicePlugin]:
         """Load a single service plugin from a file path (e.g. local/service_plugins/my_service.py)."""
-        # Ensure parent package exists so relative/absolute imports of "local_services" work
+        # Ensure parent package exists so relative/absolute imports of "local_services" work.
+        # Set __path__ so Python treats it as a package and can load submodules (e.g. local_services.utils).
         if "local_services" not in sys.modules:
-            sys.modules["local_services"] = types.ModuleType("local_services")
+            pkg = types.ModuleType("local_services")
+            pkg.__path__ = [str(file_path.parent)]
+            sys.modules["local_services"] = pkg
         stem = file_path.stem
         module_name = f"local_services.{stem}"
         try:
