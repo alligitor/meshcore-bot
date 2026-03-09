@@ -21,12 +21,12 @@ from ..utils import (
 
 
 class PrefixCommand(BaseCommand):
-    """Handles repeater prefix lookups"""
+    """Handles repeater prefix lookups (1-, 2-, or 3-byte hex; longer input truncated to 3 bytes)."""
     
     # Plugin metadata
     name = "prefix"
     keywords = ['prefix', 'repeater', 'lookup']
-    description = "Look up repeaters by prefix (e.g., 'prefix 1A' or 'prefix 2299')"
+    description = "Look up repeaters by prefix (2, 4, or 6 hex chars = 1–3 bytes; longer input truncated)"
     category = "meshcore_info"
     requires_dm = False
     cooldown_seconds = 2
@@ -34,12 +34,16 @@ class PrefixCommand(BaseCommand):
 
     # Documentation
     short_description = "Look up repeaters by prefix and show their locations (if known)"
-    usage = "prefix <XX|XXXX|free|refresh>"
-    examples = ["prefix 1A", "prefix 2299", "prefix free"]
+    usage = "prefix <2|4|6 hex chars|free|refresh>"
+    examples = ["prefix 1A", "prefix 0101", "prefix 010101", "prefix free"]
     parameters = [
-        {"name": "prefix", "description": "Prefix in hex (2 chars or configured length)"},
+        {"name": "prefix", "description": "Prefix in hex (2, 4, or 6 chars = 1–3 bytes); longer input truncated to 6 chars"},
         {"name": "free", "description": "Show available/unused prefixes (may be disabled)"},
     ]
+    
+    # Multi-byte prefix lookup: accept 1-, 2-, or 3-byte hex strings only; longer input truncated
+    MAX_PREFIX_HEX_CHARS = 6
+    ALLOWED_PREFIX_LENGTHS = (2, 4, 6)
     
     def __init__(self, bot: Any):
         """Initialize the prefix command.
@@ -847,22 +851,18 @@ class PrefixCommand(BaseCommand):
         if len(parts) >= 3 and parts[2].upper() == "ALL":
             include_all = True
         
-            # Validate prefix format:
-            # - allow legacy 2-char prefixes (current mesh hop IDs)
-            # - allow configured N-char prefixes (e.g., 4) for pubkey-prefix lookups
-            n = int(getattr(self.bot, "prefix_hex_chars", 2))
-            allowed_lengths = {2, n}
-
-            if len(command) not in allowed_lengths:
-                # If you updated translations to mention {{prefix_hex_chars}}, great,
-                # but this is clearer during the transition:
-                response = f"Invalid prefix format. Expected 2 or {n} hex characters."
-                return await self.send_response(message, response)
-
-            import re
-            if not re.fullmatch(r"[0-9a-fA-F]+", command):
-                response = f"Invalid prefix format. Expected 2 or {n} hex characters."
-                return await self.send_response(message, response)
+        # Validate and normalize prefix for every lookup (1-, 2-, or 3-byte hex only)
+        if len(command) < 2:
+            response = "Invalid prefix format. Expected 2, 4, or 6 hex characters (1–3 bytes)."
+            return await self.send_response(message, response)
+        if not re.fullmatch(r"[0-9a-fA-F]+", command):
+            response = "Invalid prefix format. Expected 2, 4, or 6 hex characters (1–3 bytes)."
+            return await self.send_response(message, response)
+        if len(command) % 2 != 0:
+            response = "Invalid prefix format. Expected 2, 4, or 6 hex characters (1–3 bytes)."
+            return await self.send_response(message, response)
+        if len(command) > self.MAX_PREFIX_HEX_CHARS:
+            command = command[: self.MAX_PREFIX_HEX_CHARS]
         
         # Get prefix data
         prefix_data = await self.get_prefix_data(command, include_all=include_all)
@@ -880,10 +880,10 @@ class PrefixCommand(BaseCommand):
         return True
     
     async def get_prefix_data(self, prefix: str, include_all: bool = False) -> Optional[Dict[str, Any]]:
-        """Get prefix data from API first, enhanced with local database location data
+        """Get prefix data from API first, enhanced with local database location data.
         
         Args:
-            prefix: The two-character prefix to look up
+            prefix: The prefix to look up (2, 4, or 6 hex chars = 1–3 bytes).
             include_all: If True, show all repeaters regardless of last_heard time.
                         If False (default), only show repeaters heard within prefix_heard_days.
         """
@@ -1052,10 +1052,10 @@ class PrefixCommand(BaseCommand):
             self.logger.error(f"Unexpected error refreshing cache: {e}")
     
     async def get_prefix_data_from_db(self, prefix: str, include_all: bool = False) -> Optional[Dict[str, Any]]:
-        """Get prefix data from the bot's SQLite database as fallback
+        """Get prefix data from the bot's SQLite database as fallback.
         
         Args:
-            prefix: The two-character prefix to look up
+            prefix: The prefix to look up (2, 4, or 6 hex chars = 1–3 bytes).
             include_all: If True, show all repeaters regardless of last_heard time.
                         If False (default), only show repeaters heard within prefix_heard_days.
         """
@@ -1073,6 +1073,7 @@ class PrefixCommand(BaseCommand):
                     SELECT name, public_key, device_type, last_heard as last_seen, latitude, longitude, city, state, country, role
                     FROM complete_contact_tracking 
                     WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
+                    AND LENGTH(public_key) >= ?
                     ORDER BY name
                 '''
             else:
@@ -1080,15 +1081,15 @@ class PrefixCommand(BaseCommand):
                     SELECT name, public_key, device_type, last_heard as last_seen, latitude, longitude, city, state, country, role
                     FROM complete_contact_tracking 
                     WHERE public_key LIKE ? AND role IN ('repeater', 'roomserver')
+                    AND LENGTH(public_key) >= ?
                     AND last_heard >= datetime('now', 'localtime', '-{self.prefix_heard_days} days')
                     ORDER BY name
                 '''
-            # Normalize prefix for LIKE: match configured length and lowercase (public_key is typically hex lowercase)
-            n = int(getattr(self.bot, 'prefix_hex_chars', 2))
-            prefix_normalized = prefix[:n].lower() if prefix else ''
+            # Use full prefix (2, 4, or 6 hex chars); no truncation to prefix_hex_chars
+            prefix_normalized = prefix.lower() if prefix else ''
             prefix_pattern = f"{prefix_normalized}%"
             
-            results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
+            results = self.bot.db_manager.execute_query(query, (prefix_pattern, len(prefix_normalized)))
             
             if not results:
                 self.logger.info(f"No repeaters found in database with prefix '{prefix}'")
