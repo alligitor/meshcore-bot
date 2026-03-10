@@ -36,7 +36,9 @@ class RepeaterManager:
         # Initialize auto-purge monitoring
         self.contact_limit = 300  # MeshCore device limit (will be updated from device info)
         self.auto_purge_threshold = 280  # Start purging when 280+ contacts
-        self.auto_purge_enabled = True
+        # Respect auto_manage_contacts: manual mode (false) = no auto-purge; device/bot = auto-purge on
+        auto_manage = bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower()
+        self.auto_purge_enabled = (auto_manage != 'false')
         
         # Initialize companion purge settings
         self.companion_purge_enabled = bot.config.getboolean('Companion_Purge', 'companion_purge_enabled', fallback=False)
