@@ -149,7 +149,8 @@ class ServicePluginLoader:
         if "local_services" not in sys.modules:
             pkg = types.ModuleType("local_services")
             builtin_services_dir = getattr(self, 'services_dir', None) or os.path.join(os.path.dirname(__file__), 'service_plugins')
-            pkg.__path__ = [str(file_path.parent), builtin_services_dir]
+            modules_dir = os.path.dirname(__file__)  # so local_services.utils resolves to modules.utils
+            pkg.__path__ = [str(file_path.parent), builtin_services_dir, modules_dir]
             sys.modules["local_services"] = pkg
         stem = file_path.stem
         module_name = f"local_services.{stem}"
