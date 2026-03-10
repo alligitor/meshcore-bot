@@ -1302,8 +1302,8 @@ auth_token_method = device
 # Location Code (IATA code for your location)
 # Used in topic templates and auth tokens
 # Example: SEA, LAX, JFK, etc.
-# Default: LOC (if not set)
-iata = LOC
+# Default: XYZ (invalid if not set)
+iata = XYZ
 
 # MQTT configuration
 # Enable MQTT publishing

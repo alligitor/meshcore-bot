@@ -183,7 +183,7 @@ class PacketCaptureService(BaseServicePlugin):
         self.mqtt_brokers = self._parse_mqtt_brokers(config)
         
         # Global IATA
-        self.global_iata = config.get('PacketCapture', 'iata', fallback='LOC').lower()
+        self.global_iata = config.get('PacketCapture', 'iata', fallback='XYZ').lower()
         
         # Owner information
         self.owner_public_key = config.get('PacketCapture', 'owner_public_key', fallback=None)
