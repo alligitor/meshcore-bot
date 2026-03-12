@@ -191,7 +191,7 @@ class HelpCommand(BaseCommand):
             # Query the database for command usage statistics
             command_counts = defaultdict(int)
             try:
-                with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+                with self.bot.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     # Check if command_stats table exists
                     cursor.execute("""
