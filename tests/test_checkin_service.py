@@ -1,4 +1,7 @@
-"""Tests for local check-in service plugin."""
+"""Tests for local check-in service plugin.
+
+Skipped when the checkin_service local plugin is not present (it does not ship with the bot).
+"""
 
 import configparser
 import pytest
@@ -11,7 +14,12 @@ import sys
 _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
-from local.service_plugins.checkin_service import CheckInService
+
+try:
+    from local.service_plugins.checkin_service import CheckInService
+except ImportError:
+    CheckInService = None
+    pytestmark = pytest.mark.skip(reason="local checkin_service plugin not installed")
 
 
 def _make_bot(config_overrides=None):
