@@ -18,6 +18,7 @@ def cm_bot(mock_logger):
     bot = Mock()
     bot.logger = mock_logger
     bot.bot_root = Path("/tmp")
+    bot._local_root = None  # Use bot_root / local / commands in CommandManager
     bot.config = ConfigParser()
     bot.config.add_section("Bot")
     bot.config.set("Bot", "bot_name", "TestBot")

@@ -1393,18 +1393,12 @@ class MeshGraph:
     
     def shutdown(self):
         """Shutdown graph, flushing all pending writes."""
-        self.logger.info("Shutting down mesh graph, flushing pending writes...")
-        
+        # Do not log here: atexit may run after the logger's stream is closed.
         # Signal shutdown
         self._shutdown_event.set()
-        
+
         # Flush pending updates
         try:
             self._flush_pending_updates_sync()
-        except Exception as e:
-            self.logger.warning(f"Error flushing graph updates on shutdown: {e}")
-        
-        # Log final statistics
-        if self.edges:
-            total_observations = sum(e['observation_count'] for e in self.edges.values())
-            self.logger.info(f"Graph shutdown complete: {len(self.edges)} edges, {total_observations} total observations")
+        except Exception:
+            pass  # Avoid logging; stream may be closed during atexit

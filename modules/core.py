@@ -1498,42 +1498,27 @@ long_jokes = false
     
     def _cleanup_web_viewer(self) -> None:
         """Cleanup web viewer resources on exit.
-        
+
         Called by atexit handler to ensure the web viewer process is terminated
         properly when the bot shuts down.
         """
         try:
             if hasattr(self, 'web_viewer_integration') and self.web_viewer_integration:
-                # Web viewer has simpler cleanup
                 self.web_viewer_integration.stop_viewer()
-                try:
-                    self.logger.info("Web viewer cleanup completed")
-                except (AttributeError, TypeError):
-                    print("Web viewer cleanup completed")
-        except (OSError, AttributeError, TypeError) as e:
-            try:
-                self.logger.error(f"Error during web viewer cleanup: {e}")
-            except (AttributeError, TypeError):
-                print(f"Error during web viewer cleanup: {e}")
+        except (OSError, AttributeError, TypeError, ValueError, IOError):
+            pass  # Do not log; stream may be closed during atexit
     
     def _cleanup_mesh_graph(self) -> None:
         """Cleanup mesh graph resources on exit.
-        
+
         Called by atexit handler to ensure graph state is persisted
         properly when the bot shuts down.
         """
         try:
             if hasattr(self, 'mesh_graph') and self.mesh_graph:
                 self.mesh_graph.shutdown()
-                try:
-                    self.logger.info("Mesh graph cleanup completed")
-                except (AttributeError, TypeError):
-                    print("Mesh graph cleanup completed")
-        except (OSError, AttributeError, TypeError) as e:
-            try:
-                self.logger.error(f"Error during mesh graph cleanup: {e}")
-            except (AttributeError, TypeError):
-                print(f"Error during mesh graph cleanup: {e}")
+        except (OSError, AttributeError, TypeError, ValueError, IOError):
+            pass  # Do not log; stream may be closed during atexit
     
     async def send_startup_advert(self) -> None:
         """Send a startup advertisement if configured.

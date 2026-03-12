@@ -7,6 +7,7 @@ import pytest
 import sqlite3
 import configparser
 from contextlib import closing
+from pathlib import Path
 from unittest.mock import Mock, MagicMock, AsyncMock
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -236,7 +237,8 @@ def mock_bot(mock_logger, test_config, test_db):
     bot.logger = mock_logger
     bot.config = test_config
     bot.db_manager = test_db
-    bot.bot_root = '/tmp'  # Dummy path for testing
+    bot.bot_root = Path("/tmp")  # Path for CommandManager local_commands_dir
+    bot._local_root = None  # Use bot_root / local / commands in CommandManager
     bot.prefix_hex_chars = 2  # For path/prefix logic (PR #77)
     bot.key_prefix = lambda pk: (pk or '')[: getattr(bot, 'prefix_hex_chars', 2)]  # For path_command graph selection
     
