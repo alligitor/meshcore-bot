@@ -11,8 +11,10 @@ import time
 import hashlib
 import html
 import re
+import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
+from pathlib import Path
 import sqlite3
 import feedparser
 from urllib.parse import urlparse
@@ -26,16 +28,27 @@ class FeedManager:
         self.logger = bot.logger
         self.db_path = bot.db_manager.db_path
         
-        # Configuration
-        self.enabled = bot.config.getboolean('Feed_Manager', 'feed_manager_enabled', fallback=False)
-        self.default_check_interval = bot.config.getint('Feed_Manager', 'default_check_interval_seconds', fallback=300)
-        self.max_items_per_check = bot.config.getint('Feed_Manager', 'max_items_per_check', fallback=10)
-        self.request_timeout = bot.config.getint('Feed_Manager', 'feed_request_timeout', fallback=30)
-        self.user_agent = bot.config.get('Feed_Manager', 'feed_user_agent', fallback='MeshCoreBot/1.0 FeedManager')
-        self.rate_limit_seconds = bot.config.getfloat('Feed_Manager', 'feed_rate_limit_seconds', fallback=5.0)
-        self.max_message_length = bot.config.getint('Feed_Manager', 'max_message_length', fallback=130)
-        self.default_output_format = bot.config.get('Feed_Manager', 'default_output_format', fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
-        self.default_send_interval = bot.config.getfloat('Feed_Manager', 'default_message_send_interval_seconds', fallback=2.0)
+        # Configuration (guard against missing [Feed_Manager] section for upgrade compatibility)
+        if not bot.config.has_section('Feed_Manager'):
+            self.enabled = False
+            self.default_check_interval = 300
+            self.max_items_per_check = 10
+            self.request_timeout = 30
+            self.user_agent = 'MeshCoreBot/1.0 FeedManager'
+            self.rate_limit_seconds = 5.0
+            self.max_message_length = 130
+            self.default_output_format = '{emoji} {body|truncate:100} - {date}\n{link|truncate:50}'
+            self.default_send_interval = 2.0
+        else:
+            self.enabled = bot.config.getboolean('Feed_Manager', 'feed_manager_enabled', fallback=False)
+            self.default_check_interval = bot.config.getint('Feed_Manager', 'default_check_interval_seconds', fallback=300)
+            self.max_items_per_check = bot.config.getint('Feed_Manager', 'max_items_per_check', fallback=10)
+            self.request_timeout = bot.config.getint('Feed_Manager', 'feed_request_timeout', fallback=30)
+            self.user_agent = bot.config.get('Feed_Manager', 'feed_user_agent', fallback='MeshCoreBot/1.0 FeedManager')
+            self.rate_limit_seconds = bot.config.getfloat('Feed_Manager', 'feed_rate_limit_seconds', fallback=5.0)
+            self.max_message_length = bot.config.getint('Feed_Manager', 'max_message_length', fallback=130)
+            self.default_output_format = bot.config.get('Feed_Manager', 'default_output_format', fallback='{emoji} {body|truncate:100} - {date}\n{link|truncate:50}')
+            self.default_send_interval = bot.config.getfloat('Feed_Manager', 'default_message_send_interval_seconds', fallback=2.0)
         
         # Rate limiting per domain
         self._domain_last_request: Dict[str, float] = {}
@@ -271,7 +284,7 @@ class FeedManager:
             
             # Query database for all processed item IDs for this feed
             try:
-                with sqlite3.connect(self.db_path) as conn:
+                with self.bot.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute('''
                         SELECT DISTINCT item_id FROM feed_activity
@@ -430,7 +443,7 @@ class FeedManager:
             
             # Query database for all processed item IDs for this feed
             try:
-                with sqlite3.connect(self.db_path) as conn:
+                with self.bot.db_manager.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute('''
                         SELECT DISTINCT item_id FROM feed_activity
@@ -836,7 +849,6 @@ class FeedManager:
         body = item.get('description', '') or item.get('body', '')
         # Clean HTML from body if present
         if body:
-            import html
             body = html.unescape(body)
             # Convert line break tags to newlines before stripping other HTML
             # Handle <br>, <br/>, <br />, <BR>, etc.
@@ -942,7 +954,7 @@ class FeedManager:
     def _queue_feed_message(self, feed: Dict[str, Any], item: Dict[str, Any], message: str):
         """Queue a feed message for later sending"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO feed_message_queue 
@@ -1099,7 +1111,7 @@ class FeedManager:
     def _get_enabled_feeds(self) -> List[Dict[str, Any]]:
         """Get all enabled feed subscriptions from database"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute('''
@@ -1122,7 +1134,7 @@ class FeedManager:
             now = datetime.now(timezone.utc)
             now_str = now.isoformat()  # ISO format: 2025-12-05T12:34:56.789+00:00
             
-            with sqlite3.connect(self.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE feed_subscriptions
@@ -1138,7 +1150,7 @@ class FeedManager:
     def _update_feed_last_item_id(self, feed_id: int, item_id: str):
         """Update the last processed item ID for a feed"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE feed_subscriptions
@@ -1153,7 +1165,7 @@ class FeedManager:
     def _record_feed_activity(self, feed_id: int, item_id: str, item_title: str):
         """Record that a feed item was processed"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO feed_activity (feed_id, item_id, item_title, message_sent)
@@ -1166,7 +1178,7 @@ class FeedManager:
     def _record_feed_error(self, feed_id: int, error_type: str, error_message: str):
         """Record a feed error"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO feed_errors (feed_id, error_type, error_message)
@@ -1180,7 +1192,8 @@ class FeedManager:
         """Process queued feed messages and send them at configured intervals"""
         try:
             # Get all unsent messages, ordered by priority and queue time
-            with sqlite3.connect(self.db_path) as conn:
+            db_path = str(self.db_path)  # Ensure string, not Path object
+            with self.bot.db_manager.connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute('''
@@ -1224,7 +1237,7 @@ class FeedManager:
                     
                     if success:
                         # Mark as sent
-                        with sqlite3.connect(self.db_path) as conn:
+                        with self.bot.db_manager.connection() as conn:
                             cursor = conn.cursor()
                             cursor.execute('''
                                 UPDATE feed_message_queue
@@ -1248,5 +1261,16 @@ class FeedManager:
                     # Don't mark as sent, will retry later
         
         except Exception as e:
-            self.logger.error(f"Error processing message queue: {e}")
+            db_path = getattr(self, 'db_path', 'unknown')
+            db_path_str = str(db_path) if db_path != 'unknown' else 'unknown'
+            self.logger.exception(f"Error processing message queue: {e}")
+            if db_path_str != 'unknown':
+                path_obj = Path(db_path_str)
+                self.logger.error(f"Database path: {db_path_str} (exists: {path_obj.exists()}, readable: {os.access(db_path_str, os.R_OK) if path_obj.exists() else False}, writable: {os.access(db_path_str, os.W_OK) if path_obj.exists() else False})")
+                # Check parent directory permissions
+                if path_obj.exists():
+                    parent = path_obj.parent
+                    self.logger.error(f"Parent directory: {parent} (exists: {parent.exists()}, writable: {os.access(str(parent), os.W_OK) if parent.exists() else False})")
+            else:
+                self.logger.error(f"Database path: {db_path_str}")
 

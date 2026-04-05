@@ -8,6 +8,7 @@ import asyncio
 import sys
 import os
 import hashlib
+import copy
 from typing import Dict, Any, List, Optional
 from meshcore import EventType
 
@@ -134,10 +135,7 @@ class ChannelManager:
     def _store_channels_in_db(self, channels: List[Dict[str, Any]]):
         """Store channel information in database for web viewer access (full refresh - clears all first)"""
         try:
-            import sqlite3
-            db_path = self.bot.db_manager.db_path
-            
-            with sqlite3.connect(db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Clear existing channels (full refresh)
@@ -155,10 +153,7 @@ class ChannelManager:
     def _store_single_channel_in_db(self, channel: Dict[str, Any]):
         """Store or update a single channel in database (without clearing others)"""
         try:
-            import sqlite3
-            db_path = self.bot.db_manager.db_path
-            
-            with sqlite3.connect(db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 self._insert_channel_in_db(cursor, channel)
                 conn.commit()
@@ -574,8 +569,9 @@ class ChannelManager:
             
             async def on_channel_info(event):
                 nonlocal channel_set
-                if event.payload.get('channel_idx') == channel_idx:
-                    payload = event.payload
+                # Copy payload immediately to avoid segfault if event is freed
+                payload = copy.deepcopy(event.payload) if hasattr(event, 'payload') else None
+                if payload and payload.get('channel_idx') == channel_idx:
                     if payload.get('channel_name') == channel_name:
                         channel_set = True
                         event_received.set()
@@ -660,8 +656,9 @@ class ChannelManager:
             
             async def on_channel_info(event):
                 nonlocal channel_cleared
-                if event.payload.get('channel_idx') == channel_idx:
-                    payload = event.payload
+                # Copy payload immediately to avoid segfault if event is freed
+                payload = copy.deepcopy(event.payload) if hasattr(event, 'payload') else None
+                if payload and payload.get('channel_idx') == channel_idx:
                     event_secret = payload.get('channel_secret', b'')
                     # Check if the channel was cleared (all zeros or empty name)
                     if isinstance(event_secret, bytes) and event_secret == empty_secret:
@@ -707,9 +704,7 @@ class ChannelManager:
                         del self._channels_cache[channel_idx]
                     # Update database - remove the channel
                     try:
-                        import sqlite3
-                        db_path = self.bot.db_manager.db_path
-                        with sqlite3.connect(db_path) as conn:
+                        with self.bot.db_manager.connection() as conn:
                             cursor = conn.cursor()
                             cursor.execute('DELETE FROM channels WHERE channel_idx = ?', (channel_idx,))
                             conn.commit()

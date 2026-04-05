@@ -10,7 +10,7 @@ import time
 import hashlib
 import pytz
 from geopy.geocoders import Nominatim
-from ..utils import rate_limited_nominatim_reverse, get_nominatim_geocoder, geocode_zipcode, geocode_city
+from ..utils import rate_limited_nominatim_reverse, get_nominatim_geocoder, geocode_zipcode, geocode_city, get_config_timezone
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, Dict
 from .base_command import BaseCommand
@@ -29,6 +29,17 @@ class SolarforecastCommand(BaseCommand):
     cooldown_seconds = 10  # 10 second cooldown per user
     requires_internet = True  # Requires internet access for Forecast.Solar API and geocoding
     
+    # Documentation
+    short_description = "Get solar panel production forecast for a location or repeater"
+    usage = "sf <location> [watts] [azimuth] [angle]"
+    examples = ["sf seattle", "sf 47.6,-122.3 200"]
+    parameters = [
+        {"name": "location", "description": "City, coordinates, or repeater name"},
+        {"name": "watts", "description": "Panel size in watts (default: 100)"},
+        {"name": "azimuth", "description": "Panel direction, 0=south (default: 0)"},
+        {"name": "angle", "description": "Panel tilt in degrees (default: 30)"}
+    ]
+    
     # Error constants - will use translations instead
     ERROR_FETCHING_DATA = "Error fetching forecast"  # Deprecated - use translate
     NO_DATA_AVAILABLE = "No forecast data"  # Deprecated - use translate
@@ -41,22 +52,33 @@ class SolarforecastCommand(BaseCommand):
     
     def __init__(self, bot):
         super().__init__(bot)
+        self.solarforecast_enabled = self.get_config_value('Solarforecast_Command', 'enabled', fallback=True, value_type='bool')
         self.url_timeout = 15  # seconds
-        
-        # Per-user cooldown tracking
-        self.user_cooldowns = {}
         
         # Forecast cache: {cache_key: {'data': dict, 'timestamp': float}}
         self.forecast_cache = {}
         
         # Get default state from config for city disambiguation
-        self.default_state = self.bot.config.get('Weather', 'default_state', fallback='WA')
+        self.default_state = self.bot.config.get('Weather', 'default_state', fallback='')
         
         # Initialize geocoder (will use rate-limited helpers for actual calls)
         self.geolocator = get_nominatim_geocoder()
         
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
+    
+    def can_execute(self, message: MeshMessage) -> bool:
+        """Check if this command can be executed with the given message.
+        
+        Args:
+            message: The message triggering the command.
+            
+        Returns:
+            bool: True if command is enabled and checks pass, False otherwise.
+        """
+        if not self.solarforecast_enabled:
+            return False
+        return super().can_execute(message)
     
     def get_help_text(self) -> str:
         return self.translate('commands.solarforecast.usage')
@@ -72,28 +94,6 @@ class SolarforecastCommand(BaseCommand):
         # Fallback: return original if no translation found
         return day_abbr
     
-    def can_execute(self, message: MeshMessage) -> bool:
-        """Override cooldown check to be per-user"""
-        if self.requires_dm and not message.is_dm:
-            return False
-        
-        if self.cooldown_seconds > 0:
-            import time
-            current_time = time.time()
-            user_id = message.sender_id
-            
-            if user_id in self.user_cooldowns:
-                last_execution = self.user_cooldowns[user_id]
-                if (current_time - last_execution) < self.cooldown_seconds:
-                    return False
-        
-        return True
-    
-    def _record_execution(self, user_id: str):
-        """Record the execution time for a specific user"""
-        import time
-        self.user_cooldowns[user_id] = time.time()
-    
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the solar forecast command"""
         content = message.content.strip()
@@ -105,7 +105,8 @@ class SolarforecastCommand(BaseCommand):
             return True
         
         try:
-            self._record_execution(message.sender_id)
+            # Record execution for this user (handles cooldown)
+            self.record_execution(message.sender_id)
             
             # Parse arguments - location might be multiple words (e.g., "Hillcrest Repeater v2")
             # Try to find where location ends and numeric parameters begin
@@ -635,21 +636,8 @@ class SolarforecastCommand(BaseCommand):
         if not watt_hours_day:
             return self.translate('commands.solarforecast.no_data')
         
-        # Get timezone from config or use system timezone
-        timezone_str = self.bot.config.get('Bot', 'timezone', fallback='')
-        if timezone_str:
-            try:
-                local_tz = pytz.timezone(timezone_str)
-            except pytz.exceptions.UnknownTimeZoneError:
-                local_tz = None
-        else:
-            local_tz = None
-        
-        # Get current time in local timezone
-        if local_tz:
-            now = datetime.now(local_tz)
-        else:
-            now = datetime.now()
+        local_tz, _ = get_config_timezone(self.bot.config, self.logger)
+        now = datetime.now(local_tz)
         
         today = now.strftime('%Y-%m-%d')
         tomorrow = (now + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -1085,7 +1073,11 @@ class SolarforecastCommand(BaseCommand):
             if len(test_message) > 130:
                 # Send current message and start new one
                 if current_message:
-                    await self.send_response(message, current_message)
+                    # Per-user rate limit applies only to first message (trigger); skip for continuations
+                    await self.send_response(
+                        message, current_message,
+                        skip_user_rate_limit=(message_count > 0)
+                    )
                     message_count += 1
                     # Wait between messages (same as other commands)
                     if message_count > 0 and i < len(lines):
@@ -1094,7 +1086,10 @@ class SolarforecastCommand(BaseCommand):
                     current_message = line
                 else:
                     # Single line is too long, send it anyway (will be truncated by bot)
-                    await self.send_response(message, line)
+                    await self.send_response(
+                        message, line,
+                        skip_user_rate_limit=(message_count > 0)
+                    )
                     message_count += 1
                     if i < len(lines) - 1:
                         await asyncio.sleep(2.0)
@@ -1105,7 +1100,7 @@ class SolarforecastCommand(BaseCommand):
                 else:
                     current_message = line
         
-        # Send the last message if there's content
+        # Send the last message if there's content (continuation; skip per-user rate limit)
         if current_message:
-            await self.send_response(message, current_message)
+            await self.send_response(message, current_message, skip_user_rate_limit=True)
 

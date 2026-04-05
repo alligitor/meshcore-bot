@@ -308,6 +308,12 @@ copy_files_smart() {
             print_info "Preserving existing alternative commands (only updating if source is newer)"
         fi
         
+        # Preserve install dir's local/ entirely (user custom commands and service plugins)
+        # Never overwrite or delete anything under $dest_dir/local/
+        if [ -d "$dest_dir/local" ]; then
+            print_info "Preserving existing local/ directory (not overwriting)"
+        fi
+        
         # Exclude patterns
         rsync -a --update --exclude='.git' \
               --exclude='__pycache__' \
@@ -320,10 +326,20 @@ copy_files_smart() {
               --exclude='*.db-wal' \
               --exclude='*.log' \
               --exclude='backups' \
+              --exclude='local/' \
               $preserve_config \
               "$source_dir/" "$dest_dir/" 2>/dev/null || {
             print_warning "rsync had some issues, falling back to manual copy"
         }
+        # If install dir has no local/, create minimal structure from source so service has valid layout
+        if [ ! -d "$dest_dir/local" ]; then
+            print_info "Creating local/ directory structure (first-time install)"
+            mkdir -p "$dest_dir/local/commands" "$dest_dir/local/service_plugins"
+            [ -f "$source_dir/local/README.md" ] && cp "$source_dir/local/README.md" "$dest_dir/local/" || true
+            [ -f "$source_dir/local/__init__.py" ] && cp "$source_dir/local/__init__.py" "$dest_dir/local/" || true
+            [ -f "$source_dir/local/commands/.gitkeep" ] && cp "$source_dir/local/commands/.gitkeep" "$dest_dir/local/commands/" || true
+            [ -f "$source_dir/local/service_plugins/.gitkeep" ] && cp "$source_dir/local/service_plugins/.gitkeep" "$dest_dir/local/service_plugins/" || true
+        fi
         print_success "Files synchronized using rsync"
         return 0
     fi
@@ -334,6 +350,11 @@ copy_files_smart() {
     # Preserve alternatives directory if it exists
     if [ -d "$dest_dir/modules/commands/alternatives" ]; then
         print_info "Preserving existing alternative commands (not overwriting)"
+    fi
+    
+    # Preserve install dir's local/ entirely - never overwrite when it exists
+    if [ -d "$dest_dir/local" ]; then
+        print_info "Preserving existing local/ directory (not overwriting)"
     fi
     
     # Copy files, preserving config.ini if it exists
@@ -354,6 +375,12 @@ copy_files_smart() {
         [[ "$rel_path" == *".db-wal" ]] && continue
         [[ "$rel_path" == *".log" ]] && continue
         [[ "$rel_path" == *"/backups/"* ]] && continue
+        
+        # Preserve install dir's local/ entirely - skip all files under local/ when dest has local/
+        if [[ "$rel_path" == "local/"* ]] && [ -d "$dest_dir/local" ]; then
+            files_skipped=$((files_skipped + 1))
+            continue
+        fi
         
         # Preserve alternatives directory - only update if source file is newer
         if [[ "$rel_path" == "modules/commands/alternatives/"* ]] && [ -d "$dest_dir/modules/commands/alternatives" ]; then
@@ -405,7 +432,80 @@ copy_files_smart "$SCRIPT_DIR" "$INSTALL_DIR" || {
     exit 1
 }
 
-print_section "Step 4: Setting File Permissions"
+# Write .version_info at install dir so web viewer and packet_capture show version after install
+if command -v git &>/dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
+    GIT_HASH="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+    if VERSION="$(git -C "$SCRIPT_DIR" describe --exact-match HEAD 2>/dev/null)"; then
+        INSTALLER_VER="$VERSION"
+    else
+        INSTALLER_VER="dev-${GIT_HASH}"
+    fi
+    printf '%s\n' "{\"installer_version\": \"${INSTALLER_VER}\", \"git_hash\": \"${GIT_HASH}\"}" > "$INSTALL_DIR/.version_info"
+    print_success "Wrote version info (${INSTALLER_VER}) to $INSTALL_DIR/.version_info"
+fi
+
+# If no config.ini in install dir, create it from config.ini.example
+if [ ! -f "$INSTALL_DIR/config.ini" ]; then
+    if [ -f "$INSTALL_DIR/config.ini.example" ]; then
+        cp "$INSTALL_DIR/config.ini.example" "$INSTALL_DIR/config.ini"
+        print_success "Created $INSTALL_DIR/config.ini from config.ini.example (no config was present)"
+    elif [ -f "$SCRIPT_DIR/config.ini.example" ]; then
+        cp "$SCRIPT_DIR/config.ini.example" "$INSTALL_DIR/config.ini"
+        print_success "Created $INSTALL_DIR/config.ini from config.ini.example (no config was present)"
+    else
+        print_warning "config.ini.example not found. Create $INSTALL_DIR/config.ini manually before starting the bot."
+    fi
+fi
+
+# Create venv and install dependencies before chown so the service user ends up
+# owning a complete, working venv (avoids partial root-owned venv and import errors).
+print_section "Step 4: Setting Up Python Virtual Environment"
+if [ -d "$INSTALL_DIR/venv" ]; then
+    print_info "Virtual environment already exists at $INSTALL_DIR/venv"
+    print_info "Preserving existing virtual environment"
+    if [[ "$UPGRADE_MODE" == true ]]; then
+        print_info "Upgrade mode: will update dependencies"
+    else
+        print_info "Will update dependencies if requirements.txt changed"
+    fi
+else
+    print_info "Creating an isolated Python environment for the bot"
+    print_info "This ensures dependencies don't conflict with system Python packages"
+    python3 -m venv "$INSTALL_DIR/venv"
+    print_success "Created virtual environment at $INSTALL_DIR/venv"
+fi
+
+# Verify virtual environment looks healthy
+VENV_PYTHON="$INSTALL_DIR/venv/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+    print_error "Python virtual environment at $INSTALL_DIR/venv appears to be incomplete or corrupted"
+    print_error "Expected Python executable not found at: $VENV_PYTHON"
+    print_info "Try removing $INSTALL_DIR/venv and re-running this installer to recreate it:"
+    echo "  sudo rm -rf $INSTALL_DIR/venv"
+    echo "  sudo ./install-service.sh"
+    exit 1
+fi
+
+# Ensure pip is available and up to date inside the venv
+print_info "Ensuring pip is available and up to date in the virtual environment"
+$VENV_PYTHON -m ensurepip --upgrade >/dev/null 2>&1 || true
+$VENV_PYTHON -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+
+# Install dependencies in venv using python -m pip (more portable than calling pip directly)
+print_info "Installing Python dependencies from requirements.txt"
+print_info "This may take a few minutes depending on your internet connection..."
+if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
+    print_error "requirements.txt not found in installation directory"
+    exit 1
+fi
+$VENV_PYTHON -m pip install --quiet -r "$INSTALL_DIR/requirements.txt" || {
+    print_error "Failed to install Python dependencies"
+    print_info "You may need to check your internet connection or Python version"
+    exit 1
+}
+print_success "Installed all Python dependencies"
+
+print_section "Step 5: Setting File Permissions"
 print_info "Configuring file ownership and permissions for security"
 print_info "The service user will own all files, with appropriate read/write permissions"
 # Set ownership
@@ -425,7 +525,7 @@ find "$INSTALL_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
 chmod 755 "$INSTALL_DIR/meshcore_bot.py"
 print_success "Configured file permissions"
 
-print_section "Step 5: Installing Service"
+print_section "Step 6: Installing Service"
 if [[ "$IS_MACOS" == true ]]; then
     print_info "Installing launchd plist file to enable automatic startup"
     print_info "The service will be configured to start on boot and restart on failure"
@@ -462,7 +562,7 @@ with open('$LAUNCHD_DIR/$SERVICE_FILE', 'w') as f:
     chmod 644 "$LAUNCHD_DIR/$SERVICE_FILE"
     print_success "Set plist permissions"
     
-    print_section "Step 6: Loading Service"
+    print_section "Step 7: Loading Service"
     # Check if service is already loaded
     if launchctl list "$PLIST_NAME" &>/dev/null; then
         if [[ "$UPGRADE_MODE" == true ]]; then
@@ -508,7 +608,7 @@ else
         print_success "Systemd configuration reloaded"
     fi
     
-    print_section "Step 6: Enabling Service"
+    print_section "Step 7: Enabling Service"
     # Check if service is already enabled
     if systemctl is-enabled "$SERVICE_NAME" &>/dev/null; then
         print_info "Service '$SERVICE_NAME' is already enabled for automatic startup"
@@ -519,44 +619,6 @@ else
     fi
     print_info "Note: The service is enabled but not started yet. You'll start it after configuration."
 fi
-
-print_section "Step 7: Setting Up Python Virtual Environment"
-if [ -d "$INSTALL_DIR/venv" ]; then
-    print_info "Virtual environment already exists at $INSTALL_DIR/venv"
-    print_info "Preserving existing virtual environment"
-    if [[ "$UPGRADE_MODE" == true ]]; then
-        print_info "Upgrade mode: will update dependencies"
-    else
-        print_info "Will update dependencies if requirements.txt changed"
-    fi
-else
-    print_info "Creating an isolated Python environment for the bot"
-    print_info "This ensures dependencies don't conflict with system Python packages"
-    python3 -m venv "$INSTALL_DIR/venv"
-    print_success "Created virtual environment at $INSTALL_DIR/venv"
-fi
-
-# Upgrade pip first
-print_info "Upgrading pip to latest version"
-"$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
-
-# Install dependencies in venv
-print_info "Installing Python dependencies from requirements.txt"
-print_info "This may take a few minutes depending on your internet connection..."
-if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
-    print_error "requirements.txt not found in installation directory"
-    exit 1
-fi
-"$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt" || {
-    print_error "Failed to install Python dependencies"
-    print_info "You may need to check your internet connection or Python version"
-    exit 1
-}
-print_success "Installed all Python dependencies"
-
-# Update ownership of venv
-chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/venv"
-print_success "Set ownership of virtual environment"
 
 if [[ "$UPGRADE_MODE" == true ]]; then
     print_section "Upgrade Complete!"
@@ -574,32 +636,32 @@ echo -e "${BLUE}📋 Next Steps${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "${CYAN}1. Configure the bot:${NC}"
-echo "   ${YELLOW}sudo nano $INSTALL_DIR/config.ini${NC}"
+echo -e "   ${YELLOW}sudo nano $INSTALL_DIR/config.ini${NC}"
 echo "   Edit the configuration file with your bot settings, API keys, and device information"
 echo ""
 
 if [[ "$IS_MACOS" == true ]]; then
     echo -e "${CYAN}2. Start the service:${NC}"
-    echo "   ${YELLOW}sudo launchctl load -w $LAUNCHD_DIR/$SERVICE_FILE${NC}"
-    echo "   Or: ${YELLOW}sudo launchctl start $PLIST_NAME${NC}"
+    echo -e "   ${YELLOW}sudo launchctl load -w $LAUNCHD_DIR/$SERVICE_FILE${NC}"
+    echo -e "   Or: ${YELLOW}sudo launchctl start $PLIST_NAME${NC}"
     echo ""
     echo -e "${CYAN}3. Verify it's running:${NC}"
-    echo "   ${YELLOW}sudo launchctl list | grep $PLIST_NAME${NC}"
-    echo "   Or check logs: ${YELLOW}tail -f $LOG_DIR/meshcore-bot.log${NC}"
+    echo -e "   ${YELLOW}sudo launchctl list | grep $PLIST_NAME${NC}"
+    echo -e "   Or check logs: ${YELLOW}tail -f $LOG_DIR/meshcore-bot.log${NC}"
     echo ""
     echo -e "${CYAN}4. View live logs (optional):${NC}"
-    echo "   ${YELLOW}tail -f $LOG_DIR/meshcore-bot.log${NC}"
+    echo -e "   ${YELLOW}tail -f $LOG_DIR/meshcore-bot.log${NC}"
     echo "   Press Ctrl+C to exit log view"
 else
     echo -e "${CYAN}2. Start the service:${NC}"
-    echo "   ${YELLOW}sudo systemctl start $SERVICE_NAME${NC}"
+    echo -e "   ${YELLOW}sudo systemctl start $SERVICE_NAME${NC}"
     echo ""
     echo -e "${CYAN}3. Verify it's running:${NC}"
-    echo "   ${YELLOW}sudo systemctl status $SERVICE_NAME${NC}"
+    echo -e "   ${YELLOW}sudo systemctl status $SERVICE_NAME${NC}"
     echo "   You should see 'active (running)' in green"
     echo ""
     echo -e "${CYAN}4. View live logs (optional):${NC}"
-    echo "   ${YELLOW}sudo journalctl -u $SERVICE_NAME -f${NC}"
+    echo -e "   ${YELLOW}sudo journalctl -u $SERVICE_NAME -f${NC}"
     echo "   Press Ctrl+C to exit log view"
 fi
 echo ""
@@ -656,7 +718,7 @@ if [[ "$IS_MACOS" == true ]]; then
     echo "  • Log to: $LOG_DIR/meshcore-bot.log"
     echo ""
     print_info "After editing config.ini, restart the service for changes to take effect:"
-    echo "  ${YELLOW}sudo launchctl stop $PLIST_NAME && sudo launchctl start $PLIST_NAME${NC}"
+    echo -e "  ${YELLOW}sudo launchctl stop $PLIST_NAME && sudo launchctl start $PLIST_NAME${NC}"
 else
     echo "  • Restart automatically if it crashes (with 10 second delay)"
     echo "  • Run as user '$SERVICE_USER' for security"
@@ -668,16 +730,16 @@ else
     echo "  • Group membership changes take effect after service restart"
     echo ""
     print_info "After editing config.ini, restart the service for changes to take effect:"
-    echo "  ${YELLOW}sudo systemctl restart $SERVICE_NAME${NC}"
+    echo -e "  ${YELLOW}sudo systemctl restart $SERVICE_NAME${NC}"
 fi
 echo ""
 if [[ "$UPGRADE_MODE" == true ]]; then
     print_success "Upgrade complete! The bot files have been updated."
     print_info "You may want to restart the service to apply changes:"
     if [[ "$IS_MACOS" == true ]]; then
-        echo "  ${YELLOW}sudo launchctl stop $PLIST_NAME && sudo launchctl start $PLIST_NAME${NC}"
+        echo -e "  ${YELLOW}sudo launchctl stop $PLIST_NAME && sudo launchctl start $PLIST_NAME${NC}"
     else
-        echo "  ${YELLOW}sudo systemctl restart $SERVICE_NAME${NC}"
+        echo -e "  ${YELLOW}sudo systemctl restart $SERVICE_NAME${NC}"
     fi
 else
     print_success "Installation complete! The bot is ready to configure and start."

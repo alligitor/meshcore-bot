@@ -10,13 +10,18 @@ import requests_cache
 from retry_requests import retry
 from datetime import datetime
 from geopy.geocoders import Nominatim
-from ..utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder, abbreviate_location, geocode_zipcode_sync, geocode_city_sync
+from ..utils import rate_limited_nominatim_geocode_sync, rate_limited_nominatim_reverse_sync, get_nominatim_geocoder, abbreviate_location, geocode_zipcode_sync, geocode_city_sync, is_valid_timezone
 from .base_command import BaseCommand
 from ..models import MeshMessage
 
 
 class AqiCommand(BaseCommand):
-    """Handles AQI commands with location support using OpenMeteo API"""
+    """Handles AQI commands with location support using OpenMeteo API.
+    
+    Provides Air Quality Index information for specified locations, including
+    cities, ZIP codes, and coordinates. Supports international locations and
+    provides health impact categories.
+    """
     
     # Plugin metadata
     name = "aqi"
@@ -26,22 +31,35 @@ class AqiCommand(BaseCommand):
     cooldown_seconds = 5  # 5 second cooldown per user to prevent API abuse
     requires_internet = True  # Requires internet access for OpenMeteo API and geocoding
     
+    # Documentation
+    short_description = "Get Air Quality Index for a location"
+    usage = "aqi <city|neighborhood|coordinates|help>"
+    examples = ["aqi seattle", "aqi 47.6,-122.3"]
+    parameters = [
+        {"name": "location", "description": "City, neighborhood, lat/lon, or 'help'"}
+    ]
+    
     # Error constants
     ERROR_FETCHING_DATA = "Error fetching AQI data"
     NO_DATA_AVAILABLE = "No AQI data available"
     
     def __init__(self, bot):
         super().__init__(bot)
+        self.aqi_enabled = self.get_config_value('Aqi_Command', 'enabled', fallback=True, value_type='bool')
         self.url_timeout = 10  # seconds
         
-        # Per-user cooldown tracking
-        self.user_cooldowns = {}  # user_id -> last_execution_time
+        # Get default state and country from config for city disambiguation
+        self.default_state = self.bot.config.get('Weather', 'default_state', fallback='')
+        self.default_country = self.bot.config.get('Weather', 'default_country', fallback='US')
         
-        # Get default state from config for city disambiguation
-        self.default_state = self.bot.config.get('Weather', 'default_state', fallback='WA')
-        
-        # Get timezone from config
-        self.timezone = self.bot.config.get('Bot', 'timezone', fallback='America/Los_Angeles')
+        # Get timezone from config (validated); invalid or empty falls back to system; for API use default or UTC
+        timezone_str = self.bot.config.get('Bot', 'timezone', fallback='').strip()
+        if timezone_str and is_valid_timezone(timezone_str):
+            self.timezone = timezone_str
+        else:
+            if timezone_str:
+                self.logger.warning("Invalid timezone '%s', using system timezone", timezone_str)
+            self.timezone = "America/Los_Angeles" if not timezone_str else "UTC"
         
         # Initialize geocoder (will use rate-limited helpers for actual calls)
         self.geolocator = get_nominatim_geocoder()
@@ -84,54 +102,40 @@ class AqiCommand(BaseCommand):
         }
     
     def get_help_text(self) -> str:
-        return f"Usage: aqi <city|neighborhood|city country|lat,lon|help> - Get AQI for city/neighborhood in {self.default_state}, international cities, coordinates, or pollutant help"
+        region = self.default_state or self.default_country
+        return f"Usage: aqi <city|neighborhood|city country|lat,lon|help> - Get AQI for city/neighborhood in {region}, intl cities, coordinates, or help"
+    
+    def can_execute(self, message: MeshMessage) -> bool:
+        """Check if this command can be executed with the given message.
+        
+        Args:
+            message: The message triggering the command.
+            
+        Returns:
+            bool: True if command is enabled and checks pass, False otherwise.
+        """
+        if not self.aqi_enabled:
+            return False
+        return super().can_execute(message)
     
     def get_pollutant_help(self) -> str:
-        """Get help text explaining pollutant types within 130 characters"""
+        """Get help text explaining pollutant types within 130 characters.
+        
+        Returns:
+            str: Compact help string explaining pollutant abbreviations.
+        """
         # Compact explanation of all pollutants - fits within 130 chars
         return "AQI Help: PM2.5=fine particles, PM10=coarse, O3=ozone, NO2=nitrogen dioxide, CO=carbon monoxide, SO2=sulfur dioxide"
     
-    def can_execute(self, message: MeshMessage) -> bool:
-        """Override cooldown check to be per-user instead of per-command-instance"""
-        # Check if command requires DM and message is not DM
-        if self.requires_dm and not message.is_dm:
-            return False
-        
-        # Check per-user cooldown
-        if self.cooldown_seconds > 0:
-            import time
-            current_time = time.time()
-            user_id = message.sender_id
-            
-            if user_id in self.user_cooldowns:
-                last_execution = self.user_cooldowns[user_id]
-                if (current_time - last_execution) < self.cooldown_seconds:
-                    return False
-        
-        return True
-    
-    def get_remaining_cooldown(self, user_id: str) -> int:
-        """Get remaining cooldown time for a specific user"""
-        if self.cooldown_seconds <= 0:
-            return 0
-        
-        import time
-        current_time = time.time()
-        if user_id in self.user_cooldowns:
-            last_execution = self.user_cooldowns[user_id]
-            elapsed = current_time - last_execution
-            remaining = self.cooldown_seconds - elapsed
-            return max(0, int(remaining))
-        
-        return 0
-    
-    def _record_execution(self, user_id: str):
-        """Record the execution time for a specific user"""
-        import time
-        self.user_cooldowns[user_id] = time.time()
-    
     async def execute(self, message: MeshMessage) -> bool:
-        """Execute the AQI command"""
+        """Execute the AQI command.
+        
+        Args:
+            message: The input message trigger.
+            
+        Returns:
+            bool: True if execution was successful.
+        """
         content = message.content.strip()
         
         # Parse the command to extract location
@@ -302,7 +306,7 @@ class AqiCommand(BaseCommand):
         
         try:
             # Record execution for this user
-            self._record_execution(message.sender_id)
+            self.record_execution(message.sender_id)
             
             # Get AQI data for the location
             aqi_data = await self.get_aqi_for_location(location, location_type)
@@ -317,7 +321,15 @@ class AqiCommand(BaseCommand):
             return True
     
     async def get_aqi_for_location(self, location: str, location_type: str) -> str:
-        """Get AQI data for a location (city or coordinates)"""
+        """Get AQI data for a location (city or coordinates).
+        
+        Args:
+            location: Location string (city name, ZIP, or "lat,lon").
+            location_type: Type of location ("city", "zipcode", "coordinates").
+            
+        Returns:
+            str: Formatted AQI string or error message.
+        """
         try:
             # Define state abbreviation map for US states (needed for all location types)
             state_abbrev_map = {
@@ -471,7 +483,8 @@ class AqiCommand(BaseCommand):
                     if ',' in location and any(country in location.lower() for country in ['canada', 'mexico', 'uk', 'france', 'germany', 'italy', 'spain', 'australia', 'japan', 'china', 'india', 'brazil', 'uae', 'russia', 'korea', 'thailand', 'singapore', 'egypt', 'turkey']):
                         return f"Could not find city '{location}'"
                     else:
-                        return f"Could not find city '{location}' in {self.default_state}"
+                        region = self.default_state or self.default_country
+                        return f"Could not find city '{location}' in {region}"
                 
                 # Check if the found city is in a different state than default
                 actual_city = location
@@ -524,7 +537,7 @@ class AqiCommand(BaseCommand):
             if location_type == "city" and address_info:
                 # Always try to include city name if there's space
                 # Use abbreviate_location to shorten long location strings (e.g., "United States of America" -> "USA")
-                full_location = f"{actual_city}, {actual_state}"
+                full_location = f"{actual_city}, {actual_state}" if actual_state else actual_city
                 city_display = abbreviate_location(full_location, max_length=30)
                 
                 # Check if we have space for the city name
@@ -584,7 +597,7 @@ class AqiCommand(BaseCommand):
                             actual_state = "USA"
                     
                     # Use abbreviate_location to shorten long location strings (e.g., "United States of America" -> "USA")
-                    full_location = f"{actual_city}, {actual_state}"
+                    full_location = f"{actual_city}, {actual_state}" if actual_state else actual_city
                     city_display = abbreviate_location(full_location, max_length=30)
                     
                     # Check if we have space for the city name
@@ -613,7 +626,14 @@ class AqiCommand(BaseCommand):
             return f"Error getting AQI data: {e}"
     
     def city_to_lat_lon(self, city: str) -> tuple:
-        """Convert city name to latitude and longitude using default state"""
+        """Convert city name to latitude and longitude using default state.
+        
+        Args:
+            city: City name (can include state/country).
+            
+        Returns:
+            tuple: (latitude, longitude, address_info) or (None, None, None).
+        """
         try:
             # Check if the input contains a comma (city, state/country format)
             if ',' in city:
@@ -694,7 +714,14 @@ class AqiCommand(BaseCommand):
             return (None, None, None)
     
     def get_neighborhood_queries(self, city: str) -> list:
-        """Generate neighborhood-specific search queries for major cities"""
+        """Generate neighborhood-specific search queries for major cities.
+        
+        Args:
+            city: City name.
+            
+        Returns:
+            list: List of neighborhood-specific query strings.
+        """
         city_lower = city.lower()
         
         # Seattle neighborhoods
@@ -764,16 +791,26 @@ class AqiCommand(BaseCommand):
         return []
     
     def get_openmeteo_aqi(self, lat: float, lon: float) -> str:
-        """Get AQI data from OpenMeteo API"""
+        """Get AQI data from OpenMeteo API.
+        
+        Args:
+            lat: Latitude.
+            lon: Longitude.
+            
+        Returns:
+            str: Formatted AQI string or error constant.
+        """
         try:
             # Make sure all required weather variables are listed here
             # The order of variables in current is important to assign them correctly below
             url = "https://air-quality-api.open-meteo.com/v1/air-quality"
+            # OpenMeteo requires a valid IANA timezone; empty config sends "" and returns "Invalid timezone"
+            tz_for_api = (self.timezone or "UTC").strip() or "UTC"
             params = {
                 "latitude": lat,
                 "longitude": lon,
                 "current": ["us_aqi", "european_aqi", "pm10", "pm2_5", "carbon_monoxide", "nitrogen_dioxide", "sulphur_dioxide", "ozone", "dust"],
-                "timezone": self.timezone,
+                "timezone": tz_for_api,
                 "forecast_days": 1,
             }
             responses = self.openmeteo.weather_api(url, params=params)
@@ -805,7 +842,22 @@ class AqiCommand(BaseCommand):
             return self.ERROR_FETCHING_DATA
     
     def format_aqi_response(self, us_aqi, european_aqi, pm10, pm2_5, co, no2, so2, ozone, dust) -> str:
-        """Format AQI data for display within 130 characters"""
+        """Format AQI data for display within 130 characters.
+        
+        Args:
+            us_aqi: US Air Quality Index value.
+            european_aqi: European Air Quality Index value.
+            pm10: PM10 concentration.
+            pm2_5: PM2.5 concentration.
+            co: Carbon Monoxide concentration.
+            no2: Nitrogen Dioxide concentration.
+            so2: Sulfur Dioxide concentration.
+            ozone: Ozone concentration.
+            dust: Dust concentration.
+            
+        Returns:
+            str: Formatted AQI string.
+        """
         try:
             # Start with US AQI as primary
             if us_aqi is not None and us_aqi > 0:
@@ -890,7 +942,14 @@ class AqiCommand(BaseCommand):
             return "Error formatting AQI data"
     
     def get_aqi_emoji(self, aqi: float) -> str:
-        """Get emoji for US AQI value"""
+        """Get emoji for US AQI value.
+        
+        Args:
+            aqi: US AQI value.
+            
+        Returns:
+            str: Emoji representing AQI level (🟢, 🟡, 🟠, 🔴, 🟣, 🟤).
+        """
         if aqi <= 50:
             return "🟢"  # Good
         elif aqi <= 100:
@@ -905,7 +964,14 @@ class AqiCommand(BaseCommand):
             return "🟤"  # Hazardous
     
     def get_european_aqi_emoji(self, aqi: float) -> str:
-        """Get emoji for European AQI value"""
+        """Get emoji for European AQI value.
+        
+        Args:
+            aqi: European AQI value.
+            
+        Returns:
+            str: Emoji representing European AQI level.
+        """
         if aqi <= 25:
             return "🟢"  # Good
         elif aqi <= 50:
@@ -918,7 +984,14 @@ class AqiCommand(BaseCommand):
             return "🟣"  # Very Poor
     
     def get_aqi_category(self, aqi: float) -> str:
-        """Get category name for US AQI value"""
+        """Get category name for US AQI value.
+        
+        Args:
+            aqi: US AQI value.
+            
+        Returns:
+            str: Category description (e.g., "Good", "Moderate").
+        """
         if aqi <= 50:
             return "Good"
         elif aqi <= 100:

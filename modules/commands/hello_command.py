@@ -4,9 +4,13 @@ Hello command for the MeshCore Bot
 Responds to various greetings with robot-themed responses
 """
 
+import datetime
 import random
+import re
+from typing import Any, List, Dict
 from .base_command import BaseCommand
 from ..models import MeshMessage
+from ..utils import get_config_timezone
 
 
 class HelloCommand(BaseCommand):
@@ -18,14 +22,27 @@ class HelloCommand(BaseCommand):
     description = "Responds to greetings with robot-themed responses"
     category = "basic"
     
-    def __init__(self, bot):
+    # Documentation
+    short_description = "Responds to greetings with robot-themed responses"
+    usage = "hello"
+    examples = ["hello", "hi", "hey"]
+    
+    def __init__(self, bot: Any):
+        """Initialize the hello command.
+        
+        Args:
+            bot: The bot instance.
+        """
         super().__init__(bot)
+        
+        # Load configuration
+        self.hello_enabled = self.get_config_value('Hello_Command', 'enabled', fallback=True, value_type='bool')
         
         # Fallback arrays if translations not available
         self._init_fallback_arrays()
     
-    def _init_fallback_arrays(self):
-        """Initialize fallback arrays for when translations are not available"""
+    def _init_fallback_arrays(self) -> None:
+        """Initialize fallback arrays for when translations are not available."""
         # Time-neutral greeting openings
         self.greeting_openings_fallback = [
             "Hello", "Greetings", "Salutations", "Hi", "Hey", "Howdy", "Yo", "Sup", 
@@ -171,63 +188,117 @@ class HelloCommand(BaseCommand):
             ]
         }        
     
-    def get_greeting_openings(self) -> list:
-        """Get greeting openings from translations or fallback"""
+    def get_greeting_openings(self) -> List[str]:
+        """Get greeting openings from translations or fallback.
+        
+        Returns:
+            List[str]: A list of greeting opening strings.
+        """
         openings = self.translate_get_value('commands.hello.greeting_openings')
         if openings and isinstance(openings, list) and len(openings) > 0:
             return openings
         return self.greeting_openings_fallback
     
-    def get_morning_greetings(self) -> list:
-        """Get morning greetings from translations or fallback"""
+    def get_morning_greetings(self) -> List[str]:
+        """Get morning greetings from translations or fallback.
+        
+        Returns:
+            List[str]: A list of morning greeting strings.
+        """
         greetings = self.translate_get_value('commands.hello.morning_greetings')
         if greetings and isinstance(greetings, list) and len(greetings) > 0:
             return greetings
         return self.morning_greetings_fallback
     
-    def get_afternoon_greetings(self) -> list:
-        """Get afternoon greetings from translations or fallback"""
+    def get_afternoon_greetings(self) -> List[str]:
+        """Get afternoon greetings from translations or fallback.
+        
+        Returns:
+            List[str]: A list of afternoon greeting strings.
+        """
         greetings = self.translate_get_value('commands.hello.afternoon_greetings')
         if greetings and isinstance(greetings, list) and len(greetings) > 0:
             return greetings
         return self.afternoon_greetings_fallback
     
-    def get_evening_greetings(self) -> list:
-        """Get evening greetings from translations or fallback"""
+    def get_evening_greetings(self) -> List[str]:
+        """Get evening greetings from translations or fallback.
+        
+        Returns:
+            List[str]: A list of evening greeting strings.
+        """
         greetings = self.translate_get_value('commands.hello.evening_greetings')
         if greetings and isinstance(greetings, list) and len(greetings) > 0:
             return greetings
         return self.evening_greetings_fallback
     
-    def get_human_descriptors(self) -> list:
-        """Get human descriptors from translations or fallback"""
+    def get_human_descriptors(self) -> List[str]:
+        """Get human descriptors from translations or fallback.
+        
+        Returns:
+            List[str]: A list of human descriptor strings.
+        """
         descriptors = self.translate_get_value('commands.hello.human_descriptors')
         if descriptors and isinstance(descriptors, list) and len(descriptors) > 0:
             return descriptors
         return self.human_descriptors_fallback
     
-    def get_emoji_responses(self) -> dict:
-        """Get emoji responses from translations or fallback"""
+    def get_emoji_responses(self) -> Dict[str, List[str]]:
+        """Get emoji responses from translations or fallback.
+        
+        Returns:
+            Dict[str, List[str]]: A dictionary mapping emojis to lists of response strings.
+        """
         responses = self.translate_get_value('commands.hello.emoji_responses')
         if responses and isinstance(responses, dict) and len(responses) > 0:
             return responses
         return self.emoji_responses_fallback        
     
     def get_help_text(self) -> str:
+        """Get help text for the hello command.
+        
+        Returns:
+            str: The help text for this command.
+        """
         return self.translate('commands.hello.help')
     
     def matches_custom_syntax(self, message: MeshMessage) -> bool:
-        """Check if message contains only defined emojis"""
-        return self.is_emoji_only_message(message.content)
+        """Check if message contains only defined emojis.
+        
+        Args:
+            message: The message to check.
+            
+        Returns:
+            bool: True if it's an emoji-only message, False otherwise.
+        """
+        content = message.content.strip()
+        
+        # Check if mentions are valid (bot must be mentioned if any mentions exist)
+        if not self._check_mentions_ok(content):
+            return False
+        
+        # Strip mentions before checking for emoji-only messages
+        content = self._strip_mentions(content)
+        return self.is_emoji_only_message(content)
     
     async def execute(self, message: MeshMessage) -> bool:
-        """Execute the hello command"""
+        """Execute the hello command.
+        
+        Args:
+            message: The message triggering the command.
+            
+        Returns:
+            bool: True if executed successfully, False otherwise.
+        """
         # Get bot name from config
         bot_name = self.bot.config.get('Bot', 'bot_name', fallback='Bot')
         
-        # Check if message is emoji-only
-        if self.is_emoji_only_message(message.content):
-            response = self.get_emoji_response(message.content, bot_name)
+        # Strip mentions from content for processing
+        content = self._strip_mentions(message.content)
+        
+        # Check if message is emoji-only (after stripping mentions)
+        if self.is_emoji_only_message(content):
+            response = self.get_emoji_response(content, bot_name)
         else:
             # Get random robot greeting
             random_greeting = self.get_random_greeting()
@@ -238,23 +309,8 @@ class HelloCommand(BaseCommand):
     
     def get_random_greeting(self) -> str:
         """Generate a random robot greeting by combining opening and descriptor"""
-        import datetime
-        import pytz
-        
-        # Get configured timezone or use system timezone
-        timezone_str = self.bot.config.get('Bot', 'timezone', fallback='')
-        
-        if timezone_str:
-            try:
-                # Use configured timezone
-                tz = pytz.timezone(timezone_str)
-                current_time = datetime.datetime.now(tz)
-            except pytz.exceptions.UnknownTimeZoneError:
-                # Fallback to system timezone if configured timezone is invalid
-                current_time = datetime.datetime.now()
-        else:
-            # Use system timezone
-            current_time = datetime.datetime.now()
+        tz, _ = get_config_timezone(self.bot.config, self.logger)
+        current_time = datetime.datetime.now(tz)
         
         # Get current hour to determine time of day
         current_hour = current_time.hour
@@ -303,6 +359,22 @@ class HelloCommand(BaseCommand):
         defined_emoji_pattern = r'[🖖👋😊😄🤗👋🏻👋🏼👋🏽👋🏾👋🏿✌️🙏🙋🙋‍♂️🙋‍♀️👽👾🛸\s]+$'
         
         return bool(re.match(defined_emoji_pattern, cleaned_text))
+    
+    def can_execute(self, message: MeshMessage) -> bool:
+        """Check if this command can be executed with the given message.
+        
+        Args:
+            message: The message triggering the command.
+            
+        Returns:
+            bool: True if command is enabled and checks pass, False otherwise.
+        """
+        # Check if hello command is enabled
+        if not self.hello_enabled:
+            return False
+        
+        # Call parent can_execute() which includes channel checking, cooldown, etc.
+        return super().can_execute(message)
     
     def get_emoji_response(self, text: str, bot_name: str) -> str:
         """Get appropriate response for emoji-only message"""

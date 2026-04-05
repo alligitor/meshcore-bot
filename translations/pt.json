@@ -282,7 +282,8 @@
             },
             "paths": {
                 "none": "Sem dados de caminho",
-                "format": "{rank} {sender} {path}"
+                "format": "{rank} {sender} {path}",
+                "synopsis": "{rank} {sender}: {hops} hops"
             }
         },
         "solarforecast": {
@@ -490,6 +491,7 @@
             "header": "🛰️ Passagem de Satélite:\n{pass_info}",
             "error": "Erro ao obter info de passagem: {error}",
             "no_satellite": "Por favor forneça número NORAD ou atalho do satélite. Exemplo: satpass iss",
+            "usage_short": "🛰️ satpass <sat|NORAD> [visual]. Ex: satpass iss, satpass 25544. help satpass para atalhos.",
             "help_header": "🛰️ Info Passagem Satélite\n\nUso: satpass <número_NORAD_ou_atalho>\n\nAtalhos:\n",
             "category_weather": "🌤️ Meteorológicos: ",
             "category_stations": "🚀 Estações: ",
@@ -937,6 +939,9 @@
         "cmd": {
             "description": "Listar comandos disponíveis"
         }
+    },
+    "elapsed": {
+        "sync_device_clock": "Sincronizar relógio do dispositivo"
     },
     "errors": {
         "rate_limited": "Limitado por taxa. Aguarde {seconds:.1f} segundos",

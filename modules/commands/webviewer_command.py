@@ -20,10 +20,44 @@ class WebViewerCommand(BaseCommand):
     category = "management"
     
     def __init__(self, bot):
+        """Initialize the webviewer command.
+        
+        Args:
+            bot: The bot instance.
+        """
         super().__init__(bot)
+        self.webviewer_enabled = self.get_config_value('WebViewer_Command', 'enabled', fallback=True, value_type='bool')
+
+    def can_execute(self, message: MeshMessage) -> bool:
+        """Check if this command can be executed with the given message.
+        
+        Args:
+            message: The message triggering the command.
+            
+        Returns:
+            bool: True if command is enabled and checks pass, False otherwise.
+        """
+        if not self.webviewer_enabled:
+            return False
+        return super().can_execute(message)
+
+    def get_help_text(self) -> str:
+        """Get help text for the webviewer command.
+        
+        Returns:
+            str: The help text for this command.
+        """
+        return "Usage: webviewer <subcommand>\nSubcommands: status, reset, restart"
     
     def matches_keyword(self, message: MeshMessage) -> bool:
-        """Check if message starts with 'webviewer' keyword"""
+        """Check if message starts with 'webviewer' keyword.
+        
+        Args:
+            message: The received message.
+            
+        Returns:
+            bool: True if matches, False otherwise.
+        """
         content = message.content.strip()
         
         # Handle exclamation prefix
@@ -33,12 +67,19 @@ class WebViewerCommand(BaseCommand):
         # Check if message starts with any of our keywords
         content_lower = content.lower()
         for keyword in self.keywords:
-            if content_lower.startswith(keyword + ' '):
+            if content_lower.startswith(keyword + ' ') or content_lower == keyword:
                 return True
         return False
     
     async def execute(self, message: MeshMessage) -> bool:
-        """Execute the webviewer command"""
+        """Execute the webviewer command.
+        
+        Args:
+            message: The message triggering the command.
+            
+        Returns:
+            bool: True if executed successfully, False otherwise.
+        """
         content = message.content.strip()
         
         # Handle exclamation prefix
@@ -48,7 +89,7 @@ class WebViewerCommand(BaseCommand):
         # Parse subcommand
         parts = content.split()
         if len(parts) < 2:
-            await self.bot.send_response("Usage: webviewer <subcommand>\nSubcommands: status, reset, restart")
+            await self.send_response(message, "Usage: webviewer <subcommand>\nSubcommands: status, reset, restart")
             return True
         
         subcommand = parts[1].lower()
@@ -60,14 +101,18 @@ class WebViewerCommand(BaseCommand):
         elif subcommand == "restart":
             await self._handle_restart(message)
         else:
-            await self.bot.send_response("Unknown subcommand. Use: status, reset, restart")
+            await self.send_response(message, "Unknown subcommand. Use: status, reset, restart")
         
         return True
     
-    async def _handle_status(self, message: MeshMessage):
-        """Handle status subcommand"""
+    async def _handle_status(self, message: MeshMessage) -> None:
+        """Handle status subcommand.
+        
+        Args:
+            message: The message that triggered the detailed status request.
+        """
         if not hasattr(self.bot, 'web_viewer_integration') or not self.bot.web_viewer_integration:
-            await self.bot.send_response("Web viewer integration not available")
+            await self.send_response(message, "Web viewer integration not available")
             return
         
         integration = self.bot.web_viewer_integration
@@ -89,28 +134,36 @@ class WebViewerCommand(BaseCommand):
         for key, value in status.items():
             status_text += f"• {key}: {value}\n"
         
-        await self.bot.send_response(status_text)
+        await self.send_response(message, status_text)
     
-    async def _handle_reset(self, message: MeshMessage):
-        """Handle reset subcommand"""
+    async def _handle_reset(self, message: MeshMessage) -> None:
+        """Handle reset subcommand.
+        
+        Args:
+            message: The message that triggered the reset request.
+        """
         if not hasattr(self.bot, 'web_viewer_integration') or not self.bot.web_viewer_integration:
-            await self.bot.send_response("Web viewer integration not available")
+            await self.send_response(message, "Web viewer integration not available")
             return
         
         if hasattr(self.bot.web_viewer_integration, 'bot_integration') and self.bot.web_viewer_integration.bot_integration:
             self.bot.web_viewer_integration.bot_integration.reset_circuit_breaker()
-            await self.bot.send_response("Circuit breaker reset")
+            await self.send_response(message, "Circuit breaker reset")
         else:
-            await self.bot.send_response("Bot integration not available")
+            await self.send_response(message, "Bot integration not available")
     
-    async def _handle_restart(self, message: MeshMessage):
-        """Handle restart subcommand"""
+    async def _handle_restart(self, message: MeshMessage) -> None:
+        """Handle restart subcommand.
+        
+        Args:
+            message: The message that triggered the restart request.
+        """
         if not hasattr(self.bot, 'web_viewer_integration') or not self.bot.web_viewer_integration:
-            await self.bot.send_response("Web viewer integration not available")
+            await self.send_response(message, "Web viewer integration not available")
             return
         
         try:
             self.bot.web_viewer_integration.restart_viewer()
-            await self.bot.send_response("Web viewer restart initiated")
+            await self.send_response(message, "Web viewer restart initiated")
         except Exception as e:
-            await self.bot.send_response(f"Failed to restart web viewer: {e}")
+            await self.send_response(message, f"Failed to restart web viewer: {e}")
