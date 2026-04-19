@@ -130,7 +130,9 @@ auto_manage_contacts = bot
 
 # Database path for main bot database
 # Default: meshcore_bot.db
-db_path = meshcore_bot.db
+#RT
+db_path = /tmp/meshcore_bot.db
+#db_path = meshcore_bot.db
 
 # Local plugins directory (optional)
 # Directory containing commands/, service_plugins/, and optional config.ini.
@@ -398,7 +400,9 @@ log_level = INFO
 # Log file path (leave empty for console only)
 # Bot will write logs to this file in addition to console
 # Logs rotate at 5 MB with up to 3 backup files (e.g. meshcore_bot.log.1, .2, .3)
-log_file = meshcore_bot.log
+#RT
+log_file = 
+#log_file = meshcore_bot.log
 
 # Enable colored console output
 # true: Use colors in console output
