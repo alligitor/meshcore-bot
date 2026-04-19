@@ -6,6 +6,7 @@
     "wx": ["wx", "weather", "wxa", "wxalert"],
     "gwx": ["gwx", "globalweather", "gwxa"],
     "aqi": ["aqi", "air", "airquality", "air_quality"],
+    "aurora": ["aurora", "kp"],
     "solar": ["solar"],
     "sun": ["sun"],
     "moon": ["moon"],
@@ -28,7 +29,8 @@
     "webviewer": ["webviewer", "web", "viewer", "wv"],
     "cmd": ["cmd", "commands"],
     "advert": ["advert"],
-    "multitest": ["multitest", "mt"]
+    "multitest": ["multitest", "mt"],
+    "trace": ["trace", "tracer"]
   },
   "commands": {
     "help": {
@@ -51,6 +53,24 @@
     "wx": {
       "description": "Get weather information for a zip code (usage: wx 12345)",
       "usage": "Usage: wx <zipcode|city> - Example: wx 12345 or wx seattle or wx paris, tx",
+      "subcommands": [
+        {
+          "name": "tomorrow",
+          "description": "Get tomorrow's forecast"
+        },
+        {
+          "name": "7d",
+          "description": "Get 7-day forecast (also: 7-day, 2-7)"
+        },
+        {
+          "name": "hourly",
+          "description": "Get hourly forecast"
+        },
+        {
+          "name": "alerts",
+          "description": "Show full weather alerts"
+        }
+      ],
       "error_fetching": "Error fetching weather data from NOAA",
       "no_location_zipcode": "Could not find location for zipcode {location}",
       "no_location_city": "Could not find city '{location}' in {state}",
@@ -120,7 +140,7 @@
     },
     "sports": {
       "description": "Get sports scores and schedules (usage: sports [team/league])",
-      "help": "Get sports scores & schedules. Use 'sports' for default teams, 'sports [team]' for specific team, or 'sports [league]' for league games.",
+      "help": "Get sports scores & schedules. Use 'sports' for default teams, 'sports [team]' for specific team, or 'sports [league]' for games.",
       "error_fetching": "Error fetching sports data",
       "error_fetching_league": "Error fetching {sport} data",
       "error_fetching_team": "Error fetching data for {team}",
@@ -133,10 +153,28 @@
       "team_not_found": "Team/League '{team}' not found. Try: seahawks, mariners, sounders, kraken, storm, chiefs, lfc, mlb, nfl, mls, wnba, epl, etc."
     },
     "stats": {
-      "description": "Show statistics for past 24 hours. Use 'stats messages', 'stats channels', or 'stats paths' for specific stats.",
-      "help": "Show 24-hour bot statistics. Commands: 'stats' (basic), 'stats messages' (bot users), 'stats channels' (channel activity), 'stats paths' (longest paths)",
+      "description": "Show statistics for past 24 hours. Use 'stats messages', 'stats channels', 'stats paths', or 'stats adverts' for specific stats.",
+      "help": "Show 24h bot stats. Use 'stats' (basic), 'stats messages' (users), 'stats channels' (activity), 'stats paths', 'stats adverts'",
+      "subcommands": [
+        {
+          "name": "messages",
+          "description": "Show message statistics for bot users"
+        },
+        {
+          "name": "channels",
+          "description": "Show channel activity statistics"
+        },
+        {
+          "name": "paths",
+          "description": "Show longest routing paths"
+        },
+        {
+          "name": "adverts",
+          "description": "Show top nodes by unique advert packets"
+        }
+      ],
       "disabled": "Stats command is disabled",
-      "unknown_subcommand": "Unknown: {subcommand}. Use 'stats', 'stats messages', 'stats channels', or 'stats paths'",
+      "unknown_subcommand": "Unknown: {subcommand}. Use 'stats', 'stats messages', 'stats channels', 'stats paths', or 'stats adverts'",
       "error": "Error getting stats: {error}",
       "error_bot_users": "Error getting bot user stats: {error}",
       "error_channels": "Error getting channel stats: {error}",
@@ -163,8 +201,18 @@
       },
       "paths": {
         "none": "No path data",
-        "format": "{rank} {sender} {path}"
-      }
+        "format": "{rank} {sender} {path}",
+        "synopsis": "{rank} {sender}: {hops} hops"
+      },
+      "adverts": {
+        "header": "Top Advert Nodes (24h):",
+        "none": "No advert activity",
+        "advert_singular": "advert",
+        "advert_plural": "adverts",
+        "format": "{rank}. {name}: {count} {advert_text}",
+        "hashes_label": "Hashes: {hashes}"
+      },
+      "error_adverts": "Error getting advert stats: {error}"
     },
     "solarforecast": {
       "description": "Get solar panel production forecast (usage: sf <location|repeater_name|coordinates|zipcode> [panel_size] [azimuth, 0=south] [angle])",
@@ -198,8 +246,8 @@
     },
     "path": {
       "description": "Decode hex path data to show which repeaters were involved in message routing",
-      "help": "Path: path [hex] - Decode path to show repeaters. Use !path alone for recent message path, or path [7e,01] for specific path.",
-      "no_valid_hex": "❌ No valid hex values found in path data. Use format like: 11,98,a4,49,cd,5f,01",
+      "help": "Path: path [hex] - Decode path to show repeaters. Use path alone for current message path, or path [7e,01] for specific path.",
+      "no_valid_hex": "❌ No valid hex values found in path data.",
       "no_path": "❌ No path information available in current message",
       "error": "Error processing path: {error}",
       "error_decoding": "❌ Error decoding path: {error}",
@@ -219,6 +267,10 @@
       "description": "Listens for 6 seconds and collects all unique paths from incoming messages with the same packet hash",
       "help": "Listens for 6 seconds and collects all unique paths from incoming messages with the same packet hash"
     },
+    "trace": {
+      "description": "Run link trace (trace=manual path, tracer=round-trip so bot hears return)",
+      "help": "trace [path] — manual path (return may not be heard). tracer [path] — round-trip. Path: comma 2-char hex (e.g. 01,7a,55). No path = use your message path."
+    },
     "prefix": {
       "description": "Look up repeaters by two-character prefix (e.g., 'prefix 1A')",
       "help_api": "Look up repeaters by prefix{location_note}. Usage: 'prefix 1A', 'prefix 1A all', 'prefix free'.",
@@ -227,13 +279,14 @@
       "refresh_not_available": "❌ Refresh not available - no API URL configured. Using local database only.",
       "cache_refreshed": "🔄 Repeater prefix cache refreshed!",
       "unable_determine_free": "❌ Unable to determine free prefixes. Try 'prefix refresh' first.",
-      "invalid_format": "❌ Invalid prefix format. Use two characters (e.g., prefix 1A)",
+      "invalid_format": "❌ Invalid prefix format. Expected {prefix_hex_chars} hex characters.",
       "no_repeaters_found": "❌ No repeaters found with prefix '{prefix}'",
       "no_free_prefixes": "❌ No free prefixes found (all 254 valid prefixes are in use)",
       "available_prefixes": "Available Prefixes ({shown} of {total} free):",
       "generate_key": "💡 Generate a custom key: https://gessaman.com/mc-keygen",
       "prefix_db_all": "Prefix {prefix}: {count} repeater{plural}",
       "prefix_db_recent": "Prefix {prefix}: {count} repeater{plural} ({days})",
+      "older_entries_note": "(Entries may be older than {days} days)",
       "prefix_api": "📡 Prefix {prefix} ({count} repeater{plural}):",
       "item_format": "{index}. {name}",
       "source_domain": "Source: {domain}",
@@ -244,6 +297,23 @@
     "repeater": {
       "description": "Manage repeater contacts and purging operations (DM only)",
       "admin_only": "Repeater command requires admin access"
+    },
+    "airplanes": {
+      "description": "Get aircraft overhead (usage: airplanes [location] [options] or overhead [lat,lon])",
+      "usage": "Usage: airplanes [location] [options]\nLocation: 'here' for bot location, or lat,lon (e.g., 47.6,-122.3)\nOptions: radius=<nm>, alt=<min>-<max>, speed=<min>-<max>, type=<code>, callsign=<pattern>, military, limit=<n>",
+      "subcommands": [
+        {
+          "name": "overhead",
+          "description": "Get the single closest aircraft directly overhead (uses companion location or specified coordinates)"
+        }
+      ],
+      "no_location": "No location available. Specify coordinates: airplanes 47.6,-122.3 or use 'airplanes here' for bot location",
+      "overhead_no_location": "I don't know your companion location. Send 'advert' to flood advert with your location, or specify coordinates: 'overhead [lat,lon]'",
+      "no_aircraft": "No aircraft found within {radius}nm",
+      "no_aircraft_filtered": "No aircraft found matching filters within {radius}nm",
+      "api_error": "Unable to fetch aircraft data. API may be unavailable.",
+      "invalid_coords": "Invalid coordinates. Use format: lat,lon (e.g., 47.6,-122.3)",
+      "error": "Error: {error}"
     },
     "aqi": {
       "description": "Get Air Quality Index for a location (usage: aqi seattle, aqi greenwood, aqi vancouver canada, aqi 47.6,-122.3, or aqi help)",
@@ -300,6 +370,23 @@
         "black_hole": "Black holes have no atmosphere, but the tidal forces would be a bigger problem than air quality. 🕳️",
         "asteroid": "Asteroids have no atmosphere, so AQI is perfect! Just watch out for the vacuum of space. ☄️",
         "comet": "Comets have thin atmospheres of water vapor and dust. AQI: Variable, but you'd freeze in space anyway. ☄️"
+      }
+    },
+    "aurora": {
+      "description": "Get aurora forecast (KP index and probability) for a location",
+      "usage": "Usage: aurora [city|zipcode|lat,lon]",
+      "usage_short": "Usage: aurora [city|zipcode|lat,lon]",
+      "response": "🌌 Aurora Visibility Chance: {prob_indicator} {prob}% for {location}\nGlobal Kp {kp} (as of {kp_time}) | {status}",
+      "error_fetching": "Error fetching aurora data",
+      "no_location": "Usage: aurora [city|zipcode|lat,lon]. No location: will use companion location if known, or bot location if not.",
+      "no_location_city": "Could not find city '{location}' in {state}",
+      "no_location_zipcode": "Could not find ZIP code '{location}'",
+      "error": "Error: {error}",
+      "status": {
+        "quiet": "Quiet",
+        "unsettled": "Unsettled",
+        "g1_g2": "G1/G2",
+        "g3_severe": "G3+ Severe"
       }
     },
     "solar": {
@@ -375,6 +462,7 @@
       "header": "🛰️ Satellite Pass:\n{pass_info}",
       "error": "Error getting satellite pass info: {error}",
       "no_satellite": "Please provide a satellite NORAD number or shortcut. Example: satpass iss",
+      "usage_short": "🛰️ satpass <sat|NORAD> [visual]. Ex: satpass iss, satpass 25544. help satpass for shortcuts.",
       "help_header": "🛰️ Satellite Pass Info\n\nUsage: satpass <NORAD_number_or_shortcut>\n\nShortcuts:\n",
       "category_weather": "🌤️ Weather: ",
       "category_stations": "🚀 Stations: ",
@@ -389,7 +477,13 @@
     },
     "channels": {
       "description": "List or manage channels",
-      "help": "Lists hashtag channels with sub-categories. Use 'channels' for general, 'channels list' for all categories, 'channels <category>' for specific categories, 'channels #channel' for specific channel info.",
+      "help": "Lists hashtag channels. Use 'channels' for general, 'channels list' for category lists, 'channels <category>' for specific category",
+      "subcommands": [
+        {
+          "name": "list",
+          "description": "List all channels in a category"
+        }
+      ],
       "no_channels_for_category": "No channels configured for '{category}'. Use 'channels' for general channels.",
       "no_channels_configured": "No channels configured. Contact admin to add channels.",
       "error_retrieving_channels": "Error retrieving channels: {error}",
@@ -410,9 +504,9 @@
       "category_count": "{category} ({count} channels)"
     },
     "dice": {
-      "description": "Roll dice (usage: dice [sides] or dice [count]d[sides])",
-      "help": "Roll dice. Use 'dice' for d6, 'dice d20' for d20, 'dice 2d6' for 2d6, etc.",
-      "invalid_dice_type": "Invalid dice type. Available: {available}",
+      "description": "Roll dice (usage: dice [sides] or dice [count]d[sides] or dice d10 d6 for mixed dice or dice decade for decade die)",
+      "help": "Roll dice. Use 'dice' for d6, 'dice d20' for d20, 'dice 2d6' for 2d6, 'dice d10 d6' for mixed, 'dice decade' for decade (00-90).",
+      "invalid_dice_type": "Invalid dice type.",
       "single_die": "🎲 d{sides}: {result}",
       "multiple_dice": "🎲 {count}d{sides}: [{results}] = {total}"
     },
@@ -923,6 +1017,9 @@
     "cmd": {
       "description": "List available commands"
     }
+  },
+  "elapsed": {
+    "sync_device_clock": "Sync Device Clock"
   },
   "errors": {
     "rate_limited": "Rate limited. Wait {seconds:.1f} seconds",

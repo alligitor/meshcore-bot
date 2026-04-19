@@ -6,8 +6,10 @@ Handles scanning, loading, and registering command plugins
 
 import os
 import sys
+import inspect
 import importlib
 import importlib.util
+import types
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Type
 import logging
@@ -18,15 +20,25 @@ from .commands.base_command import BaseCommand
 class PluginLoader:
     """Handles dynamic loading and discovery of command plugins"""
     
-    def __init__(self, bot, commands_dir: str = None):
+    def __init__(self, bot, commands_dir: str = None, local_commands_dir: Optional[str] = None):
         self.bot = bot
         self.logger = bot.logger
         self.commands_dir = commands_dir or os.path.join(os.path.dirname(__file__), 'commands')
         self.alternatives_dir = os.path.join(self.commands_dir, 'alternatives')
+        if local_commands_dir is not None:
+            self.local_commands_dir = local_commands_dir
+        else:
+            bot_root = getattr(bot, 'bot_root', None)
+            if bot_root is not None:
+                path = Path(bot_root) / "local" / "commands"
+                self.local_commands_dir = str(path) if path.exists() else None
+            else:
+                self.local_commands_dir = None
         self.loaded_plugins: Dict[str, BaseCommand] = {}
         self.plugin_metadata: Dict[str, Dict[str, Any]] = {}
         self.keyword_mappings: Dict[str, str] = {}  # keyword -> plugin_name
         self.plugin_overrides: Dict[str, str] = {}  # plugin_name -> alternative_file_name
+        self._failed_plugins: Dict[str, str] = {}  # plugin_name -> error_message
         self._load_plugin_overrides()
         
     def _load_plugin_overrides(self):
@@ -41,7 +53,9 @@ class PluginLoader:
                     self.plugin_overrides[command_name.strip()] = alternative_file.strip()
                     self.logger.info(f"Plugin override configured: {command_name} -> {alternative_file}")
         except Exception as e:
-            self.logger.warning(f"Error loading plugin overrides: {e}")
+            self.logger.error(f"Error loading plugin overrides: {e}")
+            # Track this as a configuration error
+            self._failed_plugins['plugin_overrides_config'] = str(e)
     
     def discover_plugins(self) -> List[str]:
         """Discover all Python files in the commands directory that could be plugins"""
@@ -82,6 +96,82 @@ class PluginLoader:
             self.logger.info(f"Discovered {len(plugin_files)} alternative plugin files: {plugin_files}")
         return plugin_files
     
+    def discover_local_plugins(self) -> List[str]:
+        """Discover Python files in local/commands (stems only). Skip __init__.py."""
+        if not self.local_commands_dir:
+            return []
+        path = Path(self.local_commands_dir)
+        if not path.exists():
+            return []
+        stems = []
+        for file_path in path.glob("*.py"):
+            if file_path.name != "__init__.py":
+                stems.append(file_path.stem)
+        if stems:
+            self.logger.info(f"Discovered {len(stems)} local plugin file(s): {stems}")
+        return stems
+    
+    def _validate_plugin(self, plugin_class: Type[BaseCommand]) -> List[str]:
+        """
+        Validate a plugin class has required attributes before instantiation.
+        All plugins should define name and keywords as class attributes (the standard convention).
+        We validate leniently here and re-check after instantiation to catch any edge cases.
+        
+        Args:
+            plugin_class: The plugin class to validate
+        
+        Returns:
+            List of validation errors (empty if valid)
+        """
+        errors = []
+        
+        # Check for execute method (must exist as class method)
+        if not hasattr(plugin_class, 'execute'):
+            errors.append(f"Missing required attribute: execute")
+        elif hasattr(plugin_class, 'execute'):
+            if not inspect.iscoroutinefunction(plugin_class.execute):
+                errors.append("Plugin 'execute' method must be async")
+        
+        # Check for keywords type if it exists (allow empty list for system commands)
+        if hasattr(plugin_class, 'keywords'):
+            keywords = getattr(plugin_class, 'keywords', None)
+            if keywords is not None and not isinstance(keywords, list):
+                errors.append("Plugin 'keywords' must be a list")
+            # Don't error on empty keywords - some commands (like greeter) intentionally have none
+        
+        # Note: We don't check name/keywords presence here since they may be set in __init__
+        # or derived from class name. Post-instantiation validation will catch missing attributes.
+        
+        return errors
+    
+    def _validate_plugin_instance(self, plugin_instance: BaseCommand, plugin_name: str) -> List[str]:
+        """
+        Validate a plugin instance after instantiation.
+        Ensures required attributes are present and correctly typed.
+        Note: Name may be derived from class name if not explicitly set.
+        
+        Args:
+            plugin_instance: The instantiated plugin
+            plugin_name: The file name of the plugin (for error messages)
+        
+        Returns:
+            List of validation errors (empty if valid)
+        """
+        errors = []
+        
+        # Check name - must be set (either as class attribute, in __init__, or derived from class name)
+        if not hasattr(plugin_instance, 'name') or not plugin_instance.name:
+            errors.append("Plugin 'name' attribute is empty or not set")
+        
+        # Check keywords - must be a list (can be empty for system commands like greeter)
+        if not hasattr(plugin_instance, 'keywords'):
+            errors.append("Plugin 'keywords' attribute is missing")
+        elif not isinstance(plugin_instance.keywords, list):
+            errors.append("Plugin 'keywords' must be a list")
+        # Allow empty keywords - some system commands intentionally have none
+        
+        return errors
+    
     def load_plugin(self, plugin_name: str, from_alternatives: bool = False) -> Optional[BaseCommand]:
         """Load a single plugin by name
         
@@ -113,25 +203,103 @@ class PluginLoader:
                     break
             
             if not command_class:
-                self.logger.warning(f"No valid command class found in {plugin_name}")
+                error_msg = f"No valid command class found in {plugin_name}"
+                self.logger.warning(error_msg)
+                self._failed_plugins[plugin_name] = error_msg
+                return None
+            
+            # Validate plugin class before instantiation (basic checks)
+            validation_errors = self._validate_plugin(command_class)
+            if validation_errors:
+                error_msg = f"Plugin validation failed: {', '.join(validation_errors)}"
+                self.logger.error(f"Failed to load plugin '{plugin_name}': {error_msg}")
+                self._failed_plugins[plugin_name] = error_msg
                 return None
             
             # Instantiate the command
             plugin_instance = command_class(self.bot)
             
+            # Set name from class name if not set (before validation)
+            if not hasattr(plugin_instance, 'name') or not plugin_instance.name:
+                # Use the class name as the plugin name if not specified
+                derived_name = command_class.__name__.lower().replace('command', '')
+                plugin_instance.name = derived_name
+            
+            # Validate plugin instance after instantiation (catches attributes set in __init__)
+            instance_validation_errors = self._validate_plugin_instance(plugin_instance, plugin_name)
+            if instance_validation_errors:
+                error_msg = f"Plugin instance validation failed: {', '.join(instance_validation_errors)}"
+                self.logger.error(f"Failed to load plugin '{plugin_name}': {error_msg}")
+                self._failed_plugins[plugin_name] = error_msg
+                return None
+            
             # Validate plugin metadata
             metadata = plugin_instance.get_metadata()
-            if not metadata.get('name'):
-                # Use the class name as the plugin name if not specified
-                metadata['name'] = command_class.__name__.lower().replace('command', '')
-                plugin_instance.name = metadata['name']
             
             source = "alternatives" if from_alternatives else "default"
             self.logger.info(f"Successfully loaded plugin: {metadata['name']} from {plugin_name} ({source})")
             return plugin_instance
             
         except Exception as e:
-            self.logger.error(f"Failed to load plugin {plugin_name}: {e}")
+            error_msg = str(e)
+            self.logger.error(f"Failed to load plugin '{plugin_name}': {error_msg}")
+            self._failed_plugins[plugin_name] = error_msg
+            return None
+    
+    def load_plugin_from_path(self, file_path: Path) -> Optional[BaseCommand]:
+        """Load a single plugin from a file path (e.g. local/commands/my_command.py)."""
+        # Ensure parent package exists so relative/absolute imports of "local_plugins" work.
+        # Set __path__ so Python treats it as a package and can load submodules (e.g. local_plugins.utils).
+        if "local_plugins" not in sys.modules:
+            pkg = types.ModuleType("local_plugins")
+            pkg.__path__ = [str(file_path.parent)]
+            sys.modules["local_plugins"] = pkg
+        stem = file_path.stem
+        module_name = f"local_plugins.{stem}"
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            if spec is None or spec.loader is None:
+                self.logger.warning(f"Could not create spec for {file_path}")
+                return None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            command_class = None
+            for _name, obj in inspect.getmembers(module, inspect.isclass):
+                if (
+                    issubclass(obj, BaseCommand)
+                    and obj != BaseCommand
+                    and obj.__module__ == module_name
+                ):
+                    command_class = obj
+                    break
+            if not command_class:
+                error_msg = f"No valid command class found in {stem}"
+                self.logger.warning(error_msg)
+                self._failed_plugins[stem] = error_msg
+                return None
+            validation_errors = self._validate_plugin(command_class)
+            if validation_errors:
+                error_msg = f"Plugin validation failed: {', '.join(validation_errors)}"
+                self.logger.error(f"Failed to load local plugin '{stem}': {error_msg}")
+                self._failed_plugins[stem] = error_msg
+                return None
+            plugin_instance = command_class(self.bot)
+            if not hasattr(plugin_instance, 'name') or not plugin_instance.name:
+                derived_name = command_class.__name__.lower().replace('command', '')
+                plugin_instance.name = derived_name
+            instance_validation_errors = self._validate_plugin_instance(plugin_instance, stem)
+            if instance_validation_errors:
+                error_msg = f"Plugin instance validation failed: {', '.join(instance_validation_errors)}"
+                self.logger.error(f"Failed to load local plugin '{stem}': {error_msg}")
+                self._failed_plugins[stem] = error_msg
+                return None
+            self.logger.info(f"Successfully loaded local plugin: {plugin_instance.get_metadata()['name']} from {stem}")
+            return plugin_instance
+        except Exception as e:
+            error_msg = str(e)
+            self.logger.error(f"Failed to load local plugin '{stem}': {error_msg}")
+            self._failed_plugins[stem] = error_msg
             return None
     
     def load_all_plugins(self) -> Dict[str, BaseCommand]:
@@ -164,13 +332,16 @@ class PluginLoader:
                     alt_metadata = alt_instance.get_metadata()
                     alt_plugin_name = alt_metadata['name']
                     
-                    # If the alternative plugin has a different name, log a warning
+                    # If the alternative plugin has a different name, use the override name
+                    # This allows wx_international (name="gwx") to be used as "wx" when configured
                     if alt_plugin_name != plugin_name:
-                        self.logger.warning(
-                            f"Alternative plugin {alternative_file} has name '{alt_plugin_name}' "
-                            f"but is configured to override '{plugin_name}'. Using '{alt_plugin_name}'."
+                        self.logger.info(
+                            f"Alternative plugin {alternative_file} (name='{alt_plugin_name}') "
+                            f"is being used to override '{plugin_name}'. Registering as '{plugin_name}'."
                         )
-                        plugin_name = alt_plugin_name
+                        # Update the instance's name and metadata to match the override name
+                        alt_instance.name = plugin_name
+                        alt_metadata['name'] = plugin_name
                     
                     # Replace the default plugin with the alternative
                     if plugin_name in loaded_plugins:
@@ -197,6 +368,23 @@ class PluginLoader:
                 alt_metadata = alt_instance.get_metadata()
                 alt_plugin_name = alt_metadata['name']
                 
+                # Special case: If wx_international is available and wx command is missing,
+                # automatically use it as wx (fallback behavior)
+                if alt_file == 'wx_international' and 'wx' not in loaded_plugins:
+                    self.logger.info(
+                        f"Default 'wx' command not found, using 'wx_international' as fallback for 'wx' command"
+                    )
+                    # Update the instance to use 'wx' name and keywords
+                    alt_instance.name = 'wx'
+                    alt_metadata['name'] = 'wx'
+                    # Update keywords to match wx command
+                    alt_instance.keywords = ['wx', 'weather', 'wxa', 'wxalert']
+                    alt_metadata['keywords'] = ['wx', 'weather', 'wxa', 'wxalert']
+                    alt_metadata['description'] = "Get weather information for any location (usage: wx Tokyo)"
+                    loaded_plugins['wx'] = alt_instance
+                    self.plugin_metadata['wx'] = alt_metadata
+                    continue
+                
                 # If an alternative plugin has the same name as a default plugin,
                 # it will replace it (unless already overridden by config)
                 if alt_plugin_name in loaded_plugins:
@@ -211,13 +399,39 @@ class PluginLoader:
                 loaded_plugins[alt_plugin_name] = alt_instance
                 self.plugin_metadata[alt_plugin_name] = alt_metadata
         
+        # Fourth pass: Load local plugins from local/commands (additive; duplicate names skipped)
+        if self.local_commands_dir:
+            local_path = Path(self.local_commands_dir)
+            for stem in self.discover_local_plugins():
+                file_path = local_path / f"{stem}.py"
+                if not file_path.is_file():
+                    continue
+                plugin_instance = self.load_plugin_from_path(file_path)
+                if plugin_instance:
+                    metadata = plugin_instance.get_metadata()
+                    plugin_name = metadata['name']
+                    if plugin_name in loaded_plugins:
+                        self.logger.warning(
+                            f"Local plugin '{stem}' has name '{plugin_name}' which is already loaded; skipping"
+                        )
+                        continue
+                    loaded_plugins[plugin_name] = plugin_instance
+                    self.plugin_metadata[plugin_name] = metadata
+        
         # Build keyword mappings for all loaded plugins
         for plugin_name, plugin_instance in loaded_plugins.items():
             metadata = self.plugin_metadata[plugin_name]
             self._build_keyword_mappings(plugin_name, metadata)
         
         self.loaded_plugins = loaded_plugins
+        
+        # Report loading summary
         self.logger.info(f"Loaded {len(loaded_plugins)} plugins: {list(loaded_plugins.keys())}")
+        if self._failed_plugins:
+            self.logger.warning(f"Failed to load {len(self._failed_plugins)} plugin(s): {list(self._failed_plugins.keys())}")
+            for plugin_name, error_msg in self._failed_plugins.items():
+                self.logger.warning(f"  - {plugin_name}: {error_msg}")
+        
         return loaded_plugins
     
     def _build_keyword_mappings(self, plugin_name: str, metadata: Dict[str, Any]):
@@ -250,6 +464,10 @@ class PluginLoader:
         if plugin_name:
             return self.plugin_metadata.get(plugin_name, {})
         return self.plugin_metadata.copy()
+    
+    def get_failed_plugins(self) -> Dict[str, str]:
+        """Return dict of plugins that failed to load with their error messages"""
+        return self._failed_plugins.copy()
     
     def get_plugins_by_category(self, category: str) -> Dict[str, BaseCommand]:
         """Get all plugins in a specific category"""
@@ -347,7 +565,3 @@ class PluginLoader:
                     issues.append(f"Keyword '{keyword}' conflicts with plugin '{existing_plugin}'")
         
         return issues
-
-
-# Import inspect at module level for the load_plugin method
-import inspect

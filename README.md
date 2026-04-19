@@ -7,11 +7,18 @@ A Python bot that connects to MeshCore mesh networks via serial port, BLE, or TC
 - **Connection Methods**: Serial port, BLE (Bluetooth Low Energy), or TCP/IP
 - **Keyword Responses**: Configurable keyword-response pairs with template variables
 - **Command System**: Plugin-based command architecture with built-in commands
-- **Rate Limiting**: Configurable rate limiting to prevent network spam
+- **Rate Limiting**: Global, per-user (by pubkey or name), and bot transmission rate limits to prevent spam
 - **User Management**: Ban/unban users with persistent storage
 - **Scheduled Messages**: Send messages at configured times
 - **Direct Message Support**: Respond to private messages
 - **Logging**: Console and file logging with configurable levels
+
+### Service Plugins
+
+- **Discord Bridge**: One-way webhook bridge to post mesh messages to Discord ([docs](docs/discord-bridge.md))
+- **Packet Capture**: Capture and publish packets to MQTT brokers ([docs](docs/packet-capture.md))
+- **Map Uploader**: Upload node adverts to map.meshcore.dev ([docs](docs/map-uploader.md))
+- **Weather Service**: Scheduled forecasts, alerts, and lightning detection ([docs](docs/weather-service.md))
 
 ## Requirements
 
@@ -34,9 +41,17 @@ pip install -r requirements.txt
 ```
 
 3. Copy and configure the bot:
+
+**Full Configuration Option**: This config.ini example enables all bot commands and provides full configuration options.
 ```bash
 cp config.ini.example config.ini
 # Edit config.ini with your settings
+```
+
+**Minimal Configuration Option**: For users who only want core testing commands (ping, test, path, prefix, multitest), you can use the minimal configuration instead:
+```bash
+cp config.ini.minimal-example config.ini
+# Edit config.ini with your connection and bot settings
 ```
 
 4. Run the bot:
@@ -67,7 +82,67 @@ sudo systemctl start meshcore-bot
 sudo systemctl status meshcore-bot
 ```
 
-See [SERVICE-INSTALLATION.md](SERVICE-INSTALLATION.md) for detailed service installation instructions.
+See [Service installation](docs/service-installation.md) for detailed service installation instructions.
+
+### Docker Deployment
+For containerized deployment using Docker:
+
+1. **Create data directories and configuration**:
+   ```bash
+   mkdir -p data/{config,databases,logs,backups}
+   cp config.ini.example data/config/config.ini
+   # Edit data/config/config.ini with your settings
+   ```
+
+2. **Update paths in config.ini** to use `/data/` directories:
+   ```ini
+   [Bot]
+   db_path = /data/databases/meshcore_bot.db
+   
+   [Logging]
+   log_file = /data/logs/meshcore_bot.log
+   ```
+
+3. **Build and start with Docker Compose**:
+   ```bash
+   docker compose build
+   docker compose up -d
+   ```
+   
+   Or build and start in one command:
+   ```bash
+   docker compose up -d --build
+   ```
+
+4. **View logs**:
+   ```bash
+   docker-compose logs -f
+   ```
+
+See [Docker deployment](docs/docker.md) for detailed Docker deployment instructions, including serial port access, web viewer configuration, and troubleshooting.
+
+## NixOS
+Use the Nix flake via flake.nix
+```nix
+meshcore-bot.url = "github:agessaman/meshcore-bot/";
+```
+
+And in your system config
+
+```nix
+{
+  imports = [inputs.meshcore-bot.nixosModules.default];
+  services.meshcore-bot = {
+    enable = true;
+    webviewer.enable = true;
+    settings = {
+      Connection.connection_type = "serial";
+      Connection.serial_port = "/dev/ttyUSB0";
+      Bot.bot_name = "MyBot";
+    };
+  };
+}
+```
 
 ## Configuration
 
@@ -89,7 +164,10 @@ timeout = 30                      # Connection timeout
 [Bot]
 bot_name = MeshCoreBot            # Bot identification name
 enabled = true                    # Enable/disable bot
-rate_limit_seconds = 2            # Rate limiting interval
+rate_limit_seconds = 2            # Global: min seconds between any bot reply
+bot_tx_rate_limit_seconds = 1.0   # Min seconds between bot transmissions
+per_user_rate_limit_seconds = 5   # Per-user: min seconds between replies to same user (pubkey or name)
+per_user_rate_limit_enabled = true
 startup_advert = flood            # Send advert on startup
 ```
 
@@ -107,6 +185,8 @@ help = "Bot Help: test, ping, help, hello, cmd, wx, aqi, sun, moon, solar, hfcon
 [Channels]
 monitor_channels = general,test,emergency  # Channels to monitor
 respond_to_dms = true                      # Enable DM responses
+# Optional: limit channel responses to certain keywords (DM gets all triggers)
+# channel_keywords = help,ping,test,hello
 ```
 
 ### External Data APIs
@@ -120,7 +200,7 @@ airnow_api_key =                  # Air quality data
 ### Alert Command
 ```ini
 [Alert_Command]
-alert_enabled = true                    # Enable/disable alert command
+enabled = true                           # Enable/disable alert command
 max_incident_age_hours = 24             # Maximum age for incidents (hours)
 max_distance_km = 20.0                  # Maximum distance for proximity queries (km)
 agency.city.<city_name> = <agency_ids>   # City-specific agency IDs (e.g., agency.city.seattle = 17D20,17M15)
@@ -143,74 +223,19 @@ colored_output = true             # Enable colored console output
 python meshcore_bot.py
 ```
 
-
 ### Available Commands
 
-The bot responds to these commands:
+For a comprehensive list of all available commands with examples and detailed explanations, see [Command reference](docs/command-reference.md).
 
-**Basic Commands:**
-- `test` or `t` - Test message response (can include optional phrase: `test <phrase>`)
-- `ping` - Ping/pong response
-- `help` - Show available commands (use `help <command>` for command details)
-- `hello` - Greeting response (also responds to: hi, hey, howdy, greetings, etc.)
-- `cmd` - List available commands in compact format
-
-**Information Commands:**
-- `channels` - List hashtag channels (use `channels` for general, `channels list` for all categories, `channels <category>` for specific categories, `channels #channel` for specific channel info)
-- `wx <zipcode>` - Weather information for US zip code (also: `weather`, `wxa`, `wxalert`)
-- `gwx <location>` - Global weather for any location worldwide (also: `globalweather`, `gwxa`)
-- `aqi <location>` - Air quality index (usage: `aqi seattle`, `aqi greenwood`, `aqi vancouver canada`, `aqi 47.6,-122.3`, or `aqi help`)
-- `sun` - Sunrise/sunset times
-- `moon` - Moon phase and times
-- `solar` - Solar conditions and HF band status
-- `solarforecast` or `sf` - Solar panel production forecast (usage: `sf <location|repeater_name|coordinates|zipcode> [panel_size] [azimuth, 0=south] [angle]`)
-- `hfcond` - HF band conditions
-- `satpass <NORAD>` - Satellite pass information (default: radio passes, all passes above horizon)
-- `satpass <NORAD> visual` - Visual passes only (must be visually observable)
-- `satpass <shortcut>` - Use shortcuts like `iss`, `hst`, `hubble`, `goes18`, `tiangong`
-
-**Emergency Commands:**
-- `alert <city|zipcode|street city|lat,lon|county> [all]` - Get active emergency incidents (e.g., `alert seattle`, `alert 98101`, `alert seattle all`)
-
-**Gaming Commands:**
-- `dice` - Roll dice (d6 by default, or specify like `dice d20`, `dice 2d6`)
-- `roll` - Roll random number (1-100 by default, or specify like `roll 50`)
-
-**Entertainment Commands:**
-- `joke` - Get a random joke (use `joke [category]` for specific category)
-- `dadjoke` - Get a dad joke from icanhazdadjoke.com
-- `hacker` - Responds to Linux commands (`sudo`, `ps aux`, `grep`, `ls -l`, etc.) with supervillain mainframe errors
-
-**Sports Commands:**
-- `sports` - Get scores for default teams
-- `sports <team>` - Get scores for specific team
-- `sports <league>` - Get scores for league (nfl, mlb, nba, etc.)
-
-**MeshCore Utility Commands:**
-- `path` or `decode` or `route` - Decode message routing path
-- `prefix <XX>` - Look up repeaters by two-character prefix (e.g., `prefix 1A`)
-  - `prefix refresh` - Refresh prefix cache
-  - `prefix free` or `prefix available` - Show available prefixes
-  - `prefix <XX> all` - Include all repeaters (not just active)
-- `stats` - Show bot usage statistics for past 24 hours
-  - `stats messages` - Message statistics
-  - `stats channels` - Channel statistics
-  - `stats paths` - Path statistics
-- `multitest` or `mt` - Listens for 6 seconds and collects all unique paths from incoming messages
-
-**Management Commands (DM only):**
-- `repeater` or `repeaters` or `rp` - Manage repeater contacts (DM only, requires ACL permissions)
-  - `repeater scan` - Scan and catalog new repeaters
-  - `repeater list` - List repeater contacts (use `--all` to show purged ones)
-  - `repeater purge <days>` - Purge repeaters older than specified days
-  - `repeater purge <name>` - Purge specific repeater by name
-  - `repeater purge all` - Purge all repeaters
-  - `repeater restore <name>` - Restore a previously purged repeater
-  - `repeater stats` - Show repeater management statistics
-  - `repeater status` - Show contact list status and limits
-  - `repeater manage` - Auto-manage contact list (use `--dry-run` to preview)
-  - See `help repeater` for full list of subcommands
-- `advert` - Send network flood advert (DM only, 1hr cooldown)
+Quick reference:
+- **Basic:** `test`, `ping`, `help`, `hello`, `cmd`
+- **Information:** `wx`, `gwx`, `aqi`, `sun`, `moon`, `solar`, `solarforecast`, `hfcond`, `satpass`, `channels`
+- **Emergency:** `alert`
+- **Gaming:** `dice`, `roll`, `magic8`
+- **Entertainment:** `joke`, `dadjoke`, `hacker`, `catfact`
+- **Sports:** `sports`
+- **MeshCore Utility:** `path`, `prefix`, `stats`, `multitest`, `webviewer`
+- **Management (DM only):** `repeater`, `advert`, `feed`, `announcements`, `greeter`
 
 ## Message Response Templates
 
@@ -221,6 +246,25 @@ Keyword responses support these template variables:
 - `{snr}` - Signal-to-noise ratio
 - `{timestamp}` - Message timestamp
 - `{path}` - Message routing path
+
+### Adding Newlines
+
+To add newlines in keyword responses, use `\n` (single backslash + n):
+
+```ini
+[Keywords]
+test = "Line 1\nLine 2\nLine 3"
+```
+
+This will output:
+```
+Line 1
+Line 2
+Line 3
+```
+
+To use a literal backslash + n, use `\\n` (double backslash + n).  
+Other escape sequences: `\t` (tab), `\r` (carriage return), `\\` (literal backslash)
 
 Example:
 ```ini
@@ -292,7 +336,9 @@ help = "Bot Help: test, ping, help, hello, cmd, wx, gwx, aqi, sun, moon, solar, 
    - Check meshcore library documentation for protocol details
 
 5. **Rate Limiting**:
-   - Adjust `rate_limit_seconds` in config
+   - **Global**: `rate_limit_seconds` — minimum time between any two bot replies
+   - **Per-user**: `per_user_rate_limit_seconds` and `per_user_rate_limit_enabled` — minimum time between replies to the same user (user identified by public key when available, else sender name; channel senders often matched by name)
+   - **Bot TX**: `bot_tx_rate_limit_seconds` — minimum time between bot transmissions on the mesh
    - Check logs for rate limiting messages
 
 ### Debug Mode
@@ -309,17 +355,18 @@ The bot uses a modular plugin architecture:
 
 - **Core modules** (`modules/`): Shared utilities and core functionality
 - **Command plugins** (`modules/commands/`): Individual command implementations
-- **Plugin loader**: Dynamic discovery and loading of command plugins
+- **Service plugins** (`modules/service_plugins/`): Background services (Discord bridge, packet capture, etc.)
+- **Plugin loaders**: Dynamic discovery and loading of command and service plugins
 - **Message handler**: Processes incoming messages and routes to appropriate handlers
 
-### Adding New Commands
+### Adding New Plugins
 
-1. Create a new command file in `modules/commands/`
+**Command Plugin:**
+1. Create a new file in `modules/commands/`
 2. Inherit from `BaseCommand`
 3. Implement the `execute()` method
-4. The plugin loader will automatically discover and load the command
+4. The plugin loader will automatically discover and load it
 
-Example:
 ```python
 from .base_command import BaseCommand
 from ..models import MeshMessage
@@ -328,18 +375,24 @@ class MyCommand(BaseCommand):
     name = "mycommand"
     keywords = ['mycommand']
     description = "My custom command"
-    
+
     async def execute(self, message: MeshMessage) -> bool:
         await self.send_response(message, "Hello from my command!")
         return True
 ```
+
+**Service Plugin:**
+1. Create a new file in `modules/service_plugins/`
+2. Inherit from `BaseServicePlugin`
+3. Implement `start()` and `stop()` methods
+4. Add configuration section to `config.ini.example`
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Submit a pull request
+4. Submit a pull request against the dev branch
 
 ## License
 
@@ -349,3 +402,5 @@ This project is licensed under the MIT License.
 
 - [MeshCore Project](https://github.com/meshcore-dev/MeshCore) for the mesh networking protocol
 - Some commands adapted from MeshingAround bot by K7MHI Kelly Keeton 2024
+- Packet capture service based on [meshcore-packet-capture](https://github.com/agessaman/meshcore-packet-capture) by agessaman
+- [meshcore-decoder](https://github.com/michaelhart/meshcore-decoder) by Michael Hart for client-side packet decoding and decryption in the web viewer

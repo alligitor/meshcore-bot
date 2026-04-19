@@ -306,7 +306,8 @@
             },
             "paths": {
                 "none": "Keine Pfad-Daten",
-                "format": "{rank} {sender} {path}"
+                "format": "{rank} {sender} {path}",
+                "synopsis": "{rank} {sender}: {hops} hops"
             }
         },
         "solarforecast": {
@@ -514,6 +515,7 @@
             "header": "🛰️ Satellitenvorbeiflug:\n{pass_info}",
             "error": "Fehler beim Abruf der Satellitenvorbeiflug-Info: {error}",
             "no_satellite": "Bitte NORAD-Nummer oder Kürzel angeben. Beispiel: satpass iss",
+            "usage_short": "🛰️ satpass <sat|NORAD> [visuell]. Z.B.: satpass iss, satpass 25544. help satpass für Kürzel.",
             "help_header": "🛰️ Satellitenvorbeiflug-Info\n\nVerwendung: satpass <NORAD_Nummer_oder_Kürzel>\n\nKürzel:\n",
             "category_weather": "🌤️ Wetter: ",
             "category_stations": "🚀 Stationen: ",
@@ -961,6 +963,9 @@
         "cmd": {
             "description": "Verfügbare Befehle auflisten"
         }
+    },
+    "elapsed": {
+        "sync_device_clock": "Geräteuhr synchronisieren"
     },
     "errors": {
         "rate_limited": "Rate-limitiert. Warte {seconds:.1f} Sekunden",

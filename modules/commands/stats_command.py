@@ -13,32 +13,60 @@ from ..models import MeshMessage
 
 
 class StatsCommand(BaseCommand):
-    """Handles the stats command with comprehensive data collection"""
+    """Handles the stats command with comprehensive data collection.
+    
+    This command tracks usage statistics including messages, commands, and routing paths.
+    It provides insights into bot activity and network performance over the last 24 hours.
+    """
     
     # Plugin metadata
     name = "stats"
     keywords = ['stats']
-    description = "Show statistics for past 24 hours. Use 'stats messages', 'stats channels', or 'stats paths' for specific stats."
+    description = "Show statistics for past 24 hours. Use 'stats messages', 'stats channels', 'stats paths', or 'stats adverts' for specific stats."
     category = "analytics"
     
-    def __init__(self, bot):
+    # Documentation
+    short_description = "Show bot usage statistics for past 24 hours"
+    usage = "stats [messages|channels|paths|adverts]"
+    examples = ["stats", "stats channels"]
+    parameters = [
+        {"name": "type", "description": "messages, channels, or paths (optional)"}
+    ]
+    
+    def __init__(self, bot: Any):
+        """Initialize the stats command.
+        
+        Args:
+            bot: The bot instance.
+        """
         super().__init__(bot)
         self._load_config()
         self._init_stats_tables()
     
-    def _load_config(self):
-        """Load configuration settings for stats command"""
-        self.stats_enabled = self.get_config_value('Stats_Command', 'stats_enabled', fallback=True, value_type='bool')
+    def _load_config(self) -> None:
+        """Load configuration settings for stats command."""
+        self.stats_enabled = self.get_config_value('Stats_Command', 'enabled', fallback=None, value_type='bool')
+        if self.stats_enabled is None:
+            self.stats_enabled = self.get_config_value('Stats_Command', 'stats_enabled', fallback=True, value_type='bool')
+        # Optional: collect_stats (defaults to stats_enabled). When true, messages/commands/paths
+        # are recorded for the web viewer dashboard even if enabled = false.
+        self.collect_stats = self.get_config_value('Stats_Command', 'collect_stats', fallback=None, value_type='bool')
+        if self.collect_stats is None:
+            self.collect_stats = self.stats_enabled
         self.data_retention_days = self.get_config_value('Stats_Command', 'data_retention_days', fallback=7, value_type='int')
         self.auto_cleanup = self.get_config_value('Stats_Command', 'auto_cleanup', fallback=True, value_type='bool')
         self.track_all_messages = self.get_config_value('Stats_Command', 'track_all_messages', fallback=True, value_type='bool')
         self.track_command_details = self.get_config_value('Stats_Command', 'track_command_details', fallback=True, value_type='bool')
         self.anonymize_users = self.get_config_value('Stats_Command', 'anonymize_users', fallback=False, value_type='bool')
     
-    def _init_stats_tables(self):
-        """Initialize database tables for stats tracking"""
+    def _init_stats_tables(self) -> None:
+        """Initialize database tables for stats tracking.
+        
+        Creates tables for message stats, command stats, and path stats if they
+        don't already exist. Also sets up necessary indexes for performance.
+        """
         try:
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Create message_stats table for tracking all messages
@@ -104,9 +132,13 @@ class StatsCommand(BaseCommand):
             self.logger.error(f"Failed to initialize stats tables: {e}")
             raise
     
-    def record_message(self, message: MeshMessage):
-        """Record a message in the stats database"""
-        if not self.stats_enabled or not self.track_all_messages:
+    def record_message(self, message: MeshMessage) -> None:
+        """Record a message in the stats database.
+
+        Args:
+            message: The message to record statistics for.
+        """
+        if not self.collect_stats or not self.track_all_messages:
             return
             
         try:
@@ -117,7 +149,7 @@ class StatsCommand(BaseCommand):
                 import hashlib
                 sender_id = f"user_{hashlib.md5(sender_id.encode()).hexdigest()[:8]}"
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO message_stats 
@@ -138,9 +170,15 @@ class StatsCommand(BaseCommand):
         except Exception as e:
             self.logger.error(f"Error recording message stats: {e}")
     
-    def record_command(self, message: MeshMessage, command_name: str, response_sent: bool = True):
-        """Record a command execution in the stats database"""
-        if not self.stats_enabled or not self.track_command_details:
+    def record_command(self, message: MeshMessage, command_name: str, response_sent: bool = True) -> None:
+        """Record a command execution in the stats database.
+        
+        Args:
+            message: The message that triggered the command.
+            command_name: The name of the command executed.
+            response_sent: Whether a response was sent back to the user.
+        """
+        if not self.collect_stats or not self.track_command_details:
             return
             
         try:
@@ -151,7 +189,7 @@ class StatsCommand(BaseCommand):
                 import hashlib
                 sender_id = f"user_{hashlib.md5(sender_id.encode()).hexdigest()[:8]}"
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO command_stats 
@@ -169,11 +207,15 @@ class StatsCommand(BaseCommand):
         except Exception as e:
             self.logger.error(f"Error recording command stats: {e}")
     
-    def record_path_stats(self, message: MeshMessage):
-        """Record path statistics for longest path tracking"""
-        if not self.stats_enabled or not self.track_all_messages:
+    def record_path_stats(self, message: MeshMessage) -> None:
+        """Record path statistics for longest path tracking.
+
+        Args:
+            message: The message containing path information.
+        """
+        if not self.collect_stats or not self.track_all_messages:
             return
-            
+
         # Only record if we have meaningful path data
         if not message.hops or message.hops <= 0 or not message.path:
             return
@@ -193,7 +235,7 @@ class StatsCommand(BaseCommand):
             # Format the path string properly (e.g., "75,24,1d,5f,bd")
             path_string = self._format_path_for_display(message.path)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO path_stats 
@@ -212,7 +254,14 @@ class StatsCommand(BaseCommand):
             self.logger.error(f"Error recording path stats: {e}")
     
     def _is_valid_path_format(self, path: str) -> bool:
-        """Check if path contains actual node IDs rather than descriptive text"""
+        """Check if path contains actual node IDs rather than descriptive text.
+        
+        Args:
+            path: The path string to validate.
+            
+        Returns:
+            bool: True if the path structure appears valid, False otherwise.
+        """
         if not path:
             return False
         
@@ -234,35 +283,68 @@ class StatsCommand(BaseCommand):
         return False
     
     def _format_path_for_display(self, path: str) -> str:
-        """Format path string for display (e.g., '75,24,1d,5f,bd')"""
+        """Format path string for display (e.g., '75,24,1d,5f,bd' or '0102,5f7e' for 2-byte hops).
+
+        Uses bot.prefix_hex_chars for multi-byte path support; falls back to 2-char (1-byte)
+        chunks when length is not divisible or for legacy paths.
+
+        Args:
+            path: The raw path string (hex, possibly with commas).
+
+        Returns:
+            str: The formatted path string.
+        """
         if not path:
             return "Direct"
-        
+
         # If path already contains commas, it's likely already formatted
         if ',' in path:
             return path
-        
-        # If path contains descriptive text (like "Routed through X hops"), 
+
+        # If path contains descriptive text (like "Routed through X hops"),
         # extract just the numeric part or return as-is
         if ' ' in path and not all(c in '0123456789abcdefABCDEF' for c in path.replace(' ', '')):
             # This looks like descriptive text, return as-is
             return path
-        
-        # If path is a hex string without separators, add commas every 2 characters
-        # But only if it looks like a hex string (all hex characters)
+
+        # Use configured hex chars per node for multi-byte path support (2 = 1 byte, 4 = 2 bytes, 6 = 3 bytes)
+        hex_chars = getattr(self.bot, 'prefix_hex_chars', 2)
+        if hex_chars <= 0:
+            hex_chars = 2
+
+        # If path is a hex string without separators, chunk by hex_chars per hop
         if len(path) > 2 and ',' not in path and all(c in '0123456789abcdefABCDEF' for c in path):
-            # Split into 2-character chunks and join with commas
-            formatted = ','.join([path[i:i+2] for i in range(0, len(path), 2)])
-            return formatted
-        
+            if (len(path) % hex_chars) == 0:
+                formatted = ','.join([path[i:i + hex_chars] for i in range(0, len(path), hex_chars)])
+                if formatted:
+                    return formatted
+            # Legacy fallback: length not divisible by hex_chars, use 2-char (1-byte) chunks
+            formatted = ','.join([path[i:i + 2] for i in range(0, len(path), 2)])
+            return formatted if formatted else path
+
         # If it's already a single node ID or short path, return as-is
         return path
     
     def get_help_text(self) -> str:
+        """Get help text for the stats command.
+        
+        Returns:
+            str: The help text for this command.
+        """
         return self.translate('commands.stats.help')
     
     async def execute(self, message: MeshMessage) -> bool:
-        """Execute the stats command"""
+        """Execute the stats command.
+        
+        Handles subcommands for messages, channels, and paths, or shows basic stats
+        if no subcommand is provided.
+        
+        Args:
+            message: The message triggering the command.
+            
+        Returns:
+            bool: True if executed successfully, False otherwise.
+        """
         if not self.stats_enabled:
             await self.send_response(message, self.translate('commands.stats.disabled'))
             return False
@@ -285,7 +367,11 @@ class StatsCommand(BaseCommand):
                 elif subcommand in ['channels', 'channel']:
                     response = await self._get_channel_leaderboard()
                 elif subcommand in ['paths', 'path']:
-                    response = await self._get_path_leaderboard()
+                    response = await self._get_path_leaderboard(message)
+                elif subcommand in ['adverts', 'advert', 'advertisements', 'advertisement']:
+                    # Check for verbose/hash option
+                    show_hashes = len(parts) > 2 and parts[2].lower() in ['hash', 'hashes', 'verbose', 'verb']
+                    response = await self._get_adverts_leaderboard(message, show_hashes=show_hashes)
                 else:
                     response = self.translate('commands.stats.unknown_subcommand', subcommand=subcommand)
             else:
@@ -302,13 +388,17 @@ class StatsCommand(BaseCommand):
             return False
     
     async def _get_basic_stats(self) -> str:
-        """Get basic bot statistics"""
+        """Get basic bot statistics.
+        
+        Returns:
+            str: Formatted string containing basic statistics (commands, top user, etc.).
+        """
         try:
             # Get time window (24 hours ago)
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Bot commands received
@@ -367,13 +457,17 @@ class StatsCommand(BaseCommand):
             return self.translate('commands.stats.error', error=str(e))
     
     async def _get_bot_user_leaderboard(self) -> str:
-        """Get leaderboard for bot users (people who triggered bot responses)"""
+        """Get leaderboard for bot users (people who triggered bot responses).
+        
+        Returns:
+            str: Formatted leaderboard string.
+        """
         try:
             # Get time window (24 hours ago)
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Top bot users (people who triggered commands)
@@ -404,13 +498,17 @@ class StatsCommand(BaseCommand):
             return self.translate('commands.stats.error_bot_users', error=str(e))
     
     async def _get_channel_leaderboard(self) -> str:
-        """Get leaderboard for channel message activity"""
+        """Get leaderboard for channel message activity.
+        
+        Returns:
+            str: Formatted leaderboard string.
+        """
         try:
             # Get time window (24 hours ago)
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Top channels by message count with unique user counts
@@ -445,14 +543,18 @@ class StatsCommand(BaseCommand):
             self.logger.error(f"Error getting channel leaderboard: {e}")
             return self.translate('commands.stats.error_channels', error=str(e))
     
-    async def _get_path_leaderboard(self) -> str:
-        """Get leaderboard for longest paths seen"""
+    async def _get_path_leaderboard(self, message: Optional[MeshMessage] = None) -> str:
+        """Get leaderboard for longest paths seen.
+        
+        Returns:
+            str: Formatted leaderboard string.
+        """
         try:
             # Get time window (24 hours ago)
             now = int(time.time())
             day_ago = now - (24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Top longest paths (one per user, more results with compact format)
@@ -474,19 +576,24 @@ class StatsCommand(BaseCommand):
                 
                 # Build compact response with length checking
                 response = ""
-                max_length = 130  # Safe length for mesh network
+                max_length = self.get_max_message_length(message) if message else 130
                 
                 if longest_paths:
                     for i, (sender, path_len, path_str) in enumerate(longest_paths, 1):
                         # Truncate sender name to fit more data
                         display_sender = sender[:8] + "..." if len(sender) > 11 else sender
-                        # Compact format: "1 Gundam 56,1c,98,1a,aa,cd,5f"
-                        new_line = self.translate('commands.stats.paths.format', rank=i, sender=display_sender, path=path_str) + "\n"
-                        
+                        # Full line: rank + sender + ": " + path (same as format template)
+                        full_line = self.translate('commands.stats.paths.format', rank=i, sender=display_sender, path=path_str) + "\n"
+                        # When a single path line would exceed the message limit, use synopsis (rank + sender + hop count only)
+                        if len(full_line) > max_length:
+                            new_line = self.translate('commands.stats.paths.synopsis', rank=i, sender=display_sender, hops=path_len) + "\n"
+                        else:
+                            new_line = full_line
+
                         # Check if adding this line would exceed the limit
                         if len(response + new_line) > max_length:
                             break
-                        
+
                         response += new_line
                 else:
                     response = self.translate('commands.stats.paths.none') + "\n"
@@ -497,12 +604,186 @@ class StatsCommand(BaseCommand):
             self.logger.error(f"Error getting path leaderboard: {e}")
             return self.translate('commands.stats.error_paths', error=str(e))
     
-    def cleanup_old_stats(self, days_to_keep: int = 7):
-        """Clean up old stats data to prevent database bloat"""
+    async def _get_adverts_leaderboard(self, message: Optional[MeshMessage] = None, show_hashes: bool = False) -> str:
+        """Get leaderboard for nodes with most unique advert packets in last 24 hours.
+        
+        Args:
+            message: Optional message for dynamic length calculation.
+            show_hashes: If True, include packet hashes in output.
+        
+        Returns:
+            str: Formatted leaderboard string.
+        """
+        try:
+            with self.bot.db_manager.connection() as conn:
+                cursor = conn.cursor()
+                
+                # Check if daily_stats table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_stats'")
+                has_daily_stats = cursor.fetchone() is not None
+                
+                if has_daily_stats:
+                    if show_hashes:
+                        # Query with packet hashes for validation
+                        # First get the top nodes, then get their hashes
+                        cursor.execute('''
+                            SELECT 
+                                c.public_key,
+                                c.name,
+                                COALESCE(
+                                    (SELECT advert_count FROM daily_stats 
+                                     WHERE date = DATE(c.last_advert_timestamp) 
+                                     AND public_key = c.public_key), 0
+                                ) as unique_adverts
+                            FROM complete_contact_tracking c
+                            WHERE c.last_advert_timestamp >= datetime('now', '-24 hours')
+                            GROUP BY c.public_key, c.name
+                            HAVING unique_adverts > 0
+                            ORDER BY unique_adverts DESC
+                            LIMIT 20
+                        ''')
+                        top_nodes = cursor.fetchall()
+                        
+                        # Now get packet hashes for each node
+                        top_adverts = []
+                        for public_key, name, count in top_nodes:
+                            # Get packet hashes for this node in the last 24 hours
+                            cursor.execute('''
+                                SELECT packet_hash 
+                                FROM unique_advert_packets 
+                                WHERE public_key = ? 
+                                AND first_seen >= datetime('now', '-24 hours')
+                                ORDER BY first_seen
+                            ''', (public_key,))
+                            hash_rows = cursor.fetchall()
+                            packet_hashes = ', '.join([row[0] for row in hash_rows]) if hash_rows else None
+                            top_adverts.append((public_key, name, count, packet_hashes))
+                    else:
+                        # Query nodes that advertised in the last 24 hours
+                        # Get advert_count from daily_stats for the day of last_advert_timestamp
+                        # This gives us the count of unique adverts for that day
+                        cursor.execute('''
+                            SELECT 
+                                c.public_key,
+                                c.name,
+                                COALESCE(
+                                    (SELECT advert_count FROM daily_stats 
+                                     WHERE date = DATE(c.last_advert_timestamp) 
+                                     AND public_key = c.public_key), 0
+                                ) as unique_adverts
+                            FROM complete_contact_tracking c
+                            WHERE c.last_advert_timestamp >= datetime('now', '-24 hours')
+                            GROUP BY c.public_key, c.name
+                            HAVING unique_adverts > 0
+                            ORDER BY unique_adverts DESC
+                            LIMIT 20
+                        ''')
+                        top_adverts = cursor.fetchall()
+                else:
+                    # Fallback: use advert_count from complete_contact_tracking
+                    # This is less accurate but works if daily_stats doesn't exist
+                    if show_hashes:
+                        # Get nodes first
+                        cursor.execute('''
+                            SELECT public_key, name, advert_count as unique_adverts
+                            FROM complete_contact_tracking
+                            WHERE last_advert_timestamp >= datetime('now', '-24 hours')
+                            ORDER BY advert_count DESC
+                            LIMIT 20
+                        ''')
+                        top_nodes = cursor.fetchall()
+                        
+                        # Get packet hashes for each node
+                        top_adverts = []
+                        for public_key, name, count in top_nodes:
+                            cursor.execute('''
+                                SELECT packet_hash 
+                                FROM unique_advert_packets 
+                                WHERE public_key = ? 
+                                AND first_seen >= datetime('now', '-24 hours')
+                                ORDER BY first_seen
+                            ''', (public_key,))
+                            hash_rows = cursor.fetchall()
+                            packet_hashes = ', '.join([row[0] for row in hash_rows]) if hash_rows else None
+                            top_adverts.append((public_key, name, count, packet_hashes))
+                    else:
+                        cursor.execute('''
+                            SELECT public_key, name, advert_count as unique_adverts
+                            FROM complete_contact_tracking
+                            WHERE last_advert_timestamp >= datetime('now', '-24 hours')
+                            ORDER BY advert_count DESC
+                            LIMIT 20
+                        ''')
+                        top_adverts = cursor.fetchall()
+                
+                # Build compact response with length checking
+                response = self.translate('commands.stats.adverts.header') + "\n"
+                max_length = self.get_max_message_length(message) if message else 130
+                
+                if top_adverts:
+                    for i, row in enumerate(top_adverts, 1):
+                        if show_hashes:
+                            public_key, name, count, packet_hashes = row
+                        else:
+                            public_key, name, count = row
+                            packet_hashes = None
+                        
+                        # Truncate name if needed
+                        display_name = name[:15] + "..." if len(name) > 18 else name
+                        # Format: "1. NodeName: 42 adverts"
+                        advert_text = self.translate('commands.stats.adverts.advert_singular') if count == 1 else self.translate('commands.stats.adverts.advert_plural')
+                        
+                        if show_hashes and packet_hashes:
+                            # Format with packet hashes: "1. NodeName: 42 adverts\n   Hashes: abc123, def456, ..."
+                            main_line = self.translate('commands.stats.adverts.format', 
+                                                     rank=i, 
+                                                     name=display_name, 
+                                                     count=count,
+                                                     advert_text=advert_text)
+                            
+                            # Split packet hashes and format them
+                            hash_list = [h.strip() for h in packet_hashes.split(',') if h.strip()]
+                            # Show first few hashes (truncate if too many)
+                            if len(hash_list) > 10:
+                                hash_display = ', '.join(hash_list[:10]) + f" ... ({len(hash_list)} total)"
+                            else:
+                                hash_display = ', '.join(hash_list)
+                            
+                            new_line = f"{main_line}\n   {self.translate('commands.stats.adverts.hashes_label', hashes=hash_display)}"
+                        else:
+                            new_line = self.translate('commands.stats.adverts.format', 
+                                                     rank=i, 
+                                                     name=display_name, 
+                                                     count=count,
+                                                     advert_text=advert_text) + "\n"
+                        
+                        # Check if adding this line would exceed the limit
+                        if len(response + new_line.rstrip('\n')) > max_length:
+                            break
+                        
+                        response += new_line
+                    
+                    # Remove trailing newline
+                    response = response.rstrip('\n')
+                else:
+                    response += self.translate('commands.stats.adverts.none')
+                
+                return response
+                
+        except Exception as e:
+            self.logger.error(f"Error getting adverts leaderboard: {e}")
+            return self.translate('commands.stats.error_adverts', error=str(e))
+    
+    def cleanup_old_stats(self, days_to_keep: int = 7) -> None:
+        """Clean up old stats data to prevent database bloat.
+        
+        Args:
+            days_to_keep: Number of days of data to retain.
+        """
         try:
             cutoff_time = int(time.time()) - (days_to_keep * 24 * 60 * 60)
             
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Clean up old message stats
@@ -527,9 +808,13 @@ class StatsCommand(BaseCommand):
             self.logger.error(f"Error cleaning up old stats: {e}")
     
     def get_stats_summary(self) -> Dict[str, Any]:
-        """Get a summary of all stats data"""
+        """Get a summary of all stats data.
+        
+        Returns:
+            Dict[str, Any]: Dictionary containing summary statistics.
+        """
         try:
-            with sqlite3.connect(self.bot.db_manager.db_path) as conn:
+            with self.bot.db_manager.connection() as conn:
                 cursor = conn.cursor()
                 
                 # Total messages
