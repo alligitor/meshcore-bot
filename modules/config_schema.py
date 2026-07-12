@@ -152,6 +152,11 @@ SECTIONS: dict[str, SectionMeta] = {
         "auto_start": KeyMeta(type="bool"),
         "debug": KeyMeta(type="bool"),
     }),
+    "Localization": SectionMeta(keys={
+        "language": KeyMeta(default="en"),
+        "translation_path": KeyMeta(default="translations/"),
+        "auto_detect_language": KeyMeta(type="bool", default="false"),
+    }),
     "Webhook": SectionMeta(keys={
         "enabled": KeyMeta(type="bool"),
         "host": KeyMeta(),

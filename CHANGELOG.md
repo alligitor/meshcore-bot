@@ -16,6 +16,8 @@ web-viewer performance and security work.
   plugin re-subscription after reconnect.
 - Minute-level rain and precipitation nowcasts with optional proactive notifications.
 - World Cup command and live event announcement service.
+- Opt-in sender-language detection for localized greeting replies, with
+  keyword-first detection and an optional `langdetect` extra for longer text.
 - Centralized location resolution and geocoding helpers shared by weather, AQI,
   path, and related commands.
 - Web-viewer plugin settings, node settings, multi-byte evidence views, and

@@ -164,6 +164,10 @@ monitor_channels = general
         ):
             assert key in keys, f"missing {key} in config.ini.example"
 
+    def test_localization_auto_detection_is_documented(self):
+        keys = load_documented_keys_from_example(EXAMPLE_PATH).get("Localization", {})
+        assert "auto_detect_language" in keys
+
 
 class TestKeyValidation:
     def test_invalid_connection_type_warns(self, tmp_path):
