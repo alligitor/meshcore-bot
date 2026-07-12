@@ -278,7 +278,7 @@ def load_documented_keys_from_example(example_path: Path) -> dict[str, dict[str,
     # Active keys via ConfigParser
     try:
         cfg = configparser.ConfigParser(allow_no_value=True)
-        cfg.optionxform = str
+        cfg.optionxform = str  # type: ignore[assignment]
         cfg.read(str(example_path), encoding="utf-8")
         for section in cfg.sections():
             try:
