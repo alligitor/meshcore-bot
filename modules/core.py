@@ -462,7 +462,7 @@ class MeshCoreBot:
         )
         if self._send_consecutive_failures >= threshold and not self.is_radio_offline:
             self._radio_offline = True
-            since = _dt.datetime.now(_dt.UTC).isoformat()
+            since = _dt.datetime.now(_dt.timezone.utc).isoformat()
             self.logger.critical(
                 "RADIO OFFLINE: %d consecutive send timeouts (threshold %d). "
                 "Bot will suppress further outbound sends until one succeeds. "
@@ -1662,7 +1662,7 @@ long_jokes = false
                 self.db_manager.set_metadata('bot.radio_zombie', 'true')
                 self.db_manager.set_metadata(
                     'bot.radio_zombie_since',
-                    _dt.datetime.now(_dt.UTC).isoformat(),
+                    _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 )
             except Exception:
                 pass
