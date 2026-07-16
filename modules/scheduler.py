@@ -756,7 +756,7 @@ class MessageScheduler:
             if hasattr(self.bot, 'mesh_graph') and self.bot.mesh_graph and hasattr(self.bot.mesh_graph, 'delete_expired_edges_from_db'):
                 self.bot.mesh_graph.delete_expired_edges_from_db(mesh_connections_days)
 
-            ran_at = datetime.datetime.now(datetime.UTC).isoformat()
+            ran_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
             self._last_retention_stats['ran_at'] = ran_at
             try:
                 self.bot.db_manager.set_metadata('maint.status.data_retention_ran_at', ran_at)
@@ -768,7 +768,7 @@ class MessageScheduler:
             self.logger.exception(f"Error during data retention cleanup: {e}")
             self._last_retention_stats['error'] = str(e)
             try:
-                ran_at = datetime.datetime.now(datetime.UTC).isoformat()
+                ran_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 self.bot.db_manager.set_metadata('maint.status.data_retention_ran_at', ran_at)
                 self.bot.db_manager.set_metadata('maint.status.data_retention_outcome', f'error: {e}')
             except Exception:
@@ -1583,7 +1583,7 @@ class MessageScheduler:
         except ValueError:
             smtp_port = 587
 
-        now_utc         = datetime.datetime.now(datetime.UTC)
+        now_utc         = datetime.datetime.now(datetime.timezone.utc)
         connection_type = self.bot.config.get('Connection', 'connection_type', fallback='unknown')
         serial_port     = self.bot.config.get('Connection', 'serial_port', fallback='n/a')
         interval_min    = interval // 60
@@ -1727,7 +1727,7 @@ class MessageScheduler:
         except ValueError:
             smtp_port = 587
 
-        now_utc         = datetime.datetime.now(datetime.UTC)
+        now_utc         = datetime.datetime.now(datetime.timezone.utc)
         connection_type = self.bot.config.get('Connection', 'connection_type', fallback='unknown')
         serial_port     = self.bot.config.get('Connection', 'serial_port', fallback='n/a')
 
