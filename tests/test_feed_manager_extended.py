@@ -47,25 +47,16 @@ def _seed_feed_subscription(db_manager: DBManager, feed_id: int = 1, channel_nam
 
 
 def _fake_aiohttp_response(*, text_body: str | None = None, json_body: dict | list | None = None):
-    """Build a minimal async context manager compatible with async with session.get/post."""
+    """Build a minimal aiohttp response used by the safe request helper."""
     resp = Mock()
     resp.status = 200
+    resp.headers = {}
+    resp.release = Mock()
     if text_body is not None:
         resp.text = AsyncMock(return_value=text_body)
     if json_body is not None:
         resp.json = AsyncMock(return_value=json_body)
-
-    class _CM:
-        def __init__(self, r):
-            self._r = r
-
-        async def __aenter__(self):
-            return self._r
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    return _CM(resp)
+    return resp
 
 
 class TestSortItems:
@@ -356,8 +347,9 @@ class TestProcessRssFeed:
 </channel></rss>"""
         ctx = _fake_aiohttp_response(text_body=rss)
         fm.session = Mock()
-        fm.session.get = Mock(return_value=ctx)
+        fm.session.request = AsyncMock(return_value=ctx)
         fm.session.closed = False
+        fm._url_policy.validate_async = AsyncMock(return_value=True)
 
         feed = {"id": 1, "feed_url": "http://example.com/feed.xml"}
         items = await fm.process_rss_feed(feed)
@@ -374,8 +366,9 @@ class TestProcessRssFeed:
 </channel></rss>"""
         ctx = _fake_aiohttp_response(text_body=rss)
         fm.session = Mock()
-        fm.session.get = Mock(return_value=ctx)
+        fm.session.request = AsyncMock(return_value=ctx)
         fm.session.closed = False
+        fm._url_policy.validate_async = AsyncMock(return_value=True)
 
         _seed_feed_subscription(fm.bot.db_manager, feed_id=1)
         with fm.bot.db_manager.connection() as conn:
@@ -404,8 +397,9 @@ class TestProcessApiFeed:
         }
         ctx = _fake_aiohttp_response(json_body=payload)
         fm.session = Mock()
-        fm.session.get = Mock(return_value=ctx)
+        fm.session.request = AsyncMock(return_value=ctx)
         fm.session.closed = False
+        fm._url_policy.validate_async = AsyncMock(return_value=True)
 
         api_config = json.dumps(
             {
@@ -429,8 +423,9 @@ class TestProcessApiFeed:
         payload = [{"id": "z", "title": "Zed", "created_at": 1600000000}]
         ctx = _fake_aiohttp_response(json_body=payload)
         fm.session = Mock()
-        fm.session.post = Mock(return_value=ctx)
+        fm.session.request = AsyncMock(return_value=ctx)
         fm.session.closed = False
+        fm._url_policy.validate_async = AsyncMock(return_value=True)
 
         api_config = json.dumps(
             {

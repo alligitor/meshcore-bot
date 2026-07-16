@@ -22,7 +22,13 @@ import aiohttp
 import feedparser
 
 from modules.feed_filter_eval import item_passes_filter_config
-from modules.security_utils import sanitize_input, validate_external_url
+from modules.security_utils import (
+    SafeAiohttpResolver,
+    SafeUrlPolicy,
+    UnsafeUrlError,
+    safe_aiohttp_request,
+    sanitize_input,
+)
 from modules.url_shortener import _coerce_url_string, shorten_url_sync
 
 
@@ -92,6 +98,7 @@ class FeedManager:
 
         # HTTP session
         self.session: Optional[aiohttp.ClientSession] = None
+        self._url_policy = SafeUrlPolicy(allow_private=self.allow_private_urls)
 
         # Semaphore to limit concurrent requests
         self._request_semaphore = asyncio.Semaphore(5)
@@ -196,7 +203,11 @@ class FeedManager:
         if self.session is None or self.session.closed:
             # Create session in the current event loop context
             self.session = aiohttp.ClientSession(
-                headers={'User-Agent': self.user_agent}
+                headers={'User-Agent': self.user_agent},
+                connector=aiohttp.TCPConnector(
+                    resolver=SafeAiohttpResolver(self._url_policy),
+                    use_dns_cache=False,
+                ),
             )
             self.logger.debug("Created FeedManager HTTP session in current event loop")
 
@@ -212,7 +223,9 @@ class FeedManager:
 
         try:
             # Validate URL for SSRF protection
-            if not validate_external_url(feed_url, allow_private=self.allow_private_urls):
+            try:
+                await self._url_policy.validate_async(feed_url)
+            except UnsafeUrlError:
                 self.logger.error(f"Feed URL validation failed: {feed_url}")
                 self._record_feed_error(feed_id, 'security', 'Invalid or unsafe URL')
                 return
@@ -268,10 +281,20 @@ class FeedManager:
 
             async with self._request_semaphore:
                 try:
-                    async with self.session.get(feed_url, timeout=timeout) as response:
+                    assert self.session is not None
+                    response = await safe_aiohttp_request(
+                        self.session,
+                        "GET",
+                        feed_url,
+                        policy=self._url_policy,
+                        timeout=timeout,
+                    )
+                    try:
                         if response.status != 200:
                             raise Exception(f"HTTP {response.status}")
                         content = await response.text()
+                    finally:
+                        response.release()
                 except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
                     raise Exception(f"Request timeout after {self.request_timeout} seconds")
 
@@ -382,16 +405,23 @@ class FeedManager:
 
             async with self._request_semaphore:
                 try:
-                    if method == 'POST':
-                        async with self.session.post(feed_url, headers=headers, params=params, json=body, timeout=timeout) as response:
-                            if response.status != 200:
-                                raise Exception(f"HTTP {response.status}")
-                            data = await response.json()
-                    else:
-                        async with self.session.get(feed_url, headers=headers, params=params, timeout=timeout) as response:
-                            if response.status != 200:
-                                raise Exception(f"HTTP {response.status}")
-                            data = await response.json()
+                    assert self.session is not None
+                    response = await safe_aiohttp_request(
+                        self.session,
+                        method,
+                        feed_url,
+                        policy=self._url_policy,
+                        headers=headers,
+                        params=params,
+                        json=body if method == 'POST' else None,
+                        timeout=timeout,
+                    )
+                    try:
+                        if response.status != 200:
+                            raise Exception(f"HTTP {response.status}")
+                        data = await response.json()
+                    finally:
+                        response.release()
                 except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
                     raise Exception(f"Request timeout after {self.request_timeout} seconds")
 
@@ -1341,4 +1371,3 @@ class FeedManager:
                     self.logger.error(f"Parent directory: {parent} (exists: {parent.exists()}, writable: {os.access(str(parent), os.W_OK) if parent.exists() else False})")
             else:
                 self.logger.error(f"Database path: {db_path_str}")
-

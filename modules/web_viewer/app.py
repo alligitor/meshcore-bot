@@ -52,6 +52,9 @@ from modules.database_restore import (
 from modules.ini_writer import update_ini_values
 from modules.security_utils import (
     VALID_JOURNAL_MODES,
+    SafeUrlPolicy,
+    create_safe_requests_session,
+    safe_requests_request,
     validate_external_url,
     validate_sql_identifier,
 )
@@ -6683,7 +6686,6 @@ class BotDataViewer:
         from datetime import datetime
 
         import feedparser
-        import requests
 
         try:
             items = []
@@ -6707,12 +6709,21 @@ class BotDataViewer:
                 if self.config.has_section('Feed_Manager')
                 else feed_command_allow_private
             )
-            if not validate_external_url(feed_url, allow_private=allow_private_feeds):
+            url_policy = SafeUrlPolicy(allow_private=allow_private_feeds)
+            if not url_policy.validate(feed_url):
                 raise ValueError("Invalid or unsafe feed URL")
 
             if feed_type == 'rss':
                 # Fetch RSS feed
-                response = requests.get(feed_url, timeout=30, headers={'User-Agent': 'MeshCoreBot/1.0 FeedManager'})
+                with create_safe_requests_session(url_policy) as http_session:
+                    response = safe_requests_request(
+                        http_session,
+                        'GET',
+                        feed_url,
+                        policy=url_policy,
+                        timeout=30,
+                        headers={'User-Agent': 'MeshCoreBot/1.0 FeedManager'},
+                    )
                 response.raise_for_status()
                 parsed = feedparser.parse(response.text)
 
@@ -6742,10 +6753,17 @@ class BotDataViewer:
                 body = api_config.get('body')
                 parser_config = api_config.get('response_parser', {})
 
-                if method == 'POST':
-                    response = requests.post(feed_url, headers=headers, params=params, json=body, timeout=30)
-                else:
-                    response = requests.get(feed_url, headers=headers, params=params, timeout=30)
+                with create_safe_requests_session(url_policy) as http_session:
+                    response = safe_requests_request(
+                        http_session,
+                        method,
+                        feed_url,
+                        policy=url_policy,
+                        headers=headers,
+                        params=params,
+                        json=body if method == 'POST' else None,
+                        timeout=30,
+                    )
                 response.raise_for_status()
 
                 # Try to parse JSON, handle cases where response might be a string

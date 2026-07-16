@@ -3376,13 +3376,13 @@ class TestFeedPreviewSecurity:
         )
         assert resp.status_code == 400
 
-    def test_validate_external_url_called_for_preview(self, client):
-        """validate_external_url is invoked — not bypassed — in the preview handler."""
-        with patch("modules.web_viewer.app.validate_external_url", return_value=False) as mock_veu:
+    def test_safe_url_policy_called_for_preview(self, client):
+        """The strict feed URL policy is invoked before preview fetches."""
+        with patch("modules.web_viewer.app.SafeUrlPolicy.validate", return_value=False) as validate:
             resp = client.post(
                 "/api/feeds/preview",
                 json={"feed_url": "http://192.168.1.1/feed.rss", "feed_type": "rss"},
                 content_type="application/json",
             )
-        mock_veu.assert_called()
+        validate.assert_called_once()
         assert resp.status_code == 400
