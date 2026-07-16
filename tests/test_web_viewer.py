@@ -12,7 +12,7 @@ import logging
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -3302,6 +3302,73 @@ class TestRestoreEndpointSecurity:
 # ===========================================================================
 # Security: Feed preview/test SSRF prevention (GAP W2)
 # ===========================================================================
+
+
+class TestFeedPreviewResponseLimits:
+    def test_chunked_body_over_cap_is_streamed_closed_and_rejected(self, viewer):
+        response = Mock()
+        response.headers = {"Content-Type": "application/rss+xml"}
+        response.raise_for_status = Mock()
+        response.close = Mock()
+
+        def chunks(*_args, **_kwargs):
+            yield b"x" * (1024 * 1024)
+            yield b"y" * (1024 * 1024 + 1)
+
+        response.iter_content = Mock(side_effect=chunks)
+        session_context = MagicMock()
+        session_context.__enter__.return_value = Mock()
+        with (
+            patch("modules.web_viewer.app.SafeUrlPolicy.validate", return_value=True),
+            patch(
+                "modules.web_viewer.app.create_safe_requests_session",
+                return_value=session_context,
+            ),
+            patch(
+                "modules.web_viewer.app.safe_requests_request",
+                return_value=response,
+            ) as request_mock,
+            pytest.raises(ValueError, match="exceeds .* byte limit"),
+        ):
+            viewer._preview_feed_items(
+                "https://example.com/feed.xml", "rss", "{title}"
+            )
+
+        assert request_mock.call_args.kwargs["stream"] is True
+        response.close.assert_called_once()
+
+    def test_content_length_over_cap_is_rejected_without_reading(self, viewer):
+        response = Mock()
+        response.headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(2 * 1024 * 1024 + 1),
+        }
+        response.raise_for_status = Mock()
+        response.close = Mock()
+        response.iter_content = Mock()
+        session_context = MagicMock()
+        session_context.__enter__.return_value = Mock()
+        with (
+            patch("modules.web_viewer.app.SafeUrlPolicy.validate", return_value=True),
+            patch(
+                "modules.web_viewer.app.create_safe_requests_session",
+                return_value=session_context,
+            ),
+            patch(
+                "modules.web_viewer.app.safe_requests_request",
+                return_value=response,
+            ),
+            pytest.raises(ValueError, match="exceeds .* byte limit"),
+        ):
+            viewer._preview_feed_items(
+                "https://example.com/feed.json",
+                "api",
+                "{title}",
+                api_config={},
+            )
+
+        response.iter_content.assert_not_called()
+        response.close.assert_called_once()
 
 
 class TestFeedPreviewSecurity:

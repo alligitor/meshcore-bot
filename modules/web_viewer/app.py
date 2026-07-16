@@ -122,12 +122,50 @@ def _strip_ansi_codes(text: str) -> str:
 
 
 from modules.config_snapshot import config_to_redacted_sections
-from modules.feed_manager import FeedManager
+from modules.feed_manager import (
+    DEFAULT_MAX_FEED_RESPONSE_BYTES,
+    DEFAULT_MAX_PARSED_FEED_ITEMS,
+    FeedManager,
+    _useful_feed_content_type,
+)
 from modules.repeater_manager import RepeaterManager
 from modules.url_shortener import _coerce_url_string
 from modules.utils import resolve_path
 from modules.web_viewer.config_panels import CONFIG_PANELS, PANEL_CATEGORIES
 from modules.web_viewer.integration import normalized_web_viewer_password
+
+
+def _read_limited_requests_response(
+    response: Any,
+    *,
+    max_bytes: int,
+    feed_type: str,
+) -> bytes:
+    """Read a streamed, decompressed requests response under a hard byte cap."""
+    response.raise_for_status()
+    content_type = response.headers.get('Content-Type', '')
+    if not _useful_feed_content_type(content_type, feed_type):
+        raise ValueError(f"Unexpected {feed_type.upper()} content type: {content_type}")
+
+    declared_length = response.headers.get('Content-Length')
+    if declared_length:
+        try:
+            content_length = int(declared_length)
+        except ValueError:
+            content_length = None
+        if content_length is not None and content_length > max_bytes:
+            raise ValueError(f"Feed response exceeds {max_bytes} byte limit")
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024, decode_unicode=False):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"Feed response exceeds {max_bytes} byte limit")
+        chunks.append(chunk)
+    return b''.join(chunks)
 
 
 class BotDataViewer:
@@ -6712,6 +6750,27 @@ class BotDataViewer:
             url_policy = SafeUrlPolicy(allow_private=allow_private_feeds)
             if not url_policy.validate(feed_url):
                 raise ValueError("Invalid or unsafe feed URL")
+            max_response_bytes = max(
+                1024,
+                self.config.getint(
+                    'Feed_Manager',
+                    'max_response_bytes',
+                    fallback=DEFAULT_MAX_FEED_RESPONSE_BYTES,
+                )
+                if self.config.has_section('Feed_Manager')
+                else DEFAULT_MAX_FEED_RESPONSE_BYTES,
+            )
+            max_parsed_items = max(
+                1,
+                self.config.getint(
+                    'Feed_Manager',
+                    'max_parsed_items',
+                    fallback=DEFAULT_MAX_PARSED_FEED_ITEMS,
+                )
+                if self.config.has_section('Feed_Manager')
+                else DEFAULT_MAX_PARSED_FEED_ITEMS,
+            )
+            preview_parse_limit = min(20, max_parsed_items)
 
             if feed_type == 'rss':
                 # Fetch RSS feed
@@ -6723,12 +6782,18 @@ class BotDataViewer:
                         policy=url_policy,
                         timeout=30,
                         headers={'User-Agent': 'MeshCoreBot/1.0 FeedManager'},
+                        stream=True,
                     )
-                response.raise_for_status()
-                parsed = feedparser.parse(response.text)
+                    with closing(response):
+                        content = _read_limited_requests_response(
+                            response,
+                            max_bytes=max_response_bytes,
+                            feed_type='rss',
+                        )
+                parsed = feedparser.parse(content)
 
                 # Get items (we'll filter and limit later)
-                for entry in parsed.entries[:20]:  # Fetch more items to account for filtering
+                for entry in parsed.entries[:preview_parse_limit]:
                     # Parse published date
                     published = None
                     if hasattr(entry, 'published_parsed') and entry.published_parsed:
@@ -6763,15 +6828,21 @@ class BotDataViewer:
                         params=params,
                         json=body if method == 'POST' else None,
                         timeout=30,
+                        stream=True,
                     )
-                response.raise_for_status()
+                    with closing(response):
+                        content = _read_limited_requests_response(
+                            response,
+                            max_bytes=max_response_bytes,
+                            feed_type='api',
+                        )
 
                 # Try to parse JSON, handle cases where response might be a string
                 try:
-                    data = response.json()
-                except ValueError:
+                    data = json.loads(content)
+                except (UnicodeDecodeError, json.JSONDecodeError):
                     # If JSON parsing fails, try to get text and see if it's an error message
-                    text = response.text
+                    text = content[:200].decode('utf-8', errors='replace')
                     raise Exception(f"API returned non-JSON response: {text[:200]}")
 
                 # Check if response is an error message (string)
@@ -6838,7 +6909,7 @@ class BotDataViewer:
                             return default
                     return value if value is not None else default
 
-                for item_data in items_data[:20]:  # Fetch more items to account for filtering
+                for item_data in items_data[:preview_parse_limit]:
                     # Ensure item_data is a dict
                     if not isinstance(item_data, dict):
                         # If it's not a dict, try to convert or skip

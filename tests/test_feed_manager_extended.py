@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from configparser import ConfigParser
 from datetime import datetime, timezone
@@ -50,8 +51,15 @@ def _fake_aiohttp_response(*, text_body: str | None = None, json_body: dict | li
     """Build a minimal aiohttp response used by the safe request helper."""
     resp = Mock()
     resp.status = 200
-    resp.headers = {}
+    body = text_body.encode() if text_body is not None else json.dumps(json_body).encode()
+    content_type = 'application/rss+xml' if text_body is not None else 'application/json'
+    resp.headers = {'Content-Type': content_type}
     resp.release = Mock()
+
+    async def chunks():
+        yield body
+
+    resp.content.iter_chunked = Mock(return_value=chunks())
     if text_body is not None:
         resp.text = AsyncMock(return_value=text_body)
     if json_body is not None:
@@ -383,6 +391,119 @@ class TestProcessRssFeed:
         assert len(items) == 1
         assert items[0]["title"] == "New"
 
+    @pytest.mark.asyncio
+    async def test_skips_item_already_waiting_in_queue(self, fm_with_db):
+        fm = fm_with_db
+        rss = """<rss version="2.0"><channel>
+<item><title>Queued</title><guid>queued-1</guid></item>
+<item><title>New</title><guid>new-1</guid></item>
+</channel></rss>"""
+        fm.session = Mock()
+        fm.session.request = AsyncMock(return_value=_fake_aiohttp_response(text_body=rss))
+        fm.session.closed = False
+        fm._url_policy.validate_async = AsyncMock(return_value=True)
+        _seed_feed_subscription(fm.bot.db_manager, feed_id=1)
+        with fm.bot.db_manager.connection() as conn:
+            conn.execute(
+                """INSERT INTO feed_message_queue
+                   (feed_id, channel_name, message, item_id, item_title, priority)
+                   VALUES (1, 'general', 'pending', 'queued-1', 'Queued', 0)"""
+            )
+            conn.commit()
+
+        items = await fm.process_rss_feed(
+            {"id": 1, "feed_url": "http://example.com/feed.xml"}
+        )
+
+        assert [item["id"] for item in items] == ["new-1"]
+
+
+class TestFeedConcurrencyAndLimits:
+    @pytest.mark.asyncio
+    async def test_concurrent_polls_for_same_feed_are_serialized(self, fm_with_db):
+        fm = fm_with_db
+        active = 0
+        max_active = 0
+
+        async def poll_once(_feed):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+
+        fm._poll_feed_locked = AsyncMock(side_effect=poll_once)
+        feed = {"id": 42}
+        await asyncio.gather(fm.poll_feed(feed), fm.poll_feed(feed))
+
+        assert max_active == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_queue_attempts_insert_one_row(self, fm_with_db):
+        fm = fm_with_db
+        _seed_feed_subscription(fm.bot.db_manager, feed_id=1)
+        feed = {"id": 1, "channel_name": "general"}
+        item = {"id": "concurrent-id", "title": "Concurrent"}
+
+        results = await asyncio.gather(
+            *[
+                asyncio.to_thread(fm._queue_feed_message, feed, item, f"message-{i}")
+                for i in range(6)
+            ]
+        )
+
+        assert sum(results) == 1
+        with fm.bot.db_manager.connection() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM feed_message_queue WHERE item_id = 'concurrent-id'"
+            ).fetchone()[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_chunked_decompressed_body_over_limit_is_rejected(self, fm_with_db):
+        fm = fm_with_db
+        fm.max_response_bytes = 5
+        response = Mock()
+        response.headers = {"Content-Type": "application/rss+xml"}
+
+        async def chunks():
+            yield b"123"
+            yield b"456"
+
+        response.content.iter_chunked = Mock(return_value=chunks())
+        with pytest.raises(ValueError, match="exceeds 5 byte limit"):
+            await fm._read_limited_response(response, "rss")
+
+    @pytest.mark.asyncio
+    async def test_oversized_content_length_is_rejected_before_read(self, fm_with_db):
+        fm = fm_with_db
+        fm.max_response_bytes = 5
+        response = Mock()
+        response.headers = {
+            "Content-Type": "application/json",
+            "Content-Length": "6",
+        }
+        with pytest.raises(ValueError, match="exceeds 5 byte limit"):
+            await fm._read_limited_response(response, "api")
+
+    @pytest.mark.asyncio
+    async def test_unrelated_content_type_is_rejected(self, fm_with_db):
+        response = Mock()
+        response.headers = {"Content-Type": "image/png"}
+        with pytest.raises(ValueError, match="Unexpected RSS content type"):
+            await fm_with_db._read_limited_response(response, "rss")
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_serializes_same_normalized_host(self, fm_with_db):
+        fm = fm_with_db
+        fm.rate_limit_seconds = 0.02
+        assert fm._normalized_host("HTTPS://Example.COM.:443/a") == "example.com"
+        started = asyncio.get_running_loop().time()
+        await asyncio.gather(
+            fm._wait_for_rate_limit("example.com"),
+            fm._wait_for_rate_limit("example.com"),
+        )
+        assert asyncio.get_running_loop().time() - started >= 0.015
+
 
 class TestProcessApiFeed:
     @pytest.mark.asyncio
@@ -443,6 +564,27 @@ class TestProcessApiFeed:
         items = await fm.process_api_feed(feed)
         assert len(items) == 1
         assert items[0]["title"] == "Zed"
+
+    @pytest.mark.asyncio
+    async def test_caps_number_of_parsed_items(self, fm_with_db):
+        fm = fm_with_db
+        fm.max_parsed_items = 2
+        payload = [
+            {"id": str(i), "title": f"Item {i}", "created_at": 1600000000 + i}
+            for i in range(5)
+        ]
+        fm.session = Mock()
+        fm.session.request = AsyncMock(
+            return_value=_fake_aiohttp_response(json_body=payload)
+        )
+        fm.session.closed = False
+        fm._url_policy.validate_async = AsyncMock(return_value=True)
+
+        items = await fm.process_api_feed(
+            {"id": 4, "feed_url": "http://api.example.com/items", "api_config": "{}"}
+        )
+
+        assert len(items) == 2
 
 
 class TestQueueAndProcessMessageQueue:
