@@ -182,3 +182,6 @@ local/service_plugins/*
 !local/service_plugins/.gitkeep
 
 .claude/settings.local.json
+
+# Local engineering audit reports (may contain security-sensitive findings)
+/PROJECT_REVIEW_*.md

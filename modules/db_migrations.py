@@ -530,6 +530,28 @@ def _m0014_observed_paths_multibyte_covering_index(cursor: sqlite3.Cursor) -> No
     )
 
 
+def _m0015_channel_operations_claimed_at(cursor: sqlite3.Cursor) -> None:
+    """Record when a queued hardware/config operation is durably claimed.
+
+    A ``processing`` row is deliberately not auto-requeued: after a process
+    crash the device may already have applied the operation, so retrying it
+    automatically could execute a non-idempotent command twice.  ``claimed_at``
+    gives operators enough information to diagnose and explicitly resolve such
+    an ambiguous operation.
+    """
+    if _table_exists(cursor, "channel_operations"):
+        _add_column(cursor, "channel_operations", "claimed_at", "TIMESTAMP")
+
+
+def _m0016_channel_operations_claim_owner(cursor: sqlite3.Cursor) -> None:
+    """Persist enough local-process identity to recover only provably dead claims."""
+    if not _table_exists(cursor, "channel_operations"):
+        return
+    _add_column(cursor, "channel_operations", "claim_owner_host", "TEXT")
+    _add_column(cursor, "channel_operations", "claim_owner_pid", "INTEGER")
+    _add_column(cursor, "channel_operations", "claim_owner_boot_id", "TEXT")
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -551,6 +573,8 @@ MIGRATIONS: list[MigrationEntry] = [
     (12, "purging_log: add details column", _m0012_purging_log_details_column),
     (13, "observed_paths: advert covering index for contacts page", _m0013_observed_paths_advert_covering_index),
     (14, "observed_paths: multibyte covering index for mesh graph", _m0014_observed_paths_multibyte_covering_index),
+    (15, "channel_operations: claimed_at", _m0015_channel_operations_claimed_at),
+    (16, "channel_operations: claim owner identity", _m0016_channel_operations_claim_owner),
 ]
 
 

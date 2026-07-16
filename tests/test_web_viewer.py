@@ -665,6 +665,37 @@ class TestChannelRoutes:
         resp = client.get("/api/channel-operations/99999")
         assert resp.status_code in (200, 404)
 
+    def test_api_interrupted_operation_is_terminal_and_exposes_claim_time(
+        self, client, viewer
+    ):
+        with sqlite3.connect(viewer.db_path) as conn:
+            cursor = conn.execute(
+                """INSERT INTO channel_operations
+                   (operation_type, status, error_message, claimed_at, processed_at)
+                   VALUES ('remove', 'interrupted', 'Verify device state',
+                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+            )
+            operation_id = cursor.lastrowid
+            conn.commit()
+
+        resp = client.get(f"/api/channel-operations/{operation_id}")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "interrupted"
+        assert data["error_message"] == "Verify device state"
+        assert data["claimed_at"] is not None
+
+    def test_shared_operation_poller_recognizes_interrupted_as_terminal(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "modules/web_viewer/static/js/channel_operations.js"
+        ).read_text(encoding="utf-8")
+
+        assert source.count("result.status === 'interrupted'") == 1
+        assert source.count("result2.status === 'interrupted'") == 1
+        assert source.count("result3.status === 'interrupted'") == 1
+
 
 # ===========================================================================
 # Feeds routes
@@ -2122,29 +2153,32 @@ class TestRestoreRoute:
                           json={"db_file": str(bad)},
                           content_type="application/json")
         assert resp.status_code == 400
-        assert "valid SQLite" in resp.get_json()["error"]
+        assert "sqlite" in resp.get_json()["error"].lower()
 
-    def test_valid_sqlite_restore_returns_200(self, viewer, tmp_path):
-        """Returns 200 with warning when a valid SQLite backup is restored."""
+    def test_valid_sqlite_restore_is_staged_without_replacing_active_db(self, viewer, tmp_path):
+        """Returns 202 and stages a valid MeshCore backup for service restart."""
         import sqlite3 as _sql
         backup_dir = tmp_path / "backups"
         backup_dir.mkdir()
         viewer.db_manager.set_metadata('maint.db_backup_dir', str(backup_dir))
         backup = backup_dir / "backup.db"
-        conn = _sql.connect(str(backup))
-        conn.execute("CREATE TABLE t (id INTEGER)")
-        conn.commit()
-        conn.close()
-        # Patch db_path to a temp destination so the real test DB is not overwritten
-        dest = str(tmp_path / "restored.db")
-        with patch.object(viewer, "db_path", dest):
+        with _sql.connect(viewer.db_path) as source_conn:
+            with _sql.connect(str(backup)) as destination_conn:
+                source_conn.backup(destination_conn)
+        # Patch db_path to a temp destination and verify the request does not create it.
+        dest = tmp_path / "restored.db"
+        with patch.object(viewer, "db_path", str(dest)):
             with viewer.app.test_client() as c:
                 resp = c.post("/api/maintenance/restore",
                               json={"db_file": str(backup)},
                               content_type="application/json")
-        assert resp.status_code == 200
+        assert resp.status_code == 202
         data = resp.get_json()
         assert data["success"] is True
+        assert data["requires_restart"] is True
+        assert data["pending_path"] == str(tmp_path / ".restored.db.restore-pending")
+        assert not dest.exists()
+        assert Path(data["pending_path"]).exists()
         assert "warning" in data
         assert "Restart" in data["warning"]
 

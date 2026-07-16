@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -31,6 +32,7 @@ from flask import (
     Response,
     abort,
     current_app,
+    g,
     jsonify,
     make_response,
     redirect,
@@ -42,6 +44,11 @@ from flask import (
 )
 from flask_socketio import SocketIO, disconnect, emit
 
+from modules.database_restore import (
+    DEFAULT_MAX_RESTORE_BYTES,
+    DatabaseRestoreError,
+    stage_database_restore,
+)
 from modules.ini_writer import update_ini_values
 from modules.security_utils import (
     VALID_JOURNAL_MODES,
@@ -621,6 +628,11 @@ class BotDataViewer:
         ])
 
         @self.app.before_request
+        def create_csp_nonce():
+            """Create a per-response nonce for templates migrated off inline-script CSP."""
+            g.csp_nonce = secrets.token_urlsafe(24)
+
+        @self.app.before_request
         def require_auth():
             if not self.web_viewer_password:
                 return  # Auth disabled — no password configured
@@ -664,10 +676,33 @@ class BotDataViewer:
             response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
             # Allow CDNs used by templates (base.html, login.html, mesh.html).
             # Without these hosts, browsers block external CSS/JS/fonts (not CSRF).
+            # The highest-risk admin screens have migrated their inline handlers
+            # and authorize their remaining template scripts with a per-request
+            # nonce. Other legacy screens retain unsafe-inline until their inline
+            # scripts/handlers are migrated, rather than silently breaking them.
+            nonce_hardened_endpoints = {
+                'index',
+                'feeds',
+                'config_page',
+                'radio',
+                'realtime',
+                'contacts',
+                'stats',
+                'plugins_page',
+                'greeter',
+                'logs',
+                'multibyte_rollout',
+                'mesh',
+                'api_explorer',
+            }
+            if request.endpoint in nonce_hardened_endpoints:
+                script_source = f"script-src 'self' 'nonce-{g.csp_nonce}' "
+            else:
+                script_source = "script-src 'self' 'unsafe-inline' "
             response.headers['Content-Security-Policy'] = (
                 "default-src 'self'; "
-                "script-src 'self' 'unsafe-inline' "
-                "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
+                + script_source
+                + "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
                 "style-src 'self' 'unsafe-inline' "
                 "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
                 "img-src 'self' data: https://*.tile.openstreetmap.org "
@@ -1535,10 +1570,11 @@ class BotDataViewer:
 
         @self.app.route('/api/maintenance/restore', methods=['POST'])
         def api_maintenance_restore():
-            """Restore DB from a backup file.
+            """Stage a verified DB backup for the next full service restart.
 
             Body: {"db_file": "/absolute/path/to/backup.db"}
-            The active DB is overwritten; the caller must restart the bot.
+            The active DB is never modified by this request.  Normal bot startup
+            applies the sibling pending file before any DB connection is opened.
             """
             try:
                 data = request.get_json(silent=True) or {}
@@ -1574,25 +1610,37 @@ class BotDataViewer:
 
                 if not src.exists():
                     return jsonify({'error': f'File not found: {db_file}'}), 400
-                # Validate it is a real SQLite file by checking the magic header
-                _SQLITE_MAGIC = b"SQLite format 3\x00"
                 try:
-                    with open(str(src), 'rb') as _fh:
-                        _header = _fh.read(16)
-                    if _header != _SQLITE_MAGIC:
-                        raise ValueError("bad magic")
-                except Exception:
-                    return jsonify({'error': f'Not a valid SQLite file: {db_file}'}), 400
-                # Copy to active DB path
-                import shutil
-                shutil.copy2(str(src), self.db_path)
-                self.logger.info(f"Database restored from {src} to {self.db_path}")
+                    max_restore_bytes = self.config.getint(
+                        'Web_Viewer',
+                        'restore_max_bytes',
+                        fallback=DEFAULT_MAX_RESTORE_BYTES,
+                    )
+                    pending = stage_database_restore(
+                        src,
+                        self.db_path,
+                        max_bytes=max_restore_bytes,
+                    )
+                except (DatabaseRestoreError, OSError, ValueError) as exc:
+                    self.logger.warning("Database restore staging rejected for %s: %s", src, exc)
+                    return jsonify({'error': str(exc)}), 400
+
+                self.logger.warning(
+                    "Database restore staged from %s at %s; a full service restart is required",
+                    src,
+                    pending,
+                )
                 return jsonify({
                     'success': True,
-                    'restored_from': db_file,
+                    'staged_from': db_file,
+                    'pending_path': str(pending),
                     'active_db': self.db_path,
-                    'warning': 'Restart the bot for the restored database to take effect.',
-                })
+                    'requires_restart': True,
+                    'warning': (
+                        'Restore verified and staged. Restart the complete MeshCore Bot service '
+                        'to apply it before any database writer starts.'
+                    ),
+                }), 202
             except Exception as e:
                 self.logger.error(f"Error in restore: {e}", exc_info=True)
                 return jsonify({'error': str(e)}), 500
@@ -3430,7 +3478,7 @@ class BotDataViewer:
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT status, error_message, result_data, processed_at
+                    SELECT status, error_message, result_data, processed_at, claimed_at
                     FROM channel_operations
                     WHERE id = ?
                 ''', (operation_id,))
@@ -3440,12 +3488,13 @@ class BotDataViewer:
                 if not result:
                     return jsonify({'error': 'Operation not found'}), 404
 
-                status, error_msg, result_data, processed_at = result
+                status, error_msg, result_data, processed_at, claimed_at = result
 
                 return jsonify({
                     'operation_id': operation_id,
                     'status': status,
                     'error_message': error_msg,
+                    'claimed_at': claimed_at,
                     'processed_at': processed_at,
                     'result_data': json.loads(result_data) if result_data else None
                 })
