@@ -530,6 +530,62 @@ def _m0014_observed_paths_multibyte_covering_index(cursor: sqlite3.Cursor) -> No
     )
 
 
+def _m0015_channel_operations_claimed_at(cursor: sqlite3.Cursor) -> None:
+    """Record when a queued hardware/config operation is durably claimed.
+
+    A ``processing`` row is deliberately not auto-requeued: after a process
+    crash the device may already have applied the operation, so retrying it
+    automatically could execute a non-idempotent command twice.  ``claimed_at``
+    gives operators enough information to diagnose and explicitly resolve such
+    an ambiguous operation.
+    """
+    if _table_exists(cursor, "channel_operations"):
+        _add_column(cursor, "channel_operations", "claimed_at", "TIMESTAMP")
+
+
+def _m0016_channel_operations_claim_owner(cursor: sqlite3.Cursor) -> None:
+    """Persist enough local-process identity to recover only provably dead claims."""
+    if not _table_exists(cursor, "channel_operations"):
+        return
+    _add_column(cursor, "channel_operations", "claim_owner_host", "TEXT")
+    _add_column(cursor, "channel_operations", "claim_owner_pid", "INTEGER")
+    _add_column(cursor, "channel_operations", "claim_owner_boot_id", "TEXT")
+
+
+def _m0017_feed_queue_item_uniqueness(cursor: sqlite3.Cursor) -> None:
+    """Deduplicate identifiable queue items and prevent future duplicates.
+
+    Blank and NULL item IDs deliberately remain unconstrained: without a stable
+    provider identifier they cannot safely be treated as the same feed item.
+    For duplicate valid IDs, retain a sent row when one exists (otherwise the
+    oldest queued row) so migration does not resurrect already-delivered work.
+    """
+    if not _table_exists(cursor, "feed_message_queue"):
+        return
+    cursor.execute(
+        """
+        DELETE FROM feed_message_queue
+        WHERE item_id IS NOT NULL AND trim(item_id) <> ''
+          AND id NOT IN (
+              SELECT COALESCE(
+                         MIN(CASE WHEN sent_at IS NOT NULL THEN id END),
+                         MIN(id)
+                     )
+              FROM feed_message_queue
+              WHERE item_id IS NOT NULL AND trim(item_id) <> ''
+              GROUP BY feed_id, item_id
+          )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fmq_feed_item_unique
+        ON feed_message_queue(feed_id, item_id)
+        WHERE item_id IS NOT NULL AND trim(item_id) <> ''
+        """
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration registry — append new entries here, never remove or reorder.
 # ---------------------------------------------------------------------------
@@ -551,6 +607,9 @@ MIGRATIONS: list[MigrationEntry] = [
     (12, "purging_log: add details column", _m0012_purging_log_details_column),
     (13, "observed_paths: advert covering index for contacts page", _m0013_observed_paths_advert_covering_index),
     (14, "observed_paths: multibyte covering index for mesh graph", _m0014_observed_paths_multibyte_covering_index),
+    (15, "channel_operations: claimed_at", _m0015_channel_operations_claimed_at),
+    (16, "channel_operations: claim owner identity", _m0016_channel_operations_claim_owner),
+    (17, "feed_message_queue: unique identifiable items", _m0017_feed_queue_item_uniqueness),
 ]
 
 
