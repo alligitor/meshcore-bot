@@ -9,6 +9,7 @@ city | optional repeater / region capitals / neighborhoods) with opt-in
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, Optional, Union
@@ -18,11 +19,8 @@ import requests
 from .region_capitals import REGION_DEFAULT_NOTE, region_capital_query
 from .utils import (
     abbreviate_location,
-    geocode_city,
     geocode_city_sync,
-    geocode_zipcode,
     geocode_zipcode_sync,
-    is_country_name,
     normalize_us_state,
     rate_limited_nominatim_geocode_sync,
     rate_limited_nominatim_reverse_sync,
@@ -40,10 +38,28 @@ _COUNTRY_WORD_INDICATORS = frozenset({
     "spain", "australia", "japan", "china", "india", "brazil",
 })
 
-_COUNTRY_NICKNAMES = frozenset({
-    "uk", "uae", "united kingdom", "south korea", "north korea", "czech republic",
-    "sri lanka", "south africa", "puerto rico", "san marino", "vatican",
+# Explicit allowlist for "city, country" intl geocode shortcut (legacy AQI list).
+# Do not use utils.is_country_name here — its len>2 heuristic is too broad.
+_COUNTRY_TOKENS = frozenset({
+    "canada", "mexico", "uk", "united kingdom", "france", "germany", "italy",
+    "spain", "australia", "japan", "china", "india", "brazil", "uae", "russia",
+    "korea", "thailand", "singapore", "egypt", "turkey", "israel", "south africa",
+    "kenya", "nigeria", "argentina", "peru", "chile", "colombia", "venezuela",
+    "cuba", "jamaica", "puerto rico", "iceland", "norway", "sweden", "denmark",
+    "finland", "poland", "czech republic", "hungary", "romania", "bulgaria",
+    "croatia", "serbia", "greece", "portugal", "ireland", "belgium",
+    "netherlands", "switzerland", "austria", "monaco", "andorra", "san marino",
+    "vatican", "luxembourg", "malta", "cyprus", "albania", "macedonia",
+    "montenegro", "bosnia", "slovenia", "slovakia", "lithuania", "latvia",
+    "estonia", "belarus", "ukraine", "moldova", "georgia", "armenia",
+    "azerbaijan", "kazakhstan", "uzbekistan", "kyrgyzstan", "tajikistan",
+    "turkmenistan", "afghanistan", "pakistan", "bangladesh", "sri lanka",
+    "nepal", "bhutan", "myanmar", "laos", "cambodia", "vietnam", "malaysia",
+    "indonesia", "philippines", "taiwan", "north korea", "south korea",
+    "mongolia",
 })
+
+GEOCODE_CACHE_CAP = 256
 
 # Bare place → "city, country" (full-string match, including multi-word keys).
 INTERNATIONAL_CITIES: dict[str, str] = {
@@ -243,6 +259,7 @@ class ResolvedLocation:
     display_name: Optional[str]
     address_info: Optional[dict]
     error: Optional[str] = None
+    error_detail: Optional[str] = None
     region_note: Optional[str] = None
 
 
@@ -336,6 +353,15 @@ def reverse_geocode_region(
     return city, suffix
 
 
+def cache_put(
+    cache: dict, key: Any, value: Any, *, cap: int = GEOCODE_CACHE_CAP
+) -> None:
+    """Insert into a size-capped cache, evicting the oldest entry when full."""
+    if key not in cache and len(cache) >= cap:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
 def zip_to_city_string(
     zipcode: str, *, timeout: int = 10, cache: Optional[dict[str, str]] = None, logger: Any = None
 ) -> Optional[str]:
@@ -356,21 +382,32 @@ def zip_to_city_string(
         if logger:
             logger.debug(f"Zippopotam ZIP lookup failed for {z}: {e}")
     if name and cache is not None:
-        cache[z] = name
+        cache_put(cache, z, name)
     return name
 
 
 def parse_coordinates(raw: str) -> Optional[tuple[float, float]]:
+    """Return (lat, lon) when valid; None for bad format or out-of-range."""
+    coords, _error, _detail = parse_coordinates_detailed(raw)
+    return coords
+
+
+def parse_coordinates_detailed(
+    raw: str,
+) -> tuple[Optional[tuple[float, float]], Optional[str], Optional[str]]:
+    """Return ((lat, lon)|None, error_code|None, error_detail|None)."""
     if not COORD_RE.match(raw or ""):
-        return None
+        return None, "invalid_coordinates", None
     try:
         a, b = raw.split(",", 1)
         lat, lon = float(a.strip()), float(b.strip())
     except ValueError:
-        return None
-    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-        return None
-    return lat, lon
+        return None, "invalid_coordinates", None
+    if not (-90 <= lat <= 90):
+        return None, "invalid_latitude", str(lat)
+    if not (-180 <= lon <= 180):
+        return None, "invalid_longitude", str(lon)
+    return (lat, lon), None, None
 
 
 def _rewrite_space_country(location: str) -> str:
@@ -419,10 +456,7 @@ def get_neighborhood_queries(city: str) -> list[str]:
 
 
 def _is_country_token(text: str) -> bool:
-    t = text.strip().lower()
-    if t in _COUNTRY_NICKNAMES:
-        return True
-    return is_country_name(text)
+    return text.strip().lower() in _COUNTRY_TOKENS
 
 
 def _address_from_result(bot: Any, lat: float, lon: float, timeout: int) -> dict:
@@ -751,11 +785,12 @@ def resolve_location(
             query, _ = classify_location(query, use_international_cities=True)
 
     if location_type == "coordinates":
-        parsed = parse_coordinates(query)
-        if not parsed:
+        parsed, err, detail = parse_coordinates_detailed(query)
+        if err or not parsed:
             return ResolvedLocation(
                 lat=None, lon=None, location_type="coordinates", query=query,
-                display_name=None, address_info=None, error="invalid_coordinates",
+                display_name=None, address_info=None,
+                error=err or "invalid_coordinates", error_detail=detail,
             )
         lat, lon = parsed
         display = _display_from_address(
@@ -818,69 +853,9 @@ async def resolve_location_async(
     *,
     options: Optional[ResolveOptions] = None,
 ) -> ResolvedLocation:
-    """Async twin for prefix/solarforecast; falls back to sync best-effort when needed."""
+    """Async twin of ``resolve_location`` (same behavior via thread offload)."""
     opts = options or OPTIONS_PREFIX
-    if raw is None or not str(raw).strip():
-        return resolve_location(bot, raw, options=opts)
-
-    text = str(raw).strip()
-    if opts.allow_repeater_names:
-        hit = lookup_repeater_lat_lon(bot, text)
-        if hit:
-            lat, lon, name = hit
-            return ResolvedLocation(
-                lat=lat, lon=lon, location_type="repeater", query=name,
-                display_name=name, address_info=None,
-            )
-
-    default_state = opts.default_state or bot.config.get("Weather", "default_state", fallback="")
-    default_country = opts.default_country or bot.config.get("Weather", "default_country", fallback="US")
-    query, location_type = classify_location(
-        text, use_international_cities=opts.use_international_cities
-    )
-    region_note = None
-    if location_type == "city" and opts.use_region_capitals:
-        cap = region_capital_query(query)
-        if cap:
-            query, region_note = cap, REGION_DEFAULT_NOTE
-
-    if location_type == "coordinates":
-        return resolve_location(bot, text, options=opts)
-
-    if location_type == "zipcode" and not opts.use_structured_zip:
-        lat, lon = await geocode_zipcode(
-            bot, query.strip(), default_country=default_country, timeout=opts.timeout
-        )
-        if lat is None or lon is None:
-            return ResolvedLocation(
-                lat=None, lon=None, location_type="zipcode", query=query,
-                display_name=None, address_info=None, error="no_location_zipcode",
-            )
-        return ResolvedLocation(
-            lat=lat, lon=lon, location_type="zipcode", query=query.strip(),
-            display_name=query.strip(), address_info=None, region_note=region_note,
-        )
-
-    if (
-        location_type == "city"
-        and not opts.use_neighborhoods
-        and "," not in query
-    ):
-        lat, lon, address_info = await geocode_city(
-            bot, query, default_state=default_state, default_country=default_country,
-            include_address_info=opts.include_address_info, timeout=opts.timeout,
-        )
-        if lat is None or lon is None:
-            return ResolvedLocation(
-                lat=None, lon=None, location_type="city", query=query,
-                display_name=None, address_info=None, error="no_location_city",
-            )
-        return ResolvedLocation(
-            lat=lat, lon=lon, location_type="city", query=query,
-            display_name=query, address_info=address_info, region_note=region_note,
-        )
-
-    return resolve_location(bot, text, options=opts)
+    return await asyncio.to_thread(resolve_location, bot, raw, options=opts)
 
 
 def resolve_with_message_fallbacks(

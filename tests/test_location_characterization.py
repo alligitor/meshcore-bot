@@ -104,14 +104,21 @@ def aqi_cmd():
 
 @pytest.mark.unit
 class TestAqiLocationClassification:
-    """Lock AQI's front-door location typing and rewrites."""
+    """Lock AQI's front-door location typing and rewrites.
+
+    execute() passes the raw user location into get_aqi_for_location; typing and
+    intl rewrites happen inside resolve_location / classify_location.
+    """
 
     def _capture(self, cmd, content: str) -> tuple[str, str]:
+        from modules.location import classify_location
+
         with patch.object(cmd, "get_aqi_for_location", new_callable=AsyncMock) as m:
             m.return_value = "ok"
             _run(cmd.execute(mock_message(content=content)))
             assert m.called, f"get_aqi_for_location not called for {content!r}"
-            return m.call_args[0][0], m.call_args[0][1]
+            raw = m.call_args[0][0]
+            return classify_location(raw, use_international_cities=True)
 
     def test_coordinates_basic(self, aqi_cmd):
         loc, typ = self._capture(aqi_cmd, "aqi 47.6,-122.3")
@@ -167,6 +174,12 @@ class TestAqiLocationClassification:
         loc, typ = self._capture(aqi_cmd, "aqi mexico city")
         assert typ == "city"
         assert loc == "mexico city, mexico"
+
+    def test_execute_passes_raw_location(self, aqi_cmd):
+        with patch.object(aqi_cmd, "get_aqi_for_location", new_callable=AsyncMock) as m:
+            m.return_value = "ok"
+            _run(aqi_cmd.execute(mock_message(content="aqi mexico city")))
+        assert m.call_args[0][0] == "mexico city"
 
     def test_astronomical_early_out_skips_geocode(self, aqi_cmd):
         with patch.object(aqi_cmd, "get_aqi_for_location", new_callable=AsyncMock) as m:
@@ -269,6 +282,87 @@ class TestAqiZipcodePath:
             result = _run(aqi_cmd.get_aqi_for_location("98101", "zipcode"))
         zip_geo.assert_called()
         assert result.startswith("98101:") or "ok" in result
+
+
+@pytest.mark.unit
+class TestAqiCoordinateErrors:
+    def test_invalid_latitude_message(self, aqi_cmd):
+        result = _run(aqi_cmd.get_aqi_for_location("91,0"))
+        assert result == "Invalid latitude: 91.0. Must be between -90 and 90."
+
+    def test_invalid_longitude_message(self, aqi_cmd):
+        result = _run(aqi_cmd.get_aqi_for_location("0,200"))
+        assert result == "Invalid longitude: 200.0. Must be between -180 and 180."
+
+
+@pytest.mark.unit
+class TestAqiPrefixBudget:
+    def test_under_budget_includes_display_name(self, aqi_cmd):
+        from modules.location import ResolvedLocation
+
+        resolved = ResolvedLocation(
+            lat=47.6, lon=-122.3, location_type="city", query="seattle",
+            display_name="Seattle, WA",
+            address_info={"city": "Seattle", "state": "Washington", "country": "United States"},
+        )
+        with patch("modules.commands.aqi_command.resolve_location", return_value=resolved), \
+             patch.object(aqi_cmd, "get_openmeteo_aqi", return_value="🟢 20"):
+            result = _run(aqi_cmd.get_aqi_for_location("seattle"))
+        assert result.startswith("Seattle, WA:")
+
+    def test_over_budget_same_state_omits_prefix(self, aqi_cmd):
+        from modules.location import ResolvedLocation
+
+        aqi_cmd.default_state = "WA"
+        long_aqi = "X" * 120
+        resolved = ResolvedLocation(
+            lat=47.6, lon=-122.3, location_type="city", query="seattle",
+            display_name="Seattle, WA",
+            address_info={"city": "Seattle", "state": "Washington", "country": "United States"},
+        )
+        with patch("modules.commands.aqi_command.resolve_location", return_value=resolved), \
+             patch.object(aqi_cmd, "get_openmeteo_aqi", return_value=long_aqi):
+            result = _run(aqi_cmd.get_aqi_for_location("seattle"))
+        assert result == long_aqi
+        assert not result.startswith("Seattle")
+
+    def test_over_budget_different_state_keeps_short_prefix(self, aqi_cmd):
+        from modules.location import ResolvedLocation
+
+        aqi_cmd.default_state = "WA"
+        long_aqi = "X" * 120
+        resolved = ResolvedLocation(
+            lat=30.27, lon=-97.74, location_type="city", query="austin",
+            display_name="Austin, TX",
+            address_info={"city": "Austin", "state": "Texas", "country": "United States"},
+        )
+        with patch("modules.commands.aqi_command.resolve_location", return_value=resolved), \
+             patch.object(aqi_cmd, "get_openmeteo_aqi", return_value=long_aqi):
+            result = _run(aqi_cmd.get_aqi_for_location("austin"))
+        assert result.endswith(long_aqi)
+        assert result.startswith("Austin")
+
+
+@pytest.mark.unit
+class TestAqiIntlResolveWiring:
+    def test_london_rewrites_via_resolve(self, aqi_cmd):
+        loc = _make_geopy_location(
+            51.5, -0.12, "London, UK", {"city": "London", "country": "United Kingdom"}
+        )
+        with patch(
+            "modules.location.rate_limited_nominatim_geocode_sync", return_value=loc
+        ) as geo, patch(
+            "modules.location.geocode_city_sync", return_value=(None, None, None)
+        ), patch(
+            "modules.location.rate_limited_nominatim_reverse_sync", return_value=loc
+        ), patch.object(aqi_cmd, "get_openmeteo_aqi", return_value="ok"):
+            result = _run(aqi_cmd.get_aqi_for_location("london"))
+        assert "ok" in result
+        # Intl rewrite should query "london, uk" on the country path
+        assert any(
+            isinstance(c[0][1], str) and "london" in c[0][1].lower()
+            for c in geo.call_args_list
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -4,22 +4,27 @@ AQI command for the MeshCore Bot
 Provides Air Quality Index information using OpenMeteo API
 """
 
+from typing import Optional
+
 import openmeteo_requests
 import requests_cache
 from retry_requests import retry
 
-from ..models import MeshMessage
 from ..location import (
+    OPTIONS_AQI,
     ResolveOptions,
-    classify_location,
     geocode_city_best_effort,
-    get_neighborhood_queries as location_neighborhood_queries,
     resolve_location,
 )
+from ..location import (
+    get_neighborhood_queries as location_neighborhood_queries,
+)
+from ..models import MeshMessage
 from ..utils import (
     abbreviate_location,
     get_nominatim_geocoder,
     is_valid_timezone,
+    normalize_us_state,
 )
 from .base_command import BaseCommand
 
@@ -178,16 +183,12 @@ class AqiCommand(BaseCommand):
             await self.send_response(message, self.astronomical_responses[location_lower])
             return True
 
-        location, location_type = classify_location(
-            location, use_international_cities=True
-        )
-
         try:
             # Record execution for this user
             self.record_execution(message.sender_id)
 
-            # Get AQI data for the location
-            aqi_data = await self.get_aqi_for_location(location, location_type)
+            # Get AQI data for the location (single resolve with intl rewrite)
+            aqi_data = await self.get_aqi_for_location(location)
 
             # Send the response
             await self.send_response(message, aqi_data)
@@ -198,12 +199,29 @@ class AqiCommand(BaseCommand):
             await self.send_response(message, f"Error getting AQI data: {e}")
             return True
 
-    async def get_aqi_for_location(self, location: str, location_type: str) -> str:
-        """Get AQI data for a location (city or coordinates).
+    def _resolved_state_differs_from_default(self, address_info: Optional[dict]) -> bool:
+        """True when reverse-geocode state/country differs from bot default_state."""
+        if not address_info or not self.default_state:
+            return False
+        country = address_info.get("country", "")
+        state = address_info.get("state", "")
+        default_abbr, default_full = normalize_us_state(self.default_state)
+        defaults = {d for d in (self.default_state, default_abbr, default_full) if d}
+        if country in ("United States", "US", "United States of America"):
+            abbr, full = normalize_us_state(state) if state else (None, None)
+            actuals = {a for a in (abbr, full, state) if a}
+            return bool(actuals) and actuals.isdisjoint(defaults)
+        actual_state = country or address_info.get("province") or ""
+        return bool(actual_state) and actual_state not in defaults
+
+    async def get_aqi_for_location(
+        self, location: str, location_type: Optional[str] = None
+    ) -> str:
+        """Get AQI data for a location (city, ZIP, or coordinates).
 
         Args:
-            location: Location string (city name, ZIP, or "lat,lon").
-            location_type: Type of location ("city", "zipcode", "coordinates").
+            location: Raw location string (city name, ZIP, or "lat,lon").
+            location_type: Unused; kept for call-site/test compatibility.
 
         Returns:
             str: Formatted AQI string or error message.
@@ -212,25 +230,30 @@ class AqiCommand(BaseCommand):
             opts = ResolveOptions(
                 default_state=self.default_state,
                 default_country=self.default_country,
-                use_international_cities=False,  # already applied in execute/classify
-                use_neighborhoods=True,
-                use_structured_zip=True,
-                label_style="abbreviated",
+                use_international_cities=OPTIONS_AQI.use_international_cities,
+                use_neighborhoods=OPTIONS_AQI.use_neighborhoods,
+                use_structured_zip=OPTIONS_AQI.use_structured_zip,
+                label_style=OPTIONS_AQI.label_style,
                 include_address_info=True,
                 timeout=10,
             )
-            # Pass already-classified input: resolve will re-classify coords/ZIP/city.
             resolved = resolve_location(self.bot, location, options=opts)
 
+            if resolved.error == "invalid_latitude":
+                detail = resolved.error_detail or location
+                return f"Invalid latitude: {detail}. Must be between -90 and 90."
+            if resolved.error == "invalid_longitude":
+                detail = resolved.error_detail or location
+                return f"Invalid longitude: {detail}. Must be between -180 and 180."
             if resolved.error == "invalid_coordinates":
                 return f"Invalid coordinates format: {location}. Use format: lat,lon (e.g., 47.6,-122.3)"
             if resolved.error == "no_location_zipcode":
                 return f"Could not find ZIP code '{location.strip()}'"
             if resolved.error == "no_location_city":
-                if "," in location:
-                    return f"Could not find city '{location}'"
+                if "," in (resolved.query or location):
+                    return f"Could not find city '{resolved.query or location}'"
                 region = self.default_state or self.default_country
-                return f"Could not find city '{location}' in {region}"
+                return f"Could not find city '{resolved.query or location}' in {region}"
             if resolved.lat is None or resolved.lon is None:
                 return f"Could not find location '{location}'"
 
@@ -252,11 +275,10 @@ class AqiCommand(BaseCommand):
                     location_prefix = f"{city_display}: "
                 elif location_type == "zipcode":
                     location_prefix = f"{location.strip()}: "
-                else:
-                    # Fall back to shorter abbreviation when over budget
+                elif self._resolved_state_differs_from_default(address_info):
+                    # Over budget: only keep a short prefix when outside default region
                     short = abbreviate_location(city_display, max_length=20)
-                    if len(f"{short}: {aqi_data}") <= 130:
-                        location_prefix = f"{short}: "
+                    location_prefix = f"{short}: "
             elif location_type == "zipcode":
                 location_prefix = f"{location.strip()}: "
 
