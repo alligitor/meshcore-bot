@@ -162,12 +162,8 @@ class TestAqiLocationClassification:
         assert typ == "city"
         assert loc == "tokyo, japan"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Intentional fix: full-string INTERNATIONAL_CITIES match in location.classify_location / AQI wire-up",
-    )
     def test_multiword_intl_key_rewritten(self, aqi_cmd):
-        """Desired: multi-word intl keys rewrite like single-token ones."""
+        """Multi-word intl keys rewrite like single-token ones."""
         loc, typ = self._capture(aqi_cmd, "aqi mexico city")
         assert typ == "city"
         assert loc == "mexico city, mexico"
@@ -202,7 +198,7 @@ class TestAqiNeighborhoodQueries:
 class TestAqiCityToLatLon:
     def test_uses_geocode_city_sync_for_plain_city(self, aqi_cmd):
         with patch(
-            "modules.commands.aqi_command.geocode_city_sync",
+            "modules.location.geocode_city_sync",
             return_value=(47.6, -122.3, {"city": "Seattle"}),
         ) as geo:
             lat, lon, addr = aqi_cmd.city_to_lat_lon("seattle")
@@ -214,10 +210,10 @@ class TestAqiCityToLatLon:
     def test_country_comma_path_uses_nominatim_directly(self, aqi_cmd):
         loc = _make_geopy_location(48.8566, 2.3522, "Paris, France", {"city": "Paris", "country": "France"})
         with patch(
-            "modules.commands.aqi_command.rate_limited_nominatim_geocode_sync",
+            "modules.location.rate_limited_nominatim_geocode_sync",
             return_value=loc,
         ) as geo, patch(
-            "modules.commands.aqi_command.geocode_city_sync",
+            "modules.location.geocode_city_sync",
         ) as shared:
             lat, lon, addr = aqi_cmd.city_to_lat_lon("paris, france")
         geo.assert_called()
@@ -228,10 +224,10 @@ class TestAqiCityToLatLon:
     def test_neighborhood_fallback_when_geocode_city_fails(self, aqi_cmd):
         loc = _make_geopy_location(47.69, -122.35, "Greenwood, Seattle")
         with patch(
-            "modules.commands.aqi_command.geocode_city_sync",
+            "modules.location.geocode_city_sync",
             return_value=(None, None, None),
         ), patch(
-            "modules.commands.aqi_command.rate_limited_nominatim_geocode_sync",
+            "modules.location.rate_limited_nominatim_geocode_sync",
             return_value=loc,
         ) as geo:
             lat, lon, addr = aqi_cmd.city_to_lat_lon("greenwood")
@@ -244,31 +240,30 @@ class TestAqiZipcodePath:
     def test_zip_override_98013_queries_mapped_place(self, aqi_cmd):
         loc = _make_geopy_location(47.45, -122.46, "Vashon, Washington, United States")
         with patch(
-            "modules.commands.aqi_command.rate_limited_nominatim_geocode_sync",
+            "modules.location.rate_limited_nominatim_geocode_sync",
             return_value=loc,
         ) as geo, patch.object(
             aqi_cmd, "get_openmeteo_aqi", return_value="🟢 20 (Good)"
         ), patch(
-            "modules.commands.aqi_command.rate_limited_nominatim_reverse_sync",
+            "modules.location.rate_limited_nominatim_reverse_sync",
             return_value=loc,
         ):
             result = _run(aqi_cmd.get_aqi_for_location("98013", "zipcode"))
         assert "🟢" in result or "20" in result
-        # First attempt should be the hardcoded Vashon mapping string
         first_query = geo.call_args_list[0][0][1]
         assert "Vashon" in first_query
 
     def test_zip_falls_back_to_geocode_zipcode_sync(self, aqi_cmd):
         with patch(
-            "modules.commands.aqi_command.rate_limited_nominatim_geocode_sync",
+            "modules.location.rate_limited_nominatim_geocode_sync",
             return_value=None,
         ), patch(
-            "modules.commands.aqi_command.geocode_zipcode_sync",
+            "modules.location.geocode_zipcode_sync",
             return_value=(47.6, -122.3),
         ) as zip_geo, patch.object(
             aqi_cmd, "get_openmeteo_aqi", return_value="ok"
         ), patch(
-            "modules.commands.aqi_command.rate_limited_nominatim_reverse_sync",
+            "modules.location.rate_limited_nominatim_reverse_sync",
             return_value=None,
         ):
             result = _run(aqi_cmd.get_aqi_for_location("98101", "zipcode"))
@@ -311,11 +306,6 @@ class TestWxLocationClassification:
         """Desired: surrounding whitespace does not demote ZIP to city."""
         assert _wx_classify(" 98101 ") == "zipcode"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Intentional fix: align wx ZIP regex with AQI / location.classify_location "
-               "(use ^\\s*\\d{5}\\s*$ instead of ^\\d{5}$)",
-    )
     def test_wx_execute_accepts_zip_with_whitespace(self, wx_cmd):
         """Live WxCommand.execute type-detect must treat ' 98101 ' as zipcode."""
         import inspect
