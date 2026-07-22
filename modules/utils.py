@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Mapping, Optional, Union
 
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -863,12 +863,14 @@ def get_nominatim_geocoder(user_agent: str = "meshcore-bot", timeout: int = 10) 
     return Nominatim(user_agent=user_agent, timeout=timeout)
 
 
-async def rate_limited_nominatim_geocode(bot: Any, query: str, timeout: int = 10) -> Optional[Any]:
+async def rate_limited_nominatim_geocode(
+    bot: Any, query: Union[str, Mapping[str, str]], timeout: int = 10
+) -> Optional[Any]:
     """Perform rate-limited Nominatim geocoding (forward geocoding).
 
     Args:
         bot: Bot instance (must have nominatim_rate_limiter attribute).
-        query: Location query string.
+        query: Location query string or structured Nominatim dict (e.g. postalcode).
         timeout: Request timeout in seconds.
 
     Returns:
@@ -921,12 +923,14 @@ async def rate_limited_nominatim_reverse(bot: Any, coordinates: str, timeout: in
     return result
 
 
-def rate_limited_nominatim_geocode_sync(bot: Any, query: str, timeout: int = 10) -> Optional[Any]:
+def rate_limited_nominatim_geocode_sync(
+    bot: Any, query: Union[str, Mapping[str, str]], timeout: int = 10
+) -> Optional[Any]:
     """Perform rate-limited Nominatim geocoding (synchronous version).
 
     Args:
         bot: Bot instance (must have nominatim_rate_limiter attribute).
-        query: Location query string.
+        query: Location query string or structured Nominatim dict (e.g. postalcode).
         timeout: Request timeout in seconds.
 
     Returns:
