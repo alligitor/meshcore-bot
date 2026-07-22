@@ -100,7 +100,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -e ".[test]"
+          pip install -e ".[test,geo]"
           pip install mypy
 
       - name: mypy — strict overrides on typed modules
@@ -152,7 +152,10 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -e ".[test]"
+          # `geo` (us, pycountry) is optional at runtime but drives US state and
+          # country normalization; without it ~27 location tests skip and the AQI
+          # prefix-budget behavior silently differs from a real install.
+          pip install -e ".[test,geo]"
 
       - name: Run tests with coverage
         run: pytest tests/ -v --tb=short
