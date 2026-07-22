@@ -15,16 +15,18 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ..models import MeshMessage
-from ..region_capitals import REGION_DEFAULT_NOTE, region_capital_query
 from ..location import (
-    US_STATE_ABBRS,
+    US_STATE_ABBRS,  # noqa: F401 — re-exported for weather_service/tests
     city_display_name,
     join_location,
     reverse_geocode_region,
-    titlecase_location,
+    titlecase_location,  # noqa: F401 — re-exported for weather_service/tests
+)
+from ..location import (
     zip_to_city_string as location_zip_to_city_string,
 )
+from ..models import MeshMessage
+from ..region_capitals import REGION_DEFAULT_NOTE, region_capital_query
 from ..utils import geocode_city_sync, geocode_zipcode_sync
 from .base_command import BaseCommand
 

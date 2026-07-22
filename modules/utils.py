@@ -879,14 +879,14 @@ async def rate_limited_nominatim_geocode(
     if not hasattr(bot, 'nominatim_rate_limiter'):
         # Fallback if rate limiter not initialized
         geolocator = get_nominatim_geocoder(timeout=timeout)
-        return geolocator.geocode(query, timeout=timeout)
+        return await asyncio.to_thread(geolocator.geocode, query, timeout=timeout)
 
     # Wait for rate limiter
     await bot.nominatim_rate_limiter.wait_for_request()
 
     # Make the request
     geolocator = get_nominatim_geocoder(timeout=timeout)
-    result = geolocator.geocode(query, timeout=timeout)
+    result = await asyncio.to_thread(geolocator.geocode, query, timeout=timeout)
 
     # Record the request
     bot.nominatim_rate_limiter.record_request()
@@ -908,14 +908,14 @@ async def rate_limited_nominatim_reverse(bot: Any, coordinates: str, timeout: in
     if not hasattr(bot, 'nominatim_rate_limiter'):
         # Fallback if rate limiter not initialized
         geolocator = get_nominatim_geocoder(timeout=timeout)
-        return geolocator.reverse(coordinates, timeout=timeout)
+        return await asyncio.to_thread(geolocator.reverse, coordinates, timeout=timeout)
 
     # Wait for rate limiter
     await bot.nominatim_rate_limiter.wait_for_request()
 
     # Make the request
     geolocator = get_nominatim_geocoder(timeout=timeout)
-    result = geolocator.reverse(coordinates, timeout=timeout)
+    result = await asyncio.to_thread(geolocator.reverse, coordinates, timeout=timeout)
 
     # Record the request
     bot.nominatim_rate_limiter.record_request()
