@@ -124,6 +124,13 @@ class SafeUrlPolicy:
         return scheme, hostname, port or (443 if scheme == "https" else 80)
 
     def _check_address(self, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
+        # Canonicalize IPv4-mapped IPv6 (e.g. ``::ffff:169.254.169.254``) to the
+        # IPv4 target the socket layer will actually dial. The mapped form is a
+        # distinct address object that is absent from _METADATA_ADDRESSES and
+        # reports is_reserved=False/is_global=False, so without this it would
+        # bypass the metadata and non-unicast checks under allow_private=True.
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
         if address in _METADATA_ADDRESSES:
             raise UnsafeUrlError(f"Cloud metadata address is not allowed: {address}")
         # These cannot be meaningful unicast HTTP server destinations. They
@@ -240,8 +247,8 @@ class SafeAiohttpResolver(AbstractResolver):
         return [
             {
                 "hostname": host,
-                "host": record[4][0],
-                "port": record[4][1],
+                "host": str(record[4][0]),
+                "port": int(record[4][1]),
                 "family": record[0],
                 "proto": record[2],
                 "flags": socket.AI_NUMERICHOST,

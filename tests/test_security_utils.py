@@ -178,8 +178,22 @@ class TestSafeUrlPolicy:
         ):
             assert validate_external_url("https://mixed.example/") is False
 
-    def test_allow_private_does_not_allow_metadata(self):
-        with patch("socket.getaddrinfo", return_value=_addrinfo("169.254.169.254")):
+    @pytest.mark.parametrize(
+        "resolved",
+        [
+            "169.254.169.254",  # AWS/Azure/GCP IMDS
+            "169.254.170.2",  # AWS ECS task credentials
+            "100.100.100.200",  # Alibaba Cloud
+            # IPv4-mapped IPv6 spellings must not bypass the metadata block:
+            # the mapped form is a distinct address object absent from the
+            # metadata set and reports is_reserved=False.
+            "::ffff:169.254.169.254",
+            "::ffff:169.254.170.2",
+            "::ffff:100.100.100.200",
+        ],
+    )
+    def test_allow_private_does_not_allow_metadata(self, resolved):
+        with patch("socket.getaddrinfo", return_value=_addrinfo(resolved)):
             assert validate_external_url(
                 "http://metadata.example/",
                 allow_private=True,
