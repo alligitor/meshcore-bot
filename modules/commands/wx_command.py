@@ -769,8 +769,8 @@ class WxCommand(BaseCommand):
         if re.match(r'^\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*$', location):
             # It's coordinates (lat,lon format)
             location_type = "coordinates"
-        elif re.match(r'^\d{5}$', location):
-            # It's a zipcode
+        elif re.match(r'^\s*\d{5}\s*$', location):
+            # It's a zipcode (allow surrounding whitespace; strip later in geocode)
             location_type = "zipcode"
         else:
             # It's a city name (possibly with state)

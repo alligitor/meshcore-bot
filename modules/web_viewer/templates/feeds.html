@@ -50,9 +50,14 @@
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Feed Subscriptions</h5>
-                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addFeedModal">
-                        <i class="fas fa-plus"></i> Add Feed
-                    </button>
+                    <div>
+                        <button type="button" id="resetAllErrorsBtn" class="btn btn-outline-secondary me-2" title="Clear recorded errors for all feeds">
+                            <i class="fas fa-eraser"></i> Reset Errors
+                        </button>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addFeedModal">
+                            <i class="fas fa-plus"></i> Add Feed
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
@@ -212,7 +217,8 @@
     &quot;id_field&quot;: &quot;AlertID&quot;,
     &quot;title_field&quot;: &quot;HeadlineDescription&quot;,
     &quot;description_field&quot;: &quot;ExtendedDescription&quot;,
-    &quot;timestamp_field&quot;: &quot;LastUpdatedTime&quot;
+    &quot;timestamp_field&quot;: &quot;LastUpdatedTime&quot;,
+    &quot;emoji_field&quot;: &quot;emoji&quot;
   }
 }"></textarea>
                                     <small class="form-text text-muted mt-2 d-block">
@@ -633,7 +639,13 @@ class FeedManager {
         
         // Preview button
         document.getElementById('previewBtn').addEventListener('click', () => this.previewFormat());
-        
+
+        // Reset-all-errors button (inline onclick removed for the nonce CSP)
+        const resetAllErrorsBtn = document.getElementById('resetAllErrorsBtn');
+        if (resetAllErrorsBtn) {
+            resetAllErrorsBtn.addEventListener('click', () => this.resetAllErrors());
+        }
+
         // Load default format when opening add modal
         document.getElementById('addFeedModal').addEventListener('show.bs.modal', () => {
             this.loadChannelStats();
@@ -1009,7 +1021,28 @@ class FeedManager {
             addDetail(activityColumn, 'Last Check', lastCheck);
             addDetail(activityColumn, 'Last Item', feed.last_item_id ? String(feed.last_item_id).substring(0, 30) + '...' : 'None');
             addDetail(activityColumn, 'Total Items', feed.activity?.length || 0);
-            addDetail(activityColumn, 'Errors', feed.errors?.length || 0);
+
+            // Errors row: value plus, when non-zero, a per-feed reset button.
+            // Wired via addEventListener because /feeds runs under a nonce CSP
+            // (no unsafe-inline), so an inline onclick handler would be blocked.
+            const errorCount = feed.errors?.length || 0;
+            const errorParagraph = document.createElement('p');
+            const errorStrong = document.createElement('strong');
+            errorStrong.textContent = 'Errors:';
+            errorParagraph.append(errorStrong, document.createTextNode(` ${errorCount}`));
+            if (errorCount > 0) {
+                const resetButton = document.createElement('button');
+                resetButton.type = 'button';
+                resetButton.className = 'btn btn-sm btn-outline-secondary ms-2';
+                resetButton.title = 'Clear recorded errors for this feed';
+                const eraseIcon = document.createElement('i');
+                eraseIcon.className = 'fas fa-eraser';
+                resetButton.append(eraseIcon, document.createTextNode(' Reset'));
+                resetButton.addEventListener('click', () => this.resetFeedErrors(feed.id));
+                errorParagraph.append(document.createTextNode(' '), resetButton);
+            }
+            activityColumn.appendChild(errorParagraph);
+
             row.append(configColumn, activityColumn);
             content.replaceChildren(row);
             const modal = new bootstrap.Modal(document.getElementById('feedDetailsModal'));
@@ -1065,7 +1098,47 @@ class FeedManager {
             this.showError('Error deleting feed: ' + error.message);
         }
     }
-    
+
+    async resetAllErrors() {
+        if (!confirm('Reset error counts for ALL feeds? This clears the recorded error history.')) {
+            return;
+        }
+        try {
+            const response = await fetch('/api/feeds/errors/reset', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (response.ok) {
+                this.showSuccess('Feed errors reset');
+                await this.loadFeeds();
+            } else {
+                const result = await response.json();
+                this.showError(result.error || 'Failed to reset feed errors');
+            }
+        } catch (error) {
+            this.showError('Error resetting feed errors: ' + error.message);
+        }
+    }
+
+    async resetFeedErrors(feedId) {
+        try {
+            const response = await fetch(`/api/feeds/${feedId}/errors/reset`, {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (response.ok) {
+                this.showSuccess('Feed errors reset');
+                await this.loadFeeds();
+                await this.viewFeed(feedId);
+            } else {
+                const result = await response.json();
+                this.showError(result.error || 'Failed to reset feed errors');
+            }
+        } catch (error) {
+            this.showError('Error resetting feed errors: ' + error.message);
+        }
+    }
+
     showError(message) {
         this.showAlert(message, 'danger', 5000);
     }

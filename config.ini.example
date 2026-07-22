@@ -1494,8 +1494,15 @@ feed_manager_enabled = false
 # Default check interval (seconds)
 default_check_interval_seconds = 300
 
-# Maximum items to process per check
+# Maximum items to examine per check (the scan window). Filtered-out items count
+# against this; raise it for long feeds behind a restrictive filter (e.g. within_days)
+# so the scan reaches newer passing items.
 max_items_per_check = 10
+
+# Maximum items to post per check. Defaults to max_items_per_check when unset, so
+# existing setups are unchanged. Cap this (while raising max_items_per_check) to scan
+# deep without flooding a channel in a single poll.
+max_posts_per_check = 10
 
 # HTTP request timeout (seconds)
 feed_request_timeout = 30
