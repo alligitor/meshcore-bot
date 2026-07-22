@@ -745,6 +745,12 @@ def resolve_location(
     if default_country is None:
         default_country = bot.config.get("Weather", "default_country", fallback="US")
 
+    # Declared up front: the fallback/coordinates/repeater branches bind plain
+    # floats while the zipcode/city branches bind float | None from best-effort
+    # geocoding, so one Optional type keeps mypy from pinning the first binding.
+    lat: Optional[float]
+    lon: Optional[float]
+
     if raw is None or not str(raw).strip():
         if opts.fallback_coords:
             lat, lon = opts.fallback_coords
