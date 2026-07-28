@@ -10,6 +10,10 @@ import subprocess
 from pathlib import Path
 
 from scripts.migrate_service_layout import migrate_service_layout
+from scripts.preserve_service_alternatives import (
+    backup_installed_only,
+    restore_backup,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,10 +52,49 @@ def test_standalone_installer_separates_code_and_private_state():
     assert "rsync -a --delete" in installer
     assert "rsync -a --update" not in installer
     assert "source-authoritative secure install" in installer
+    assert "preserve_service_alternatives.py" in installer
     assert 'VENV_BUILD="$INSTALL_DIR/.venv-build-$$"' in installer
     assert 'Preserving existing virtual environment' not in installer
     assert "Python 3.10+ installed" in installer
     assert "sys.version_info < (3, 10)" in installer
+
+
+def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    installed = tmp_path / "installed"
+    backup = tmp_path / "backup"
+    (source / "nested").mkdir(parents=True)
+    (installed / "nested").mkdir(parents=True)
+
+    (source / "shipped.py").write_text("SOURCE = 2\n", encoding="utf-8")
+    (installed / "shipped.py").write_text("LOCAL = 1\n", encoding="utf-8")
+    (installed / "custom.py").write_text("CUSTOM = 1\n", encoding="utf-8")
+    (installed / "nested" / "custom.py").write_text("NESTED = 1\n", encoding="utf-8")
+    (installed / "ignored.pyc").write_bytes(b"cache")
+    (installed / "custom-link.py").symlink_to(installed / "custom.py")
+
+    preserved = backup_installed_only(source, installed, backup)
+
+    assert preserved == [
+        Path("custom.py"),
+        Path("nested/custom.py"),
+    ]
+    assert not (backup / "shipped.py").exists()
+    assert not (backup / "custom-link.py").exists()
+    assert not (backup / "ignored.pyc").exists()
+
+    shutil.rmtree(installed)
+    installed.mkdir()
+    (installed / "shipped.py").write_text("SOURCE = 2\n", encoding="utf-8")
+    (installed / "stale.py").write_text("STALE = 1\n", encoding="utf-8")
+
+    restored = restore_backup(backup, installed)
+
+    assert restored == preserved
+    assert (installed / "shipped.py").read_text(encoding="utf-8") == "SOURCE = 2\n"
+    assert (installed / "custom.py").read_text(encoding="utf-8") == "CUSTOM = 1\n"
+    assert (installed / "nested" / "custom.py").read_text(encoding="utf-8") == "NESTED = 1\n"
+    assert not backup.exists()
 
 
 def _service_state_test_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:

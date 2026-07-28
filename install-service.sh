@@ -345,8 +345,19 @@ fi
 copy_files_smart() {
     local source_dir="$1"
     local dest_dir="$2"
+    local alternatives_backup
     if ! command -v rsync &> /dev/null; then
         print_error "rsync is required for a source-authoritative secure install; install rsync and retry"
+        return 1
+    fi
+
+    alternatives_backup="$(mktemp -d "${TMPDIR:-/tmp}/meshcore-alternatives.XXXXXX")"
+    if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" backup \
+          --source "$source_dir/modules/commands/alternatives" \
+          --installed "$dest_dir/modules/commands/alternatives" \
+          --backup "$alternatives_backup"; then
+        print_error "Failed to preserve installed-only alternative commands"
+        print_error "Partial backup retained at $alternatives_backup"
         return 1
     fi
 
@@ -365,7 +376,20 @@ copy_files_smart() {
           --exclude='local/' \
           --exclude='config.ini' \
           "$source_dir/" "$dest_dir/"; then
+        if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
+              --installed "$dest_dir/modules/commands/alternatives" \
+              --backup "$alternatives_backup"; then
+            print_error "Alternative-command backup retained at $alternatives_backup"
+        fi
         print_error "rsync failed; refusing to continue with a partially synchronized code tree"
+        return 1
+    fi
+
+    if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
+          --installed "$dest_dir/modules/commands/alternatives" \
+          --backup "$alternatives_backup"; then
+        print_error "Failed to restore installed-only alternative commands"
+        print_error "Backup retained at $alternatives_backup"
         return 1
     fi
 
