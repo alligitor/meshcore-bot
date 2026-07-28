@@ -450,16 +450,23 @@ copy_files_smart() {
         print_error "rsync failed; refusing to continue the upgrade"
         return 1
     fi
-    SERVICE_RESTART_SAFE=true
-
     if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
           --installed "$dest_dir/modules/commands/alternatives" \
           --backup "$alternatives_backup"; then
         print_error "Failed to restore installed-only alternative commands"
         print_error "Backup retained at $alternatives_backup"
+        print_warning "Restoring the previous executable tree"
+        if sync_executable_tree "$rollback_backup" "$dest_dir"; then
+            SERVICE_RESTART_SAFE=true
+            rm -rf -- "$rollback_backup"
+            print_warning "Previous executable tree restored after alternative-command failure"
+        else
+            print_error "Executable rollback failed; snapshot retained at $rollback_backup"
+        fi
         return 1
     fi
 
+    SERVICE_RESTART_SAFE=true
     rm -rf -- "$rollback_backup"
     print_success "Executable files synchronized authoritatively using rsync"
 }

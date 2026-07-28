@@ -133,6 +133,81 @@ def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path)
     assert not backup.exists()
 
 
+def test_service_sync_rolls_back_when_alternative_restore_fails(
+    tmp_path: Path,
+) -> None:
+    installer = (REPO_ROOT / "install-service.sh").read_text(encoding="utf-8")
+    function_block = installer.split("sync_executable_tree() {", 1)[1].split(
+        "# Copy files using smart copy function", 1
+    )[0]
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    rsync_count = tmp_path / "rsync-count"
+    rsync_count.write_text("0\n", encoding="utf-8")
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/bin/bash
+count_file="${FAKE_RSYNC_COUNT:?}"
+count="$(cat "$count_file")"
+printf '%s\\n' "$((count + 1))" > "$count_file"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        """#!/bin/bash
+case " $* " in
+    *" backup "*) exit 0 ;;
+    *" restore "*) exit 1 ;;
+    *) exit 2 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    harness = tmp_path / "sync-harness.sh"
+    harness.write_text(
+        """#!/bin/bash
+print_info() { :; }
+print_warning() { :; }
+print_error() { :; }
+print_success() { :; }
+SCRIPT_DIR="${FAKE_SCRIPT_DIR:?}"
+SERVICE_RESTART_SAFE=true
+sync_executable_tree() {
+"""
+        + function_block
+        + """
+copy_files_smart "$FAKE_SOURCE" "$FAKE_INSTALLED"
+result=$?
+printf 'result=%s safe=%s\\n' "$result" "$SERVICE_RESTART_SAFE"
+""",
+        encoding="utf-8",
+    )
+    harness.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["FAKE_RSYNC_COUNT"] = str(rsync_count)
+    env["FAKE_SCRIPT_DIR"] = str(REPO_ROOT)
+    env["FAKE_SOURCE"] = str(tmp_path / "source")
+    env["FAKE_INSTALLED"] = str(tmp_path / "installed")
+    env["TMPDIR"] = str(tmp_path)
+    result = subprocess.run(
+        ["bash", str(harness)],
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "result=1 safe=true"
+    assert rsync_count.read_text(encoding="utf-8").strip() == "3"
+
+
 def _service_state_test_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     fake_bin = tmp_path / "bin"
     fake_state = tmp_path / "systemctl-state"
