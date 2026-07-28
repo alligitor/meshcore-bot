@@ -4,6 +4,44 @@ All notable changes to this project are documented here. The format loosely foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 semantic versioning.
 
+## [0.9.4] — 2026-07-28
+
+v0.9.4 adds transport recovery, location and rain improvements, World Cup support,
+safer feed and outbound HTTP handling, command-prefix enhancements, and substantial
+web-viewer performance and security work.
+
+### Added
+
+- Automatic serial, BLE, and TCP transport reconnect handling, including service
+  plugin re-subscription after reconnect.
+- Minute-level rain and precipitation nowcasts with optional proactive notifications.
+- World Cup command and live event announcement service.
+- Centralized location resolution and geocoding helpers shared by weather, AQI,
+  path, and related commands.
+- Web-viewer plugin settings, node settings, multi-byte evidence views, and
+  paginated contacts APIs.
+- Database restore tooling and hardened service-layout migration for configuration,
+  state, logs, and local plugins.
+
+### Changed
+
+- Feed polling now has bounded response and item limits, duplicate queue protection,
+  per-feed serialization, and configurable post limits.
+- Direct-message responses are split at MeshCore byte limits without breaking UTF-8.
+- Mesh graph and contacts queries scope enrichment work to the requested page or
+  visible data.
+- Service installs keep executable code root-owned while configuration and runtime
+  state remain writable only by the service account.
+
+### Fixed
+
+- Closed outbound HTTP SSRF bypasses, including IPv4-mapped IPv6 and redirect/DNS
+  rebinding cases.
+- Hardened configuration reload rollback, scheduler operation claims, feed queue
+  deduplication, and blocking weather-provider calls.
+- Escaped user-controlled web-viewer content and neutralized Discord mentions.
+- Restored Python 3.10 compatibility and expanded CI coverage through Python 3.13.
+
 ## [0.9.0] — 2026-04-17
 
 v0.9.0 is a large release that focuses on operational reliability, observability, and
@@ -151,3 +189,4 @@ hardening fixes.
 - Discord integration, kg7qin integration notes (`f2936be`, `de6279c`).
 
 [0.9.0]: https://github.com/agessaman/meshcore-bot/compare/v0.8.3...v0.9.0
+[0.9.4]: https://github.com/agessaman/meshcore-bot/compare/v0.9.3...v0.9.4
