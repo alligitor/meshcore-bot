@@ -247,6 +247,7 @@ fi
 # backup used for layout migration.  This runs only after sudo re-execution and
 # service-manager validation, so --help and unprivileged discovery stay inert.
 SERVICE_RESTART_PENDING=false
+SERVICE_RESTART_SAFE=true
 
 restart_previously_active_service() {
     if [[ "$SERVICE_RESTART_PENDING" != true ]]; then
@@ -270,13 +271,16 @@ restart_previously_active_service() {
 restore_active_service_on_failure() {
     local status=$?
     trap - EXIT
-    if [[ "$status" -ne 0 && "$SERVICE_RESTART_PENDING" == true ]]; then
+    if [[ "$status" -ne 0 && "$SERVICE_RESTART_PENDING" == true && "$SERVICE_RESTART_SAFE" == true ]]; then
         print_warning "Upgrade failed; attempting to restore the previously active service"
         if restart_previously_active_service; then
             print_warning "Previously active service was restarted after the failed upgrade"
         else
             print_error "Could not restart the previously active service; manual recovery is required"
         fi
+    elif [[ "$status" -ne 0 && "$SERVICE_RESTART_PENDING" == true ]]; then
+        print_error "Upgrade failed and the executable rollback was incomplete"
+        print_error "Refusing to restart a potentially partial code tree; manual recovery is required"
     fi
     exit "$status"
 }
@@ -383,12 +387,34 @@ fi
 # fallback can preserve a newer/stale Python file written by a previously
 # compromised service account and then cement it as root-owned executable code.
 # Only the explicitly excluded runtime paths survive an upgrade.
+sync_executable_tree() {
+    local source_dir="$1"
+    local dest_dir="$2"
+
+    rsync -a --delete --exclude='.git' \
+        --exclude='__pycache__' \
+        --exclude='*.pyc' \
+        --exclude='*.pyo' \
+        --exclude='.DS_Store' \
+        --exclude='venv' \
+        --exclude='*.db' \
+        --exclude='*.db-shm' \
+        --exclude='*.db-wal' \
+        --exclude='*.log' \
+        --exclude='backups' \
+        --exclude='local/' \
+        --exclude='config.ini' \
+        "$source_dir/" "$dest_dir/"
+}
+
 copy_files_smart() {
     local source_dir="$1"
     local dest_dir="$2"
     local alternatives_backup
+    local rollback_backup
 
     alternatives_backup="$(mktemp -d "${TMPDIR:-/tmp}/meshcore-alternatives.XXXXXX")"
+    rollback_backup="$(mktemp -d "${TMPDIR:-/tmp}/meshcore-executable-rollback.XXXXXX")"
     if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" backup \
           --source "$source_dir/modules/commands/alternatives" \
           --installed "$dest_dir/modules/commands/alternatives" \
@@ -398,29 +424,33 @@ copy_files_smart() {
         return 1
     fi
 
-    print_info "Using rsync for source-authoritative executable synchronization"
-    if ! rsync -a --delete --exclude='.git' \
-          --exclude='__pycache__' \
-          --exclude='*.pyc' \
-          --exclude='*.pyo' \
-          --exclude='.DS_Store' \
-          --exclude='venv' \
-          --exclude='*.db' \
-          --exclude='*.db-shm' \
-          --exclude='*.db-wal' \
-          --exclude='*.log' \
-          --exclude='backups' \
-          --exclude='local/' \
-          --exclude='config.ini' \
-          "$source_dir/" "$dest_dir/"; then
-        if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
-              --installed "$dest_dir/modules/commands/alternatives" \
-              --backup "$alternatives_backup"; then
-            print_error "Alternative-command backup retained at $alternatives_backup"
-        fi
-        print_error "rsync failed; refusing to continue with a partially synchronized code tree"
+    print_info "Creating a rollback snapshot of the installed executable tree"
+    if ! sync_executable_tree "$dest_dir" "$rollback_backup"; then
+        print_error "Failed to create the executable rollback snapshot"
+        print_error "Incomplete snapshot retained at $rollback_backup"
         return 1
     fi
+
+    print_info "Using rsync for source-authoritative executable synchronization"
+    SERVICE_RESTART_SAFE=false
+    if ! sync_executable_tree "$source_dir" "$dest_dir"; then
+        print_warning "rsync failed; restoring the previous executable tree"
+        if sync_executable_tree "$rollback_backup" "$dest_dir"; then
+            SERVICE_RESTART_SAFE=true
+            rm -rf -- "$rollback_backup"
+            if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
+                  --installed "$dest_dir/modules/commands/alternatives" \
+                  --backup "$alternatives_backup"; then
+                print_error "Alternative-command backup retained at $alternatives_backup"
+            fi
+            print_warning "Previous executable tree restored after synchronization failure"
+        else
+            print_error "Executable rollback failed; snapshot retained at $rollback_backup"
+        fi
+        print_error "rsync failed; refusing to continue the upgrade"
+        return 1
+    fi
+    SERVICE_RESTART_SAFE=true
 
     if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" restore \
           --installed "$dest_dir/modules/commands/alternatives" \
@@ -430,6 +460,7 @@ copy_files_smart() {
         return 1
     fi
 
+    rm -rf -- "$rollback_backup"
     print_success "Executable files synchronized authoritatively using rsync"
 }
 

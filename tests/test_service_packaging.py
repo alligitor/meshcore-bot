@@ -63,8 +63,12 @@ def test_standalone_installer_separates_code_and_private_state():
     assert "trap restore_active_service_on_failure EXIT" in installer
     assert "trap - EXIT" in installer
     assert 'SERVICE_RESTART_PENDING=true' in installer
+    assert "SERVICE_RESTART_SAFE=false" in installer
     assert "restart_previously_active_service" in installer
     assert "Previously active service was restarted after the failed upgrade" in installer
+    assert 'sync_executable_tree "$dest_dir" "$rollback_backup"' in installer
+    assert 'sync_executable_tree "$rollback_backup" "$dest_dir"' in installer
+    assert "Refusing to restart a potentially partial code tree" in installer
 
 
 def test_service_documentation_matches_hardened_layout() -> None:
