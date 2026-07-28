@@ -2,7 +2,7 @@
 
 This document describes changes that may affect users upgrading from previous versions.
 
-## Upgrading from v0.9.3 to v0.9.4
+## Upgrading from v0.9.3 to v1.0.0
 
 ### Service Layout and Ownership
 
@@ -36,7 +36,7 @@ retrying.
 
 ### Configuration Compatibility
 
-v0.9.3 shipped configuration examples pass the v0.9.4 strict validator. Normal startup
+v0.9.3 shipped configuration examples pass the v1.0.0 strict validator. Normal startup
 warns about unknown sections or keys without refusing to start. You can check a config
 before upgrading:
 
@@ -61,6 +61,26 @@ pip install -e ".[geo]"
 ```
 
 The standalone installer also offers the geocoding extras interactively.
+
+### Optional Sender-Language Detection
+
+Greeting-style commands can reply in the sender's language. The feature is off by
+default and changes no behavior until you enable it:
+
+```ini
+[Localization]
+auto_detect_language = true
+```
+
+Detection is keyword-first, so short greetings work with no extra dependency. For
+statistical detection of longer messages, install the optional `lang` extra:
+
+```bash
+pip install -e ".[lang]"
+```
+
+Replies fall back to the configured `language` whenever the message is ambiguous,
+the detector is unavailable, or that translation catalog is not installed.
 
 ## Upgrading from v0.8 to v0.9
 

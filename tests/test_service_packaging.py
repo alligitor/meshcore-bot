@@ -88,7 +88,7 @@ def test_service_documentation_matches_hardened_layout() -> None:
     assert "sudo chown -R meshcore:meshcore /opt/meshcore-bot" not in service_docs
     assert "patches the meshcore file" not in service_docs
     assert "/var/lib/meshcore-bot" in service_docs
-    assert "Upgrading from v0.9.3 to v0.9.4" in upgrade_docs
+    assert "Upgrading from v0.9.3 to v1.0.0" in upgrade_docs
 
 
 def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path) -> None:
