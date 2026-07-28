@@ -293,4 +293,4 @@ Environment=CUSTOM_VAR=value
 For issues with the service installation:
 1. Check the logs: `sudo journalctl -u meshcore-bot -f`
 2. Verify configuration: `sudo nano /etc/meshcore-bot/config.ini`
-3. Test manually: `sudo -u meshcore python3 /opt/meshcore-bot/meshcore_bot.py`
+3. Test manually: `sudo -u meshcore /opt/meshcore-bot/venv/bin/python /opt/meshcore-bot/meshcore_bot.py --config /etc/meshcore-bot/config.ini`
