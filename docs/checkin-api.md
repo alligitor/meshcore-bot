@@ -69,7 +69,7 @@ The repo includes a **stdlib-only** reference server you can run behind nginx wi
 
 ### Script
 
-- **Location**: [scripts/checkin_receiver.py](../scripts/checkin_receiver.py)
+- **Location**: [scripts/checkin_receiver.py](https://github.com/agessaman/meshcore-bot/blob/main/scripts/checkin_receiver.py)
 - **Dependencies**: Python 3 standard library only (`json`, `sqlite3`, `secrets`, `http.server`, etc.)
 
 ### Environment variables

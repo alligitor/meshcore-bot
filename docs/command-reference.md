@@ -1087,5 +1087,28 @@ schedule
 
 ---
 
+### `webviewer` or `web` or `viewer` or `wv`
+
+Manage the web viewer integration.
+
+**Usage:**
+```
+webviewer <subcommand>
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Report enabled/running state, URL, circuit-breaker state, failure count, and shutdown state |
+| `reset` | Reset the integration's circuit breaker after repeated failures |
+| `restart` | Restart the web viewer process |
+
+**Response:** A compact status line, or confirmation that the reset or restart was initiated.
+
+**Note:** DM-only command. Disable with `enabled = false` under `[WebViewer_Command]`.
+
+---
+
 For more information about configuring the bot, see the main [README](https://github.com/agessaman/meshcore-bot/blob/main/README.md) file.
 
