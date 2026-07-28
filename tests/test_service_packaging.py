@@ -57,6 +57,14 @@ def test_standalone_installer_separates_code_and_private_state():
     assert 'Preserving existing virtual environment' not in installer
     assert "Python 3.10+ installed" in installer
     assert "sys.version_info < (3, 10)" in installer
+    assert installer.index("command -v rsync") < installer.index(
+        "# Stop a running legacy service"
+    )
+    assert "trap restore_active_service_on_failure EXIT" in installer
+    assert "trap - EXIT" in installer
+    assert 'SERVICE_RESTART_PENDING=true' in installer
+    assert "restart_previously_active_service" in installer
+    assert "Previously active service was restarted after the failed upgrade" in installer
 
 
 def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path) -> None:

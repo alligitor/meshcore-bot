@@ -237,14 +237,54 @@ if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
     print_error "Found: $(python3 --version 2>&1)"
     exit 1
 fi
+if ! command -v rsync &> /dev/null; then
+    print_error "rsync is required for a source-authoritative secure install"
+    print_error "Install rsync before stopping or upgrading the service"
+    exit 1
+fi
 
 # Stop a running legacy service before changing code or taking the SQLite
 # backup used for layout migration.  This runs only after sudo re-execution and
 # service-manager validation, so --help and unprivileged discovery stay inert.
-SERVICE_WAS_ACTIVE=false
+SERVICE_RESTART_PENDING=false
+
+restart_previously_active_service() {
+    if [[ "$SERVICE_RESTART_PENDING" != true ]]; then
+        return 0
+    fi
+
+    if [[ "$IS_MACOS" == true ]]; then
+        if ! launchctl list "$PLIST_NAME" &>/dev/null; then
+            if ! launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null; then
+                return 1
+            fi
+        fi
+    elif ! systemctl start "$SERVICE_NAME"; then
+        return 1
+    fi
+
+    SERVICE_RESTART_PENDING=false
+    return 0
+}
+
+restore_active_service_on_failure() {
+    local status=$?
+    trap - EXIT
+    if [[ "$status" -ne 0 && "$SERVICE_RESTART_PENDING" == true ]]; then
+        print_warning "Upgrade failed; attempting to restore the previously active service"
+        if restart_previously_active_service; then
+            print_warning "Previously active service was restarted after the failed upgrade"
+        else
+            print_error "Could not restart the previously active service; manual recovery is required"
+        fi
+    fi
+    exit "$status"
+}
+
+trap restore_active_service_on_failure EXIT
+
 if [[ "$IS_MACOS" == true ]]; then
     if launchctl list "$PLIST_NAME" &>/dev/null; then
-        SERVICE_WAS_ACTIVE=true
         if ! launchctl unload "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null; then
             launchctl stop "$PLIST_NAME" 2>/dev/null || true
         fi
@@ -252,10 +292,11 @@ if [[ "$IS_MACOS" == true ]]; then
             print_error "The launchd service is still running; refusing an unsafe live database migration"
             exit 1
         fi
+        SERVICE_RESTART_PENDING=true
     fi
 elif systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    SERVICE_WAS_ACTIVE=true
     systemctl stop "$SERVICE_NAME"
+    SERVICE_RESTART_PENDING=true
 fi
 
 print_section "Step 1: Setting Up Service User"
@@ -346,10 +387,6 @@ copy_files_smart() {
     local source_dir="$1"
     local dest_dir="$2"
     local alternatives_backup
-    if ! command -v rsync &> /dev/null; then
-        print_error "rsync is required for a source-authoritative secure install; install rsync and retry"
-        return 1
-    fi
 
     alternatives_backup="$(mktemp -d "${TMPDIR:-/tmp}/meshcore-alternatives.XXXXXX")"
     if ! python3 "$SCRIPT_DIR/scripts/preserve_service_alternatives.py" backup \
@@ -618,10 +655,17 @@ with open('$LAUNCHD_DIR/$SERVICE_FILE', 'w') as f:
         fi
     else
         print_info "Loading service into launchd"
-        launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || {
-            print_error "Failed to load service. Check plist syntax and permissions."
-            exit 1
-        }
+        if [[ "$SERVICE_RESTART_PENDING" == true ]]; then
+            restart_previously_active_service || {
+                print_error "Failed to restore the previously active launchd service"
+                exit 1
+            }
+        else
+            launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || {
+                print_error "Failed to load service. Check plist syntax and permissions."
+                exit 1
+            }
+        fi
         print_success "Service '$PLIST_NAME' loaded into launchd"
     fi
     print_info "Note: The service is loaded but not started yet. You'll start it after configuration."
@@ -659,14 +703,14 @@ else
     print_info "Note: The service is enabled but not started yet. You'll start it after configuration."
 fi
 
-if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
+if [[ "$SERVICE_RESTART_PENDING" == true ]]; then
     print_info "Restarting the service because it was running before the upgrade"
-    if [[ "$IS_MACOS" == true ]]; then
-        launchctl load "$LAUNCHD_DIR/$SERVICE_FILE" 2>/dev/null || true
-    else
-        systemctl start "$SERVICE_NAME"
+    if ! restart_previously_active_service; then
+        print_error "Failed to restart the previously active service"
+        exit 1
     fi
 fi
+trap - EXIT
 
 if [[ "$UPGRADE_MODE" == true ]]; then
     print_section "Upgrade Complete!"
