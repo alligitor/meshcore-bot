@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 from pathlib import Path
 
@@ -13,7 +14,7 @@ def backup_installed_only(
     installed_dir: Path,
     backup_dir: Path,
 ) -> list[Path]:
-    """Back up regular installed files that have no trusted source counterpart."""
+    """Back up installed-only files and symlinks without following symlinks."""
 
     preserved: list[Path] = []
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -21,19 +22,23 @@ def backup_installed_only(
         return preserved
 
     for installed_path in sorted(installed_dir.rglob("*")):
-        if installed_path.is_symlink() or not installed_path.is_file():
-            continue
         relative_path = installed_path.relative_to(installed_dir)
         if (
             "__pycache__" in relative_path.parts
             or installed_path.suffix in {".pyc", ".pyo"}
         ):
             continue
-        if (source_dir / relative_path).exists():
+        source_path = source_dir / relative_path
+        if source_path.exists() or source_path.is_symlink():
             continue
         backup_path = backup_dir / relative_path
         backup_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(installed_path, backup_path)
+        if installed_path.is_symlink():
+            backup_path.symlink_to(os.readlink(installed_path))
+        elif installed_path.is_file():
+            shutil.copy2(installed_path, backup_path)
+        else:
+            continue
         preserved.append(relative_path)
     return preserved
 
@@ -45,12 +50,16 @@ def restore_backup(backup_dir: Path, installed_dir: Path) -> list[Path]:
     if not backup_dir.is_dir():
         return restored
     for backup_path in sorted(backup_dir.rglob("*")):
-        if backup_path.is_symlink() or not backup_path.is_file():
-            continue
         relative_path = backup_path.relative_to(backup_dir)
         installed_path = installed_dir / relative_path
         installed_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(backup_path, installed_path)
+        if backup_path.is_symlink():
+            installed_path.unlink(missing_ok=True)
+            installed_path.symlink_to(os.readlink(backup_path))
+        elif backup_path.is_file():
+            shutil.copy2(backup_path, installed_path)
+        else:
+            continue
         restored.append(relative_path)
     shutil.rmtree(backup_dir)
     return restored

@@ -99,16 +99,18 @@ def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path)
     (installed / "custom.py").write_text("CUSTOM = 1\n", encoding="utf-8")
     (installed / "nested" / "custom.py").write_text("NESTED = 1\n", encoding="utf-8")
     (installed / "ignored.pyc").write_bytes(b"cache")
-    (installed / "custom-link.py").symlink_to(installed / "custom.py")
+    (installed / "custom-link.py").symlink_to("custom.py")
 
     preserved = backup_installed_only(source, installed, backup)
 
     assert preserved == [
+        Path("custom-link.py"),
         Path("custom.py"),
         Path("nested/custom.py"),
     ]
     assert not (backup / "shipped.py").exists()
-    assert not (backup / "custom-link.py").exists()
+    assert (backup / "custom-link.py").is_symlink()
+    assert (backup / "custom-link.py").readlink() == Path("custom.py")
     assert not (backup / "ignored.pyc").exists()
 
     shutil.rmtree(installed)
@@ -121,6 +123,8 @@ def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path)
     assert restored == preserved
     assert (installed / "shipped.py").read_text(encoding="utf-8") == "SOURCE = 2\n"
     assert (installed / "custom.py").read_text(encoding="utf-8") == "CUSTOM = 1\n"
+    assert (installed / "custom-link.py").is_symlink()
+    assert (installed / "custom-link.py").readlink() == Path("custom.py")
     assert (installed / "nested" / "custom.py").read_text(encoding="utf-8") == "NESTED = 1\n"
     assert not backup.exists()
 
