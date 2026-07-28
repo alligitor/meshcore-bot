@@ -67,6 +67,26 @@ def test_standalone_installer_separates_code_and_private_state():
     assert "Previously active service was restarted after the failed upgrade" in installer
 
 
+def test_service_documentation_matches_hardened_layout() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    getting_started = (REPO_ROOT / "docs/getting-started.md").read_text(encoding="utf-8")
+    service_docs = (REPO_ROOT / "docs/service-installation.md").read_text(
+        encoding="utf-8"
+    )
+    upgrade_docs = (REPO_ROOT / "docs/upgrade.md").read_text(encoding="utf-8")
+
+    for text in (readme, getting_started, service_docs):
+        assert "sudo nano /opt/meshcore-bot/config.ini" not in text
+        assert "sudo nano /etc/meshcore-bot/config.ini" in text
+
+    assert "Python 3.10+" in service_docs
+    assert "`rsync`" in service_docs
+    assert "sudo chown -R meshcore:meshcore /opt/meshcore-bot" not in service_docs
+    assert "patches the meshcore file" not in service_docs
+    assert "/var/lib/meshcore-bot" in service_docs
+    assert "Upgrading from v0.9.3 to v0.9.4" in upgrade_docs
+
+
 def test_service_sync_preserves_only_installed_only_alternatives(tmp_path: Path) -> None:
     source = tmp_path / "source"
     installed = tmp_path / "installed"
