@@ -214,6 +214,7 @@ class NominatimRateLimiter:
         self.last_request: float = 0.0
         self._lock: Optional[asyncio.Lock] = None
         self._lock_init = threading.Lock()  # Guards lazy creation of asyncio.Lock
+        self._sync_lock = threading.Lock()  # Serializes the worker-thread path
         self._total_requests = 0
         self._total_throttled = 0
 
@@ -260,11 +261,33 @@ class NominatimRateLimiter:
             self._total_requests += 1
 
     def wait_for_request_sync(self):
-        """Wait until we can make a Nominatim request (synchronous)"""
+        """Wait until we can make a Nominatim request (synchronous).
+
+        Prefer :meth:`wait_and_request_sync`: this only waits, so a caller that
+        records the request afterwards leaves a check-then-act window.
+        """
         while not self.can_request():
             wait_time = self.time_until_next()
             if wait_time > 0:
                 time.sleep(wait_time + 0.05)  # Small buffer
+
+    def wait_and_request_sync(self) -> None:
+        """Wait until a request may be made, then reserve the slot (thread-safe).
+
+        The sync twin of :meth:`wait_and_request`. Reserving *before* the caller's
+        HTTP request, under a lock, is what keeps the 1 req/s policy: geocoding now
+        runs on worker threads, and a wait-then-record-after pattern let several
+        threads clear the gate together and hit Nominatim simultaneously.
+        """
+        with self._sync_lock:
+            while True:
+                elapsed = time.monotonic() - self.last_request
+                if elapsed >= self.seconds:
+                    break
+                self._total_throttled += 1
+                time.sleep(self.seconds - elapsed + 0.05)  # Small buffer
+            self.last_request = time.monotonic()
+            self._total_requests += 1
 
     def get_stats(self) -> dict:
         """Get rate limiter statistics"""

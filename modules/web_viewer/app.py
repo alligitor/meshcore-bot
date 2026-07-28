@@ -382,7 +382,13 @@ class BotDataViewer:
     def _get_version_info(self) -> dict[str, str | None]:
         """Get version info for footer via centralized version resolver. Never raises."""
         info = resolve_runtime_version(self.bot_root)
+        display = info.get("display")
         return {
+            # 'display' is what the footer renders — same value !version reports,
+            # so the two can't drift apart on dev or detached-tag checkouts. The
+            # "unknown" sentinel is dropped so the footer omits the version
+            # rather than advertising that we couldn't work it out.
+            "display": None if display == "unknown" else display,
             "tag": info.get("tag"),
             "branch": info.get("branch"),
             "commit": info.get("commit"),

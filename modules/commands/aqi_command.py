@@ -4,6 +4,7 @@ AQI command for the MeshCore Bot
 Provides Air Quality Index information using OpenMeteo API
 """
 
+import asyncio
 from typing import Optional
 
 import openmeteo_requests
@@ -219,6 +220,10 @@ class AqiCommand(BaseCommand):
     ) -> str:
         """Get AQI data for a location (city, ZIP, or coordinates).
 
+        Geocoding and the OpenMeteo fetch are both blocking HTTP calls, so the
+        whole resolve-and-fetch runs on a worker thread; doing them inline would
+        stall message handling and reconnection for up to several 10s timeouts.
+
         Args:
             location: Raw location string (city name, ZIP, or "lat,lon").
             location_type: Unused; kept for call-site/test compatibility.
@@ -226,6 +231,12 @@ class AqiCommand(BaseCommand):
         Returns:
             str: Formatted AQI string or error message.
         """
+        return await asyncio.to_thread(self._get_aqi_for_location_sync, location, location_type)
+
+    def _get_aqi_for_location_sync(
+        self, location: str, location_type: Optional[str] = None
+    ) -> str:
+        """Blocking body of :meth:`get_aqi_for_location` (runs off the event loop)."""
         try:
             opts = ResolveOptions(
                 default_state=self.default_state,

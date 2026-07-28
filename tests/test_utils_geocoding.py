@@ -470,8 +470,10 @@ class TestRateLimitedNominatimGeocodeSync:
         mock_geocoder.geocode = Mock(return_value=mock_loc)
         with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
             result = rate_limited_nominatim_geocode_sync(mock_bot, "Portland")
-        mock_bot.nominatim_rate_limiter.wait_for_request_sync.assert_called_once()
-        mock_bot.nominatim_rate_limiter.record_request.assert_called_once()
+        # One atomic reserve-then-go, not wait-then-record-after: the old pair let
+        # concurrent worker threads clear the gate together.
+        mock_bot.nominatim_rate_limiter.wait_and_request_sync.assert_called_once()
+        mock_bot.nominatim_rate_limiter.record_request.assert_not_called()
         assert result is mock_loc
 
     def test_returns_none_when_not_found(self, mock_bot):
@@ -506,7 +508,7 @@ class TestRateLimitedNominatimReverseSync:
         mock_geocoder.reverse = Mock(return_value=mock_loc)
         with patch("modules.utils.get_nominatim_geocoder", return_value=mock_geocoder):
             result = rate_limited_nominatim_reverse_sync(mock_bot, "47.6, -122.3")
-        mock_bot.nominatim_rate_limiter.wait_for_request_sync.assert_called_once()
+        mock_bot.nominatim_rate_limiter.wait_and_request_sync.assert_called_once()
         assert result is mock_loc
 
 

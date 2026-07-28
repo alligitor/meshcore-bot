@@ -480,7 +480,9 @@ copy_files_smart "$SCRIPT_DIR" "$INSTALL_DIR" || {
 # Write .version_info at install dir so web viewer and packet_capture show version after install
 if command -v git &>/dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
     GIT_HASH="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
-    if VERSION="$(git -C "$SCRIPT_DIR" describe --exact-match HEAD 2>/dev/null)"; then
+    # --tags matches lightweight tags too; must stay in step with the runtime
+    # lookup in modules/version_info.py or the two disagree about one commit.
+    if VERSION="$(git -C "$SCRIPT_DIR" describe --tags --exact-match HEAD 2>/dev/null)"; then
         INSTALLER_VER="$VERSION"
     else
         INSTALLER_VER="dev-${GIT_HASH}"

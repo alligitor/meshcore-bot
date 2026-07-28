@@ -51,6 +51,12 @@ remain disabled by default; set `allow_private_urls = true` only for intentional
 private-network feeds. Cloud metadata and non-unicast destinations remain blocked.
 Feed responses are bounded by `max_response_bytes` and `max_parsed_items`.
 
+`[Feed_Manager]` numeric limits are now clamped to sane minimums instead of being
+used as written. **If you set `max_items_per_check = 0` to pause posting, that no
+longer works** — it now scans and posts one item per poll. Use
+`feed_manager_enabled = false` to stop the feed manager, or `feed disable <id>` for a
+single feed.
+
 ### Optional Geocoding Data
 
 `pycountry` and `us` remain optional under the `geo` extra. Install them for improved

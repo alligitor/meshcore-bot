@@ -42,6 +42,8 @@ considered stable; breaking changes to them will come with a major version bump.
 - DARC MOWAS alerts map German region IDs (*Regionalschlüssel*) to MeshCore scopes,
   limiting each alert to the regions it was issued for.
 - NWS gridpoint data as the US precipitation-nowcast source.
+- A tracked `LICENSE` file (MIT) and matching `pyproject.toml` license metadata, so
+  built wheels and packages carry the license the README has always declared.
 
 ### Changed
 
@@ -71,6 +73,26 @@ considered stable; breaking changes to them will come with a major version bump.
   logged as newly discovered.
 - The standalone installer preserves custom alternative commands and symlinks, and
   rolls back a partial executable sync rather than restarting a half-updated tree.
+- Startup validation now actually reports unknown and misspelled keys — including
+  in `*_Command` sections — with a "did you mean" suggestion, instead of only
+  checking section names and a hardcoded `[Connection]` pair.
+- `!aqi`, `!rain`, `!snow`, `!aurora`, `!prefix`, `!alert`, and `!gwx` no longer
+  block the event loop while geocoding; location resolution runs off-thread like
+  the forecast fetch already did. `!prefix` was the worst case, reverse-geocoding
+  once per matching repeater with the loop stalled throughout.
+- The Nominatim rate limiter reserves its slot before the request instead of
+  recording it afterwards, so concurrent geocodes can no longer clear the gate
+  together and breach the 1 req/s policy. The geocode caches are locked against
+  concurrent eviction.
+- The web viewer footer and the `!version` command agree on dev and detached-tag
+  checkouts; a detached checkout on a release tag reports that tag rather than
+  `HEAD-<sha>`.
+- `[Feed_Manager]` numeric limits are clamped to sane minimums. `max_items_per_check`
+  below 1 no longer takes Python's negative-slice meaning; `max_posts_per_check` is
+  enforced before an item is sent rather than after, so a cap of 0 no longer posts
+  one item anyway; `feed_request_timeout` below 1 no longer disables the HTTP
+  timeout outright; and `max_message_length` below 4 no longer lengthens the message
+  it is meant to cap.
 
 ### Contributors
 

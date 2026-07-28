@@ -687,7 +687,7 @@ class MyCommand(BaseCommand):
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for the full text.
 
 ## Acknowledgments
 
