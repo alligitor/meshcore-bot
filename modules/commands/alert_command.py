@@ -872,41 +872,50 @@ class AlertCommand(BaseCommand):
         # Start first message with header
         current_lines = [header]
         current_length = len(header)
+        # Whether the message being built already carries an incident. Only the
+        # first message has a header, so a length check cannot tell "header
+        # only" from "one incident, no header" — conflating them let a second
+        # incident be appended past the limit.
+        has_incident = False
 
         for inc in incidents:
             incident_text = self._format_incident_compact(inc)
             incident_length = len(incident_text)
 
             # Calculate what the message would look like with this incident added
-            # Need to account for newline character between lines
-            test_length = current_length + 1 + incident_length  # +1 for newline
+            # (+1 for the joining newline, unless the message is still empty)
+            test_length = current_length + (1 if current_lines else 0) + incident_length
 
             # Check if this incident fits in the current message
             if test_length <= 130:
                 # It fits, add it
                 current_lines.append(incident_text)
                 current_length = test_length
-            else:
-                # Doesn't fit - finalize current message and start new one
-                if len(current_lines) > 1:  # Has at least header + one incident
-                    messages.append("\n".join(current_lines))
-                else:
-                    # Only header, must add at least one incident even if it exceeds limit
-                    current_lines.append(incident_text)
-                    messages.append("\n".join(current_lines))
-                    current_lines = []
-                    current_length = 0
-                    continue
-
-                # Start new message with this incident (no header for subsequent messages)
+                has_incident = True
+            elif has_incident:
+                # Doesn't fit and we already have something worth sending —
+                # finalize, then start a new message (no header) with this one.
+                messages.append("\n".join(current_lines))
                 current_lines = [incident_text]
                 current_length = incident_length
+            else:
+                # Nothing but the header (or an empty buffer) so far: a message
+                # with no incident is useless, so take this one even though it
+                # exceeds the limit, then start fresh.
+                current_lines.append(incident_text)
+                messages.append("\n".join(current_lines))
+                current_lines = []
+                current_length = 0
+                has_incident = False
 
-        # Add the last message if it has content
+        # Add the last message if it has content.
+        # No header-only special case here: `incidents` is non-empty (guarded
+        # above), so the loop always puts at least one incident into
+        # current_lines or flushes and clears it. The old length-1 check also
+        # matched a final chunk holding a single *incident* — subsequent
+        # messages carry no header — and appended incidents[0] on top of it,
+        # duplicating the first incident into the last message.
         if current_lines:
-            # If we only have header, add first incident
-            if len(current_lines) == 1 and len(incidents) > 0:
-                current_lines.append(self._format_incident_compact(incidents[0]))
             messages.append("\n".join(current_lines))
 
         # Send all messages with delays between them

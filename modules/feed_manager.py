@@ -252,7 +252,12 @@ class FeedManager:
                 else:
                     last_check_ts = 0
 
-                interval = feed.get('check_interval_seconds', self.default_check_interval)
+                # Fall back for rows that predate interval validation: NULL would
+                # raise a TypeError below and abort the poll cycle for *every*
+                # feed, and <= 0 marks the feed permanently due.
+                interval = feed.get('check_interval_seconds')
+                if not isinstance(interval, (int, float)) or interval <= 0:
+                    interval = self.default_check_interval
 
                 if current_time - last_check_ts >= interval:
                     feeds_to_check.append(feed)

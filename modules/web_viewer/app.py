@@ -80,6 +80,23 @@ def _validate_dynamic_key(key: str) -> "str | None":
     return None
 
 
+def _validate_feed_interval(raw: object) -> int:
+    """Coerce a feed poll interval, rejecting values that break the poller.
+
+    feed_manager compares ``current_time - last_check >= interval``: anything
+    <= 0 leaves every feed permanently due and hammers the source URL, and a
+    None (JSON ``null``) raises a TypeError that aborts the whole poll cycle for
+    every feed, not just this one.
+    """
+    try:
+        interval = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("check_interval_seconds must be a positive integer")
+    if interval <= 0:
+        raise ValueError("check_interval_seconds must be a positive integer")
+    return interval
+
+
 def _apply_werkzeug_websocket_fix() -> None:
     """Patch SimpleWebSocketWSGI to call start_response after WebSocket teardown.
 
@@ -6564,7 +6581,7 @@ class BotDataViewer:
             feed_url = data.get('feed_url')
             channel_name = data.get('channel_name')
             feed_name = data.get('feed_name')
-            check_interval = data.get('check_interval_seconds', 300)
+            check_interval = _validate_feed_interval(data.get('check_interval_seconds', 300))
             api_config = data.get('api_config')
             output_format = data.get('output_format')
             message_send_interval = data.get('message_send_interval_seconds')
@@ -6621,7 +6638,7 @@ class BotDataViewer:
 
             if 'check_interval_seconds' in data:
                 updates.append('check_interval_seconds = ?')
-                params.append(data['check_interval_seconds'])
+                params.append(_validate_feed_interval(data['check_interval_seconds']))
 
             if 'enabled' in data:
                 updates.append('enabled = ?')

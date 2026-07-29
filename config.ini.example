@@ -1244,7 +1244,10 @@ greeting_message = Welcome to the mesh, @[{sender}]!
 # Channel-specific greeting messages (optional)
 # Format: channel_name:greeting_message,channel_name2:greeting_message2
 # If a channel has a specific greeting, it will be used instead of the default greeting_message
-# Example: Public:Welcome to Public channel, @[{sender}]!|general:Welcome to general, @[{sender}]!
+# Example: Public:Welcome to Public channel, @[{sender}]!,general:Welcome to general, @[{sender}]!
+# Greeting text may contain commas, URLs and clock times: a fragment is only
+# treated as a new entry when the text before its first colon looks like a
+# channel name. (So avoid text like ", wx: sunny" if wx is also a channel.)
 # Multi-part greetings are supported per channel using pipe (|) separator
 # Leave empty to use greeting_message for all channels
 channel_greetings = 
