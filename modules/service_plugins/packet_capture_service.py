@@ -837,14 +837,18 @@ class PacketCaptureService(BaseServicePlugin):
                     # Correlate with RAW_DATA: cache SNR/RSSI for prefix; record hex for dedupe
                     # (meshcore-packet-capture: recent_rf_packets + rf_data_cache)
                     current_time = time.time()
-                    packet_prefix = raw_hex[:32] if len(raw_hex) >= 32 else raw_hex
+                    # Both correlation caches are keyed on UPPERCASE hex: this
+                    # payload arrives lowercase but handle_raw_data uppercases
+                    # before looking up, so the cases must be normalized here.
+                    raw_hex_key = raw_hex.upper()
+                    packet_prefix = raw_hex_key[:32] if len(raw_hex_key) >= 32 else raw_hex_key
                     self.rf_data_cache[packet_prefix] = {
                         "snr": payload.get("snr"),
                         "rssi": payload.get("rssi"),
                         "timestamp": current_time,
                         "payload_length": payload.get("payload_length"),
                     }
-                    self.recent_rf_packets[raw_hex.upper()] = current_time
+                    self.recent_rf_packets[raw_hex_key] = current_time
                     self._prune_correlation_caches(current_time)
 
                     # Process packet
@@ -875,13 +879,16 @@ class PacketCaptureService(BaseServicePlugin):
                 return
 
             raw_hex_src = None
-            if hasattr(payload, "data"):
+            if isinstance(payload, dict):
+                # meshcore's reader dispatches RAW_DATA as
+                # {"SNR", "RSSI", "payload": "<hex>"} — "payload" is the real
+                # field; "data"/"raw_hex" are only kept for other producers.
+                for field in ("payload", "data", "raw_hex"):
+                    if payload.get(field):
+                        raw_hex_src = payload[field]
+                        break
+            elif hasattr(payload, "data"):
                 raw_hex_src = payload.data
-            elif isinstance(payload, dict):
-                if "data" in payload:
-                    raw_hex_src = payload["data"]
-                elif "raw_hex" in payload:
-                    raw_hex_src = payload["raw_hex"]
 
             if raw_hex_src is None:
                 return
@@ -917,9 +924,18 @@ class PacketCaptureService(BaseServicePlugin):
             else:
                 merged_payload = {}
 
+            # RAW_DATA carries "SNR"/"RSSI"; RX_LOG_DATA and _format_packet_data
+            # use the lowercase spelling, so fold the event's own values in
+            # first — they are more specific than the prefix-matched cache.
+            for upper, lower in (("SNR", "snr"), ("RSSI", "rssi")):
+                if merged_payload.get(lower) is None and merged_payload.get(upper) is not None:
+                    merged_payload[lower] = merged_payload[upper]
+
             if rf_cached:
-                merged_payload.setdefault("snr", rf_cached.get("snr"))
-                merged_payload.setdefault("rssi", rf_cached.get("rssi"))
+                if merged_payload.get("snr") is None:
+                    merged_payload["snr"] = rf_cached.get("snr")
+                if merged_payload.get("rssi") is None:
+                    merged_payload["rssi"] = rf_cached.get("rssi")
                 pl = merged_payload.get("payload_length")
                 if pl is None:
                     merged_payload["payload_length"] = rf_cached.get("payload_length")
