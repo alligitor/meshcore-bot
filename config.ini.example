@@ -1744,6 +1744,9 @@ iata = XYZ
 # mqttN_port = 1883                   # MQTT broker port (1883 for TCP, 443 for WSS)
 # mqttN_transport = tcp/websockets    # Transport type (tcp or websockets)
 # mqttN_use_tls = true/false          # Enable TLS/SSL (required for WSS)
+# mqttN_tls_insecure = true/false     # INSECURE: skip certificate/hostname verification.
+#                                     # Default false. Only for self-signed brokers on a
+#                                     # trusted network — otherwise credentials are MITMable.
 # mqttN_websocket_path = /mqtt        # WebSocket path (for websockets transport)
 # mqttN_username =                     # MQTT username (optional, auto-generated for auth tokens)
 # mqttN_password =                     # MQTT password (optional, auto-generated for auth tokens)
@@ -1938,6 +1941,9 @@ enabled = false
 # For WebSockets: transport = websockets, set port (e.g. 443), websocket_path, often use_tls = true
 # websocket_path = /mqtt
 # use_tls = false
+# INSECURE: skip certificate/hostname verification. Default false. Only for
+# self-signed brokers on a trusted network — otherwise credentials are MITMable.
+# tls_insecure = false
 # username =
 # password =
 # client_id =

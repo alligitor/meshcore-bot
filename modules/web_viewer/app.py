@@ -49,7 +49,7 @@ from modules.database_restore import (
     DatabaseRestoreError,
     stage_database_restore,
 )
-from modules.ini_writer import update_ini_values
+from modules.ini_writer import IniValueError, update_ini_values
 from modules.security_utils import (
     VALID_JOURNAL_MODES,
     SafeUrlPolicy,
@@ -1065,6 +1065,10 @@ class BotDataViewer:
                     'reload_queued': reload_queued,
                     'restart_required': restart_required,
                 })
+            except IniValueError as exc:
+                # A submitted key/value would corrupt the INI (newline, [ ], …).
+                # Nothing was written; report it as a client error.
+                return jsonify({'success': False, 'error': str(exc)}), 400
             except Exception:
                 self.logger.exception("Error saving plugin settings")
                 return jsonify({'success': False, 'error': 'Internal error — see server logs'}), 500
@@ -1343,17 +1347,24 @@ class BotDataViewer:
                         self.config.add_section('Connection')
                     ini_updates: dict[str, str] = {}
                     if 'alert_enabled' in data:
-                        val = 'true' if str(data['alert_enabled']).lower() == 'true' else 'false'
-                        self.config.set('Connection', 'radio_zombie_alert_enabled', val)
-                        ini_updates['radio_zombie_alert_enabled'] = val
+                        ini_updates['radio_zombie_alert_enabled'] = (
+                            'true' if str(data['alert_enabled']).lower() == 'true' else 'false'
+                        )
                     if 'alert_email' in data:
-                        val = str(data['alert_email'])
-                        self.config.set('Connection', 'radio_zombie_alert_email', val)
-                        ini_updates['radio_zombie_alert_email'] = val
+                        ini_updates['radio_zombie_alert_email'] = str(data['alert_email'])
                     if ini_updates:
+                        # Persist first: alert_email is free-form client JSON, so
+                        # a rejected value must not leave the in-memory config
+                        # holding something that was never written to disk.
                         update_ini_values(self.config_path, {'Connection': ini_updates})
+                        for ini_key, ini_val in ini_updates.items():
+                            self.config.set('Connection', ini_key, ini_val)
                     config_saved = True
                     self.logger.info("Zombie alert settings written to config.ini")
+                except IniValueError as exc:
+                    # Not an OSError — without this the route would 500.
+                    self.logger.warning("Rejected zombie alert config value: %s", exc)
+                    return jsonify({'success': False, 'error': str(exc)}), 400
                 except OSError as exc:
                     self.logger.error("Failed to write zombie alert settings to config.ini: %s", exc)
                     return jsonify({
@@ -1565,14 +1576,17 @@ class BotDataViewer:
                 if data.get('save_to_config', False):
                     try:
                         enabled_val = 'true' if alert_enabled else 'false'
-                        self.config.set('Connection', 'radio_offline_threshold', str(offline_threshold))
-                        self.config.set('Connection', 'radio_offline_alert_enabled', enabled_val)
-                        self.config.set('Connection', 'radio_offline_alert_email', alert_email)
-                        update_ini_values(self.config_path, {'Connection': {
+                        offline_ini = {
                             'radio_offline_threshold': str(offline_threshold),
                             'radio_offline_alert_enabled': enabled_val,
                             'radio_offline_alert_email': alert_email,
-                        }})
+                        }
+                        # Persist first: alert_email is free-form client input, so
+                        # a rejected value must not leave the in-memory config
+                        # holding something that was never written to disk.
+                        update_ini_values(self.config_path, {'Connection': offline_ini})
+                        for ini_key, ini_val in offline_ini.items():
+                            self.config.set('Connection', ini_key, ini_val)
                         config_saved = True
                         self.logger.info("Radio offline alert settings written to config.ini")
                     except Exception as exc:

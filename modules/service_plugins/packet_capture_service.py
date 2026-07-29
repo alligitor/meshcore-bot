@@ -197,6 +197,9 @@ class PacketCaptureService(BaseServicePlugin):
                  "options": [{"value": "tcp", "label": "TCP"}, {"value": "websockets", "label": "WebSockets"}],
                  "default": "tcp"},
                 {"key": "use_tls", "label": "Use TLS", "type": "bool", "default": False},
+                {"key": "tls_insecure", "label": "Skip TLS verification", "type": "bool", "default": False,
+                 "help": "INSECURE — accept any broker certificate. Only for self-signed brokers on a "
+                         "trusted network; leave off so certificate and hostname are verified."},
                 {"key": "use_auth_token", "label": "Use JWT auth token", "type": "bool", "default": False,
                  "help": "Authenticate with a signed JWT instead of username/password."},
                 {"key": "token_audience", "label": "Token audience", "type": "str", "default": "",
@@ -531,6 +534,10 @@ class PacketCaptureService(BaseServicePlugin):
                 "token_audience": config.get("PacketCapture", f"mqtt{broker_num}_token_audience", fallback=None),
                 "transport": config.get("PacketCapture", f"mqtt{broker_num}_transport", fallback="tcp").lower(),
                 "use_tls": config.getboolean("PacketCapture", f"mqtt{broker_num}_use_tls", fallback=False),
+                "tls_insecure": config.getboolean(
+                    "PacketCapture", f"mqtt{broker_num}_tls_insecure", fallback=False
+                ),
+                "broker_num": broker_num,
                 "websocket_path": config.get("PacketCapture", f"mqtt{broker_num}_websocket_path", fallback="/mqtt"),
                 "client_id": config.get("PacketCapture", f"mqtt{broker_num}_client_id", fallback=None),
                 "upload_packet_types": upload_packet_types,
@@ -1415,7 +1422,20 @@ class PacketCaptureService(BaseServicePlugin):
 
                         # For WebSockets with TLS (WSS), we need to set TLS on the client
                         # The TLS handshake happens during the WebSocket upgrade
-                        client.tls_set(cert_reqs=ssl.CERT_NONE)  # Allow self-signed certs
+                        if broker_config.get("tls_insecure", False):
+                            # Explicitly opted out — accepts self-signed certs.
+                            client.tls_set(cert_reqs=ssl.CERT_NONE)
+                            client.tls_insecure_set(True)
+                            self.logger.warning(
+                                "TLS certificate verification is DISABLED for %s "
+                                "(mqtt%s_tls_insecure = true) — credentials are exposed to a MITM",
+                                broker_config["host"], broker_config.get("broker_num", "N"),
+                            )
+                        else:
+                            # Verify certificate and hostname against the system
+                            # trust store; the credentials set below would
+                            # otherwise be readable by any interceptor.
+                            client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
                         if self.debug:
                             self.logger.debug(f"TLS enabled for {broker_config['host']} ({transport})")
                     except Exception as e:
