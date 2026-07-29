@@ -89,8 +89,8 @@ considered stable; breaking changes to them will come with a major version bump.
   `HEAD-<sha>`.
 - `[Feed_Manager]` numeric limits are clamped to sane minimums. `max_items_per_check`
   below 1 no longer takes Python's negative-slice meaning; `max_posts_per_check` is
-  enforced before an item is sent rather than after, so a cap of 0 no longer posts
-  one item anyway; `feed_request_timeout` below 1 no longer disables the HTTP
+  enforced before an item is sent rather than after, while configured values below
+  1 are clamped to 1; `feed_request_timeout` below 1 no longer disables the HTTP
   timeout outright; and `max_message_length` below 4 no longer lengthens the message
   it is meant to cap.
 

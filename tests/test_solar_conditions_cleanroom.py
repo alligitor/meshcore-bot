@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from configparser import ConfigParser
 from datetime import datetime
+from unittest.mock import Mock
 
 import pytest
 import requests
@@ -275,14 +276,29 @@ def test_satellite_pass_requires_an_api_key():
     assert solar.get_next_satellite_pass("25544") == "not configured, bug your sysop"
 
 
+@pytest.mark.parametrize("satellite", ["not-a-number", "", "0", "-1"])
+def test_satellite_pass_rejects_invalid_norad_without_http(monkeypatch, satellite):
+    solar.set_config(_config(api_key="secret"))
+    request = Mock()
+    monkeypatch.setattr(solar.requests, "get", request)
+
+    assert solar.get_next_satellite_pass(satellite) == "Provide NORAD# example use:🛰️satpass 25544,33591"
+    request.assert_not_called()
+
+
 def test_sun_and_moon_outputs_match_command_parser_contract():
     solar.set_config(_config())
 
     sun = solar.get_sun()
     moon = solar.get_moon()
 
-    assert re.search(r"^SunSet: \w{3} \d{2} \d{2}:\d{2}(?:AM|PM)$", sun, re.MULTILINE)
-    assert re.search(r"^Rise: \w{3} \d{2} \d{2}:\d{2}(?:AM|PM)$", sun, re.MULTILINE)
+    daytime = re.search(r"^SunSet: \w{3} \d{2} \d{2}:\d{2}(?:AM|PM)$", sun, re.MULTILINE) and re.search(
+        r"^Rise: \w{3} \d{2} \d{2}:\d{2}(?:AM|PM)$", sun, re.MULTILINE
+    )
+    nighttime = re.search(r"^SunRise: \w{3} \d{2} \d{2}:\d{2}(?:AM|PM)$", sun, re.MULTILINE) and re.search(
+        r"^Set: \w{3} \d{2} \d{2}:\d{2}(?:AM|PM)$", sun, re.MULTILINE
+    )
+    assert daytime or nighttime
     assert "Daylight: " in sun
     assert "Azimuth: " in sun
     assert re.search(r"^MoonRise:\w{3} \d{2} \d{2}:\d{2}(?:AM|PM)$", moon, re.MULTILINE)

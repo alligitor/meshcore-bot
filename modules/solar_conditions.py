@@ -355,6 +355,15 @@ def get_next_satellite_pass(
     """Return the next N2YO visual or radio pass in the legacy compact format."""
 
     try:
+        satellite_text = str(satellite).strip()
+        try:
+            satellite_number = int(satellite_text)
+        except (TypeError, ValueError):
+            return "Provide NORAD# example use:🛰️satpass 25544,33591"
+        if satellite_number <= 0:
+            return "Provide NORAD# example use:🛰️satpass 25544,33591"
+        satellite_id = str(satellite_number)
+
         latitude, longitude = _coordinates(lat, lon)
         api_key = str(get_config_value("External_Data", "n2yo_api_key", DEFAULT_N2YO_API_KEY)).strip()
         if not api_key:
@@ -364,7 +373,7 @@ def get_next_satellite_pass(
         pass_kind = "visualpasses" if use_visual else "radiopasses"
         threshold = 60 if use_visual else 0
         url = (
-            f"{N2YO_BASE_URL}/{pass_kind}/{satellite}/{latitude}/{longitude}"
+            f"{N2YO_BASE_URL}/{pass_kind}/{satellite_id}/{latitude}/{longitude}"
             f"/0/10/{threshold}/&apiKey={api_key}"
         )
         response = requests.get(url, timeout=DEFAULT_URL_TIMEOUT)
@@ -373,7 +382,7 @@ def get_next_satellite_pass(
 
         info = payload.get("info") or {}
         passes = payload.get("passes") or []
-        satellite_name = info.get("satname") or str(satellite)
+        satellite_name = info.get("satname") or satellite_id
         if not passes:
             qualifier = "visual" if use_visual else "radio"
             return f"{satellite_name} has no {qualifier} passes in the next 10 days from this location"

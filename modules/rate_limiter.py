@@ -240,8 +240,9 @@ class NominatimRateLimiter:
 
     def record_request(self):
         """Record that we made a Nominatim request"""
-        self.last_request = time.monotonic()
-        self._total_requests += 1
+        with self._sync_lock:
+            self.last_request = time.monotonic()
+            self._total_requests += 1
 
     async def wait_for_request(self):
         """Wait until we can make a Nominatim request (async)"""
@@ -251,14 +252,18 @@ class NominatimRateLimiter:
                 await asyncio.sleep(wait_time + 0.05)  # Small buffer
 
     async def wait_and_request(self) -> None:
-        """Wait until a request can be made, then mark request time (thread-safe)"""
+        """Atomically reserve an async request slot shared with sync callers."""
         async with self._get_lock():
-            current_time = time.monotonic()
-            time_since_last = current_time - self.last_request
-            if time_since_last < self.seconds:
-                await asyncio.sleep(self.seconds - time_since_last)
-            self.last_request = time.monotonic()
-            self._total_requests += 1
+            while True:
+                with self._sync_lock:
+                    elapsed = time.monotonic() - self.last_request
+                    if elapsed >= self.seconds:
+                        self.last_request = time.monotonic()
+                        self._total_requests += 1
+                        return
+                    self._total_throttled += 1
+                    wait_time = self.seconds - elapsed + 0.05
+                await asyncio.sleep(wait_time)
 
     def wait_for_request_sync(self):
         """Wait until we can make a Nominatim request (synchronous).
@@ -279,15 +284,16 @@ class NominatimRateLimiter:
         runs on worker threads, and a wait-then-record-after pattern let several
         threads clear the gate together and hit Nominatim simultaneously.
         """
-        with self._sync_lock:
-            while True:
+        while True:
+            with self._sync_lock:
                 elapsed = time.monotonic() - self.last_request
                 if elapsed >= self.seconds:
-                    break
+                    self.last_request = time.monotonic()
+                    self._total_requests += 1
+                    return
                 self._total_throttled += 1
-                time.sleep(self.seconds - elapsed + 0.05)  # Small buffer
-            self.last_request = time.monotonic()
-            self._total_requests += 1
+                wait_time = self.seconds - elapsed + 0.05
+            time.sleep(wait_time)  # Small buffer
 
     def get_stats(self) -> dict:
         """Get rate limiter statistics"""
