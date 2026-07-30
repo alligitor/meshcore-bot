@@ -220,16 +220,30 @@ class MessageScheduler:
         """Run async coroutine on bot main loop from APScheduler thread (same pattern as send_scheduled_message)."""
         import asyncio
 
-        if hasattr(self.bot, 'main_event_loop') and self.bot.main_event_loop and self.bot.main_event_loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(coro, self.bot.main_event_loop)
-            try:
-                future.result(timeout=timeout)
-            except RuntimeError as e:
-                self.logger.warning('Event loop gone during device-mode job: %s', e)
-            except Exception as e:
-                self.logger.error('Device-mode scheduled job failed: %s', e)
-        else:
+        loop = getattr(self.bot, 'main_event_loop', None)
+        if not loop or not loop.is_running():
+            # Close the coroutine we were handed. Dropping it unawaited leaks it and
+            # emits "coroutine ... was never awaited" RuntimeWarning.
+            coro.close()
             self.logger.warning('No running main_event_loop — skipping device-mode scheduled job')
+            return
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError as e:
+            # This job runs on an APScheduler thread, so the loop can stop between
+            # the is_running() check above and this submit. The coroutine never got
+            # scheduled, so close it here too.
+            coro.close()
+            self.logger.warning('Event loop gone during device-mode job: %s', e)
+            return
+
+        try:
+            future.result(timeout=timeout)
+        except RuntimeError as e:
+            self.logger.warning('Event loop gone during device-mode job: %s', e)
+        except Exception as e:
+            self.logger.error('Device-mode scheduled job failed: %s', e)
 
     async def _device_mode_firmware_coro(self) -> None:
         await self.bot.repeater_manager.apply_device_mode_firmware_preferences()
