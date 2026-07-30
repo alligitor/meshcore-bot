@@ -594,8 +594,8 @@ Shows comprehensive help for all repeater commands.
 
 The repeater management system respects several configuration settings in `config.ini`:
 
-- `auto_manage_contacts` - Controls automatic contact management
-  - `device` - Device handles auto-addition, bot manages capacity
+- `auto_manage_contacts` - Controls automatic contact management (default: `device`)
+  - `device` - Device handles auto-addition, bot manages capacity (default)
   - `bot` - Bot automatically adds companion contacts and manages capacity
   - `false` - Manual mode (use commands to manage contacts)
 

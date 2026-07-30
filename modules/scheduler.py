@@ -182,7 +182,7 @@ class MessageScheduler:
         """One-shot jobs for auto_manage_contacts=device: firmware autoadd + favourite hygiene."""
         if self._apscheduler is None:
             return
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         try:
             delay_fw = max(0, self.bot.config.getint('Bot', 'device_mode_firmware_delay_seconds', fallback=30))
@@ -241,18 +241,18 @@ class MessageScheduler:
         await self.bot.repeater_manager.sync_device_mode_favourites_pass2()
 
     def _device_mode_firmware_job_sync(self) -> None:
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             self.logger.debug('Skipping device_mode_firmware job — not device mode')
             return
         self._run_async_on_main_loop(self._device_mode_firmware_coro(), timeout=120.0)
 
     def _device_mode_favourite_pass1_job_sync(self) -> None:
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         self._run_async_on_main_loop(self._device_mode_favourite_pass1_coro(), timeout=600.0)
 
     def _device_mode_favourite_pass2_job_sync(self) -> None:
-        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='false').lower() != 'device':
+        if self.bot.config.get('Bot', 'auto_manage_contacts', fallback='device').lower() != 'device':
             return
         self._run_async_on_main_loop(self._device_mode_favourite_pass2_coro(), timeout=600.0)
 

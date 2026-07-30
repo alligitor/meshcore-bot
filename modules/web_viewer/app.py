@@ -216,15 +216,26 @@ class BotDataViewer:
     }
 
     def __init__(self, db_path="meshcore_bot.db", repeater_db_path=None, config_path="config.ini"):
-        # Setup comprehensive logging
-        self._setup_logging()
-
         # Set bot root directory (project root) for path validation
         # This is the directory containing the modules folder
         self.bot_root = Path(os.path.join(os.path.dirname(__file__), '..', '..')).resolve()
         # Resolve relative config path so viewer finds config when started as subprocess (cwd may differ)
         if not os.path.isabs(config_path):
             config_path = str(self.bot_root / config_path)
+
+        # Load configuration before logging so [Logging] log_file can select
+        # journal/console-only vs file logging (same rules as the main bot).
+        self.config = self._load_config(config_path)
+        self.config_path = config_path  # kept for config.ini write-back endpoints
+
+        # Resolve db_path relative to the config file's directory — matches core.py's bot_root
+        # property which is Path(config_file).parent.resolve().  Using self.bot_root (the project
+        # code root, 2 dirs above app.py) as the base caused a mismatch when config.ini lived
+        # elsewhere (e.g. a separate deployment directory), resulting in a blank realtime monitor
+        # because the web viewer and bot opened different database files.
+        self._config_base = Path(config_path).parent.resolve() if os.path.exists(config_path) else self.bot_root
+
+        self._setup_logging()
 
         self.app = Flask(
             __name__,
@@ -279,17 +290,6 @@ class BotDataViewer:
         self._contacts_badge_cache_lock = threading.Lock()
         self._contacts_badge_cache_signature = None
         self._contacts_badge_cache_chunks: set[str] = set()
-
-        # Load configuration
-        self.config = self._load_config(config_path)
-        self.config_path = config_path  # kept for config.ini write-back endpoints
-
-        # Resolve db_path relative to the config file's directory — matches core.py's bot_root
-        # property which is Path(config_file).parent.resolve().  Using self.bot_root (the project
-        # code root, 2 dirs above app.py) as the base caused a mismatch when config.ini lived
-        # elsewhere (e.g. a separate deployment directory), resulting in a blank realtime monitor
-        # because the web viewer and bot opened different database files.
-        self._config_base = Path(config_path).parent.resolve() if os.path.exists(config_path) else self.bot_root
 
         # Use [Bot] db_path when [Web_Viewer] db_path is unset
         bot_db = self.config.get('Bot', 'db_path', fallback='meshcore_bot.db')
@@ -352,11 +352,27 @@ class BotDataViewer:
         self.logger.info("BotDataViewer initialized with Flask-SocketIO 5.x best practices")
 
     def _setup_logging(self):
-        """Setup comprehensive logging with rotation"""
+        """Setup logging; file handler only when [Logging] log_file is set.
+
+        Empty log_file (or missing [Logging] section) means console/journal only,
+        matching the main bot. When a log file is configured, viewer logs go next
+        to it as web_viewer.log (e.g. /var/log/meshcore-bot/web_viewer.log).
+        """
         from logging.handlers import RotatingFileHandler
 
-        # Create logs directory if it doesn't exist
-        os.makedirs('logs', exist_ok=True)
+        log_file = ''
+        log_max_bytes = 5 * 1024 * 1024
+        log_backup_count = 3
+        if getattr(self, 'config', None) is not None and self.config.has_section('Logging'):
+            log_file = self.config.get('Logging', 'log_file', fallback='').strip()
+            try:
+                log_max_bytes = self.config.getint('Logging', 'log_max_bytes', fallback=log_max_bytes)
+            except (configparser.Error, ValueError, TypeError):
+                pass
+            try:
+                log_backup_count = self.config.getint('Logging', 'log_backup_count', fallback=log_backup_count)
+            except (configparser.Error, ValueError, TypeError):
+                pass
 
         # Get or create logger (don't use basicConfig as it may conflict with existing logging)
         self.logger = logging.getLogger('modern_web_viewer')
@@ -365,29 +381,47 @@ class BotDataViewer:
         # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()
 
-        # Create rotating file handler (max 5MB per file, keep 3 backups)
-        file_handler = RotatingFileHandler(
-            'logs/web_viewer_modern.log',
-            maxBytes=5 * 1024 * 1024,  # 5 MB
-            backupCount=3,
-            encoding='utf-8'
-        )
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_formatter)
-        self.logger.addHandler(file_handler)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-        # Create console handler
+        # Console handler (captured by journald under systemd)
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(console_formatter)
+        console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 
         # Prevent propagation to root logger to avoid duplicate messages
         self.logger.propagate = False
 
-        self.logger.info("Web viewer logging initialized with rotation (5MB max, 3 backups)")
+        if not log_file:
+            self.logger.info("No log file specified, using console/journal logging only")
+            return
+
+        # Place viewer log beside the bot log (same directory as log_file)
+        bot_log_path = Path(resolve_path(log_file, self._config_base))
+        viewer_log_path = bot_log_path.parent / 'web_viewer.log'
+        try:
+            viewer_log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                str(viewer_log_path),
+                maxBytes=log_max_bytes,
+                backupCount=log_backup_count,
+                encoding='utf-8',
+            )
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
+            self.logger.info(
+                "Web viewer logging initialized (file=%s, max=%s bytes, backups=%s)",
+                viewer_log_path,
+                log_max_bytes,
+                log_backup_count,
+            )
+        except (OSError, PermissionError) as e:
+            self.logger.warning(
+                "Could not open web viewer log file %s: %s. Using console/journal only.",
+                viewer_log_path,
+                e,
+            )
 
     def _load_config(self, config_path):
         """Load configuration from file"""
@@ -882,7 +916,7 @@ class BotDataViewer:
             bot_name = ''
             name_managed = False
             if self.config:
-                auto_manage = self.config.get('Bot', 'auto_manage_contacts', fallback='false').lower()
+                auto_manage = self.config.get('Bot', 'auto_manage_contacts', fallback='device').lower()
                 bot_name = (self.config.get('Bot', 'bot_name', fallback='') or '').strip()
                 try:
                     auto_update_name = self.config.getboolean('Bot', 'auto_update_device_name', fallback=True)

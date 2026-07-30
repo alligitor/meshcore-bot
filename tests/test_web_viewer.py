@@ -3552,6 +3552,58 @@ class TestDbPathResolutionFromConfigDir:
         )
 
 
+class TestWebViewerLoggingRespectsLogFile:
+    """Web viewer file logging follows [Logging] log_file like the main bot."""
+
+    def _write_config(self, config_dir: Path, log_file: str | None) -> str:
+        cfg = configparser.ConfigParser()
+        cfg["Connection"] = {"connection_type": "serial", "serial_port": "/dev/ttyUSB0"}
+        cfg["Bot"] = {"bot_name": "TestBot", "db_path": "bot.db", "prefix_bytes": "1"}
+        cfg["Channels"] = {"monitor_channels": "general"}
+        cfg["Path_Command"] = {"max_hops": "5", "timeout": "30"}
+        if log_file is not None:
+            cfg["Logging"] = {"log_file": log_file}
+        config_path = str(config_dir / "config.ini")
+        with open(config_path, "w") as fh:
+            cfg.write(fh)
+        return config_path
+
+    def _make_viewer(self, config_path: str) -> BotDataViewer:
+        with (
+            patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
+            patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
+            patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        ):
+            return BotDataViewer(config_path=config_path)
+
+    def test_empty_log_file_is_console_only(self, tmp_path: Path) -> None:
+        from logging.handlers import RotatingFileHandler
+
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        config_path = self._write_config(config_dir, log_file="")
+        v = self._make_viewer(config_path)
+        assert not any(isinstance(h, RotatingFileHandler) for h in v.logger.handlers)
+        assert not (config_dir / "logs").exists()
+        assert not (config_dir / "web_viewer.log").exists()
+        assert not (tmp_path / "logs").exists()
+
+    def test_log_file_writes_beside_bot_log(self, tmp_path: Path) -> None:
+        from logging.handlers import RotatingFileHandler
+
+        config_dir = tmp_path / "cfg"
+        log_dir = tmp_path / "varlog"
+        config_dir.mkdir()
+        log_dir.mkdir()
+        bot_log = log_dir / "meshcore_bot.log"
+        config_path = self._write_config(config_dir, log_file=str(bot_log))
+        v = self._make_viewer(config_path)
+        assert any(isinstance(h, RotatingFileHandler) for h in v.logger.handlers)
+        assert (log_dir / "web_viewer.log").exists()
+        assert not (config_dir / "logs").exists()
+        assert not (tmp_path / "logs").exists()
+
+
 class TestRadioDebugConfig:
     """Tests for GET/POST /api/config/radio-debug endpoints."""
 

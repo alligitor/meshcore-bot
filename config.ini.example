@@ -211,10 +211,10 @@ advert_interval_hours = 0
 startup_advert = false
 
 # Auto-manage contact list when new contacts are discovered
-# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits)
+# device: Device handles auto-addition using standard auto-discovery mode, bot manages contact list capacity (purge old contacts when near limits) (default)
 # bot: Bot automatically adds new companion contacts to device, bot manages contact list capacity (purge old contacts when near limits)
-# false: Manual mode - no automatic actions, use !repeater commands to manage contacts (default)
-auto_manage_contacts = bot
+# false: Manual mode - no automatic actions, use !repeater commands to manage contacts
+auto_manage_contacts = device
 
 # When auto_manage_contacts = device, the bot schedules one-shot jobs after connect:
 #   - Firmware: manual per-type contact adds + overwrite oldest non-favourite on full + auto-add chat (companions) only (bitmask 0x03)
@@ -571,9 +571,12 @@ dm_only = true
 # CRITICAL: Only critical errors
 log_level = INFO
 
-# Log file path (leave empty for console only)
-# Bot will write logs to this file in addition to console
+# Log file path (leave empty for console/journald only)
+# Bot and web viewer write to this file in addition to console when set.
+# Empty: console only (captured by journald under systemd — preferred for services).
+# systemd service installs use: /var/log/meshcore-bot/meshcore_bot.log
 # Logs rotate at 5 MB with up to 3 backup files (e.g. meshcore_bot.log.1, .2, .3)
+# Web viewer file logs (when set) go beside this path as web_viewer.log
 log_file = meshcore_bot.log
 
 # Enable colored console output

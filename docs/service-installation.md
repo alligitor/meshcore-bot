@@ -122,6 +122,8 @@ local_dir_path = /var/lib/meshcore-bot/local
 log_file = /var/log/meshcore-bot/meshcore_bot.log
 ```
 
+Leave `log_file` empty to use journald only (no log files). The installer and `.deb` package rewrite relative `log_file` values to `/var/log/meshcore-bot/`.
+
 ### 6. Install the Service File
 
 ```bash
@@ -146,7 +148,7 @@ sudo systemctl status meshcore-bot
 
 ### View Logs
 ```bash
-# Real-time logs
+# Real-time logs (always available — stdout/stderr go to journald)
 sudo journalctl -u meshcore-bot -f
 
 # Recent logs
@@ -154,6 +156,11 @@ sudo journalctl -u meshcore-bot -n 100
 
 # Logs since boot
 sudo journalctl -u meshcore-bot -b
+
+# Optional file logs when [Logging] log_file is set (service default):
+#   /var/log/meshcore-bot/meshcore_bot.log
+#   /var/log/meshcore-bot/web_viewer.log
+sudo tail -f /var/log/meshcore-bot/meshcore_bot.log
 ```
 
 ### Enable/Disable Auto-start
