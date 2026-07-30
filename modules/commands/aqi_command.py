@@ -5,6 +5,7 @@ Provides Air Quality Index information using OpenMeteo API
 """
 
 import asyncio
+from pathlib import Path
 from typing import Optional
 
 import openmeteo_requests
@@ -91,8 +92,13 @@ class AqiCommand(BaseCommand):
         # Get database manager for geocoding cache
         self.db_manager = bot.db_manager
 
-        # Setup the Open-Meteo API client with cache and retry on error
-        cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
+        # Setup the Open-Meteo API client with cache and retry on error.
+        # requests_cache backs this with a SQLite file, so keep it beside the bot
+        # database in the service-writable state directory. A relative path lands
+        # in the working directory, which is read-only under the hardened service
+        # unit and fails plugin load with "unable to open database file".
+        cache_path = Path(self.db_manager.db_path).parent / 'aqi_http_cache'
+        cache_session = requests_cache.CachedSession(str(cache_path), expire_after=3600)
         retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
         self.openmeteo = openmeteo_requests.Client(session=retry_session)
 

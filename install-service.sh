@@ -626,6 +626,17 @@ find "$INSTALL_DIR" -type f -name "*.ini" -exec chmod 600 {} \; 2>/dev/null || t
 find "$INSTALL_DIR" -type f \( -name ".env" -o -name "*.key" -o -name "*.pem" -o -name "*.p12" -o -name "*.pfx" \) -exec chmod 640 {} \; 2>/dev/null || true
 find "$INSTALL_DIR" -type f \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "*.log" -o -name "*.log.*" \) -exec chmod 600 {} \; 2>/dev/null || true
 
+# The virtualenv is built under `umask 077`, so pyvenv.cfg, *.pth files, compiled
+# *.so modules, and dist-info metadata land as 0600/0711 -- root can read them but
+# the service account cannot, and Python aborts at startup with
+# "init_import_site: Failed to import the site module".  The pattern rules above
+# only restore read on *.py/*.txt/*.json, and `chmod go-w` removes write without
+# ever granting read.  Add read for all plus execute/traverse only where an
+# execute bit already exists; no write bit is granted, so the service account
+# still cannot modify dependency code.  This runs after the rules above so that
+# *.ini files bundled inside site-packages stay readable to their own package.
+chmod -R a+rX "$INSTALL_DIR/venv" 2>/dev/null || true
+
 # Credentials, databases, backups, and local-plugin settings are private to the
 # service user.  Directories must be writable for SQLite sidecars and atomic
 # config updates; the 0700 boundary prevents local disclosure.
