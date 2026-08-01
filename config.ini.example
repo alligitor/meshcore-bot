@@ -934,6 +934,13 @@ anonymize_users = false
 # The scheduler runs cleanup daily so retention is enforced even when the
 # standalone web viewer is not running. Shorter retention reduces DB size.
 #
+# Old rows are deleted in committed chunks so live packet/contact/graph writers
+# can run between batches. These defaults suit Raspberry Pi and SD-card installs.
+# Smaller batches/longer pauses reduce I/O bursts but take longer to drain a
+# large first-run backlog.
+retention_delete_batch_size = 1000
+retention_delete_pause_seconds = 0.1
+#
 # Packet stream (web viewer real-time display and transmission_tracker)
 # 2-3 days is enough for most deployments; 7 days if you need longer history.
 packet_stream_retention_days = 3
@@ -1035,7 +1042,8 @@ graph_edge_expiration_days = 7
 # - batched: Accumulate updates, flush periodically (better performance, risk of data loss on crash)
 # - hybrid: Immediate for new edges, batched for observation count increments (balanced)
 # Recommended: 'hybrid' for development (frequent restarts), 'batched' for production
-graph_write_strategy = hybrid
+# and SD-card installations to reduce transaction/WAL writes.
+graph_write_strategy = batched
 
 # Batch write interval in seconds (only used if strategy is 'batched' or 'hybrid')
 # How often to flush pending edge updates to database
@@ -1152,6 +1160,7 @@ graph_path_validation_obs_divisor = 50.0
 #   14 - Good balance of coverage vs. memory (default for unconfigured installs)
 #   7  - Reduced memory footprint for Raspberry Pi Zero 2 W
 # Note: edges older than graph_edge_expiration_days are never loaded regardless of this value.
+# Raspberry Pi 4 / SD-card profile: use 7 to make that effective bound explicit.
 graph_startup_load_days = 0
 
 # Enable graph data capture from incoming packets (default: true)
@@ -1604,6 +1613,36 @@ auto_start = false
 # false: hide page/nav/API endpoint
 # true: expose page/nav/API endpoint
 multibyte_monitor_enabled = false
+
+# Cache the expensive lifetime multi-byte mesh aggregation for this many seconds.
+# Concurrent graph requests share one computation. The mesh page also coalesces
+# live edge events into one refresh every 30 seconds.
+mesh_graph_cache_seconds = 30
+
+# Dashboard snapshot refresher
+# A background thread in the viewer process recomputes the landing page's
+# statistics on an interval and stores them in two tables (daily_rollup and
+# dashboard_snapshot), so page loads read one row instead of running ~50
+# aggregate queries. It also accumulates daily trends that outlive the raw
+# tables' retention — message/command/path stats are pruned at 7 days and
+# packet_stream at 3, so without this there is no history to chart.
+# Disabling it leaves /api/dashboard/summary returning 503 and the dashboard
+# unable to render.
+# dashboard_snapshot_enabled = true
+#
+# How often to recompute. Each refresh recomputes today plus a 3-day trailing
+# window; older days are frozen.
+# dashboard_snapshot_interval_seconds = 60
+#
+# How many days of daily_rollup history to retain (~1 row/day, so 400 days is
+# well under a megabyte).
+# dashboard_snapshot_history_days = 400
+#
+# packet_stream rows written before this feature existed keep their route type
+# and hop encoding only inside a JSON blob. Each refresh converts this many of
+# them to real columns rather than rewriting the whole table at once, which on
+# an SD-card Pi would stall the bot for minutes. Set to 0 to disable.
+# dashboard_packet_backfill_rows = 2000
 
 # Optional timeout overrides for web viewer integration (seconds)
 # edge_post_timeout_sec = 1.0

@@ -65,6 +65,7 @@ def viewer(tmp_path_factory):
         patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
         patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
         patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
     ):
         v = BotDataViewer(db_path=db_path, config_path=config_path)
 
@@ -103,6 +104,7 @@ def auth_viewer(tmp_path_factory):
         patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
         patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
         patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
     ):
         v = BotDataViewer(db_path=db_path, config_path=config_path)
 
@@ -163,22 +165,27 @@ class TestPageRoutes:
         resp = client.get("/")
         assert resp.status_code == 200
 
-    def test_index_live_activity_controls(self, client):
-        """Dashboard index page contains scroll buttons and type-filter checkboxes."""
+    def test_index_loads_the_external_dashboard_script(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
-        html = resp.data.decode()
-        # Scroll buttons
-        assert 'id="live-scroll-top"' in html
-        assert 'id="live-scroll-bottom"' in html
-        assert 'scrollLiveFeed' in html
-        # Filter checkboxes with data-type attributes
-        assert 'data-type="packet"' in html
-        assert 'data-type="command"' in html
-        assert 'data-type="message"' in html
-        assert 'live-filter-cb' in html
-        # [#channel] prefix logic present in JS
-        assert 'applyFilters' in html
+        assert 'js/dashboard.js' in resp.data.decode()
+
+    def test_dashboard_does_not_subscribe_to_live_streams(self, client):
+        """The live feed moved to /realtime; the dashboard must not re-add it.
+
+        It opened three SocketIO subscriptions and re-rendered on every packet,
+        duplicating a page that already exists, so the dashboard now costs one
+        snapshot read per poll and nothing else.
+        """
+        html = client.get("/").data.decode()
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "modules" / "web_viewer" / "static" / "js" / "dashboard.js"
+        ).read_text(encoding="utf-8")
+        for marker in ("live-feed", "live-filter-cb", "live-scroll-top"):
+            assert marker not in html, marker
+        for marker in ("subscribe_packets", "subscribe_commands", "subscribe_messages"):
+            assert marker not in script, marker
 
     def test_realtime(self, client):
         resp = client.get("/realtime")
@@ -223,9 +230,10 @@ class TestPageRoutes:
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/config#database")
 
-    def test_stats(self, client):
+    def test_stats_page_removed(self, client):
+        """The orphaned /stats stub page was folded into the dashboard."""
         resp = client.get("/stats")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
 
     def test_greeter(self, client):
         resp = client.get("/greeter")
@@ -2111,6 +2119,7 @@ def socketio_viewer(tmp_path_factory):
         _patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
         _patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
         _patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+        _patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
     ):
         v = BotDataViewer(db_path=db_path, config_path=config_path)
 
@@ -2325,7 +2334,7 @@ class TestConnectedClientsApi:
         html = resp.data.decode()
         assert "connectedClientsModal" in html
         assert "connected-clients-table" in html
-        assert "loadConnectedClients" in html
+        assert 'id="health-clients-link"' in html
 
 
 # ---------------------------------------------------------------------------
@@ -3491,6 +3500,7 @@ class TestDbPathResolutionFromConfigDir:
             patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
             patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
             patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+            patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
         ):
             return BotDataViewer(config_path=config_path)
 
@@ -3555,14 +3565,22 @@ class TestDbPathResolutionFromConfigDir:
 class TestWebViewerLoggingRespectsLogFile:
     """Web viewer file logging follows [Logging] log_file like the main bot."""
 
-    def _write_config(self, config_dir: Path, log_file: str | None) -> str:
+    def _write_config(
+        self,
+        config_dir: Path,
+        log_file: str | None,
+        log_level: str = "INFO",
+    ) -> str:
         cfg = configparser.ConfigParser()
         cfg["Connection"] = {"connection_type": "serial", "serial_port": "/dev/ttyUSB0"}
         cfg["Bot"] = {"bot_name": "TestBot", "db_path": "bot.db", "prefix_bytes": "1"}
         cfg["Channels"] = {"monitor_channels": "general"}
         cfg["Path_Command"] = {"max_hops": "5", "timeout": "30"}
         if log_file is not None:
-            cfg["Logging"] = {"log_file": log_file}
+            cfg["Logging"] = {
+                "log_file": log_file,
+                "log_level": log_level,
+            }
         config_path = str(config_dir / "config.ini")
         with open(config_path, "w") as fh:
             cfg.write(fh)
@@ -3573,6 +3591,7 @@ class TestWebViewerLoggingRespectsLogFile:
             patch.object(BotDataViewer, "_start_database_polling", lambda self: None),
             patch.object(BotDataViewer, "_start_log_tailing", lambda self: None),
             patch.object(BotDataViewer, "_start_cleanup_scheduler", lambda self: None),
+            patch.object(BotDataViewer, "_start_dashboard_refresher", lambda self: None),
         ):
             return BotDataViewer(config_path=config_path)
 
@@ -3602,6 +3621,60 @@ class TestWebViewerLoggingRespectsLogFile:
         assert (log_dir / "web_viewer.log").exists()
         assert not (config_dir / "logs").exists()
         assert not (tmp_path / "logs").exists()
+
+    def test_handlers_respect_configured_log_level(self, tmp_path: Path) -> None:
+        import logging
+
+        config_dir = tmp_path / "cfg"
+        log_dir = tmp_path / "varlog"
+        config_dir.mkdir()
+        log_dir.mkdir()
+        config_path = self._write_config(
+            config_dir,
+            log_file=str(log_dir / "meshcore_bot.log"),
+            log_level="WARNING",
+        )
+
+        viewer = self._make_viewer(config_path)
+
+        assert viewer.logger.level == logging.WARNING
+        assert viewer.logger.handlers
+        assert all(
+            handler.level == logging.WARNING
+            for handler in viewer.logger.handlers
+        )
+
+    def test_debug_file_logging_keeps_info_floor_for_journal(
+        self, tmp_path: Path
+    ) -> None:
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        config_dir = tmp_path / "cfg"
+        log_dir = tmp_path / "varlog"
+        config_dir.mkdir()
+        log_dir.mkdir()
+        config_path = self._write_config(
+            config_dir,
+            log_file=str(log_dir / "meshcore_bot.log"),
+            log_level="DEBUG",
+        )
+
+        viewer = self._make_viewer(config_path)
+        file_handlers = [
+            handler
+            for handler in viewer.logger.handlers
+            if isinstance(handler, RotatingFileHandler)
+        ]
+        console_handlers = [
+            handler
+            for handler in viewer.logger.handlers
+            if not isinstance(handler, RotatingFileHandler)
+        ]
+
+        assert viewer.logger.level == logging.DEBUG
+        assert [handler.level for handler in file_handlers] == [logging.DEBUG]
+        assert [handler.level for handler in console_handlers] == [logging.INFO]
 
 
 class TestRadioDebugConfig:
