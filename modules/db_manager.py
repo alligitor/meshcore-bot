@@ -8,8 +8,9 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -64,6 +65,13 @@ class DBManager:
         self.bot = bot
         self.logger = bot.logger
         self.db_path = db_path
+        # WAL is persistent database state, and re-applying it on every
+        # short-lived connection is surprisingly expensive (and can take a
+        # lock), so it is set once per config section. The rollback journal
+        # modes are connection-local; see _apply_sqlite_pragmas.
+        self._journal_mode_lock = threading.Lock()
+        self._journal_mode_initialized: set[str] = set()
+        self._journal_mode_warned: set[str] = set()
         self._init_database()
 
     def _init_database(self) -> None:
@@ -572,16 +580,46 @@ class DBManager:
         foreign_keys = bool(foreign_keys)
         journal_mode = str(journal_mode).strip() or "WAL"
         if journal_mode.upper() not in VALID_JOURNAL_MODES:
-            self.logger.warning(f"Invalid journal_mode {journal_mode!r}, falling back to WAL")
+            # Warn once per section: this runs on every connection, so an
+            # unconditional warning here would flood the log.
+            if section not in self._journal_mode_warned:
+                self._journal_mode_warned.add(section)
+                self.logger.warning(
+                    f"Invalid journal_mode {journal_mode!r} in [{section}], falling back to WAL"
+                )
             journal_mode = "WAL"
 
         try:
             conn.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
             conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
-            conn.execute(f"PRAGMA journal_mode={journal_mode}")
         except sqlite3.OperationalError:
-            # journal_mode can fail if DB is locked; others are best-effort.
+            # Connection-local tuning is best-effort when the database is busy.
             pass
+
+        # Only WAL is recorded in the database header and so survives to later
+        # connections. DELETE/TRUNCATE/PERSIST/MEMORY/OFF are connection-local:
+        # setting one of those just once would leave every subsequent connection
+        # silently running the SQLite default instead of the configured mode.
+        if journal_mode.upper() != "WAL":
+            with suppress(sqlite3.OperationalError):
+                conn.execute(f"PRAGMA journal_mode={journal_mode}")
+            return
+
+        # Tracked per section: [Bot] and [Web_Viewer] are read by different
+        # callers against this same database, so one must not starve the other.
+        if section in self._journal_mode_initialized:
+            return
+
+        # The first successful connection initializes persistent WAL mode.
+        # If SQLite is locked, leave the section clear so a later connection retries.
+        with self._journal_mode_lock:
+            if section in self._journal_mode_initialized:
+                return
+            try:
+                conn.execute(f"PRAGMA journal_mode={journal_mode}")
+            except sqlite3.OperationalError:
+                return
+            self._journal_mode_initialized.add(section)
 
     @contextmanager
     def connection(self) -> Generator[sqlite3.Connection, None, None]:

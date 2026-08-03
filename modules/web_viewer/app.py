@@ -55,7 +55,6 @@ from modules.db_retention import (
 )
 from modules.ini_writer import IniValueError, update_ini_values
 from modules.security_utils import (
-    VALID_JOURNAL_MODES,
     SafeUrlPolicy,
     create_safe_requests_session,
     safe_requests_request,
@@ -68,7 +67,7 @@ from modules.settings_schema import (
     validate_field,
 )
 from modules.settings_store import get_settings_store
-from modules.version_info import resolve_runtime_version
+from modules.version_info import resolve_application_version
 from modules.web_viewer.dashboard_stats import (
     SERIES_METRICS,
     TOP_KINDS,
@@ -158,7 +157,7 @@ from modules.feed_manager import (
     FeedManager,
     _useful_feed_content_type,
 )
-from modules.repeater_manager import RepeaterManager
+from modules.repeater_manager import RepeaterManager, validate_repeater_tables
 from modules.url_shortener import _coerce_url_string
 from modules.utils import resolve_path
 from modules.web_viewer.config_panels import CONFIG_PANELS, PANEL_CATEGORIES
@@ -298,6 +297,8 @@ class BotDataViewer:
         self._db_lock = threading.Lock()
         self._db_last_used = 0
         self._db_timeout = 300  # 5 minutes connection timeout
+        # SQLite pragma handling (including the once-per-section WAL setup)
+        # lives in DBManager; see _configure_db_connection.
 
         # The contacts list needs all-time multibyte hop-prefix evidence for its
         # capability badge.  Cache that derived set between requests and invalidate
@@ -489,7 +490,7 @@ class BotDataViewer:
 
     def _get_version_info(self) -> dict[str, str | None]:
         """Get version info for footer via centralized version resolver. Never raises."""
-        info = resolve_runtime_version(self.bot_root)
+        info = resolve_application_version()
         display = info.get("display")
         return {
             # 'display' is what the footer renders — same value !version reports,
@@ -581,13 +582,24 @@ class BotDataViewer:
             # Now set db_manager on the minimal bot for RepeaterManager
             minimal_bot.db_manager = self.db_manager
 
-            # Initialize repeater manager for geocoding functionality
-            self.repeater_manager = RepeaterManager(minimal_bot)
+            # The viewer only needs RepeaterManager for the manual geocode
+            # endpoint, so defer its setup until that endpoint is actually used.
+            self._repeater_manager_bot = minimal_bot
+            self._repeater_manager_lock = threading.Lock()
+            self.repeater_manager: RepeaterManager | None = None
 
-            # Initialize mesh graph for path resolution (uses same logic as path command)
-            from modules.mesh_graph import MeshGraph
-            minimal_bot.mesh_graph = MeshGraph(minimal_bot)
-            self.mesh_graph = minimal_bot.mesh_graph
+            # RepeaterManager's constructor is what used to validate these at
+            # startup. It is lazy now, so validate here: a missing migration is
+            # a startup failure, not a mystery 500 from the geocode endpoint.
+            validate_repeater_tables(self.db_manager, self.logger)
+
+            # MeshGraph is only read by the two path-decoding routes, so build it
+            # on first use rather than at startup. It is NOT optional for them:
+            # without it decode_path_nodes() falls back to geographic-only
+            # selection and disagrees with the bot's `path` command.
+            self._mesh_graph_bot = minimal_bot
+            self._mesh_graph_lock = threading.Lock()
+            self.mesh_graph = None
 
             # Store database paths for direct connection
             self.db_path = self.db_path
@@ -597,23 +609,56 @@ class BotDataViewer:
             self.logger.error(f"Failed to initialize databases: {e}")
             raise
 
+    def _get_repeater_manager(self) -> RepeaterManager:
+        """Lazily construct the manual-geocoding helper once."""
+        if self.repeater_manager is not None:
+            return self.repeater_manager
+        with self._repeater_manager_lock:
+            if self.repeater_manager is None:
+                self.repeater_manager = RepeaterManager(self._repeater_manager_bot)
+            return self.repeater_manager
+
+    def _get_mesh_graph(self):
+        """Lazily load the read-only mesh graph used to disambiguate path prefixes.
+
+        Returns None only if the graph cannot be loaded, in which case path
+        decoding degrades to geographic-only selection rather than failing the
+        request. Loaded with capture disabled: the bot process owns edge
+        capture, so the viewer must not write edges or run a batch writer.
+        """
+        if self.mesh_graph is not None:
+            return self.mesh_graph
+        with self._mesh_graph_lock:
+            if self.mesh_graph is None:
+                from modules.mesh_graph import MeshGraph
+                try:
+                    graph = MeshGraph(self._mesh_graph_bot, capture=False)
+                except Exception as e:
+                    self.logger.error(
+                        f"Mesh graph unavailable; path decoding will fall back to "
+                        f"geographic selection only: {e}"
+                    )
+                    return None
+                self._mesh_graph_bot.mesh_graph = graph
+                self.mesh_graph = graph
+            return self.mesh_graph
+
+    def _configure_db_connection(self, conn: sqlite3.Connection) -> None:
+        """Apply SQLite pragmas to a viewer connection.
+
+        Delegates to DBManager, which owns the single implementation and the
+        once-per-section WAL bookkeeping. Safe because this DBManager was built
+        for self.db_path, which is the file every viewer connection opens — the
+        journal-mode state it tracks belongs to that same database.
+        """
+        self.db_manager._apply_sqlite_pragmas(conn, for_web_viewer=True)
+
     def _get_db_connection(self):
         """Get database connection - create new connection for each request to avoid threading issues"""
         try:
             conn = sqlite3.connect(self.db_path, timeout=60)
             conn.row_factory = sqlite3.Row
-            try:
-                foreign_keys = self.config.getboolean("Web_Viewer", "sqlite_foreign_keys", fallback=True)
-                busy_timeout_ms = self.config.getint("Web_Viewer", "sqlite_busy_timeout_ms", fallback=60000)
-                journal_mode = self.config.get("Web_Viewer", "sqlite_journal_mode", fallback="WAL").strip() or "WAL"
-                if journal_mode.upper() not in VALID_JOURNAL_MODES:
-                    self.logger.warning(f"Invalid journal_mode {journal_mode!r}, falling back to WAL")
-                    journal_mode = "WAL"
-                conn.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
-                conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
-                conn.execute(f"PRAGMA journal_mode={journal_mode}")
-            except sqlite3.OperationalError:
-                pass
+            self._configure_db_connection(conn)
             return conn
         except Exception as e:
             self.logger.error(f"Failed to create database connection: {e}")
@@ -626,18 +671,7 @@ class BotDataViewer:
         """
         conn = sqlite3.connect(self.db_path, timeout=60)
         conn.row_factory = sqlite3.Row
-        try:
-            foreign_keys = self.config.getboolean("Web_Viewer", "sqlite_foreign_keys", fallback=True)
-            busy_timeout_ms = self.config.getint("Web_Viewer", "sqlite_busy_timeout_ms", fallback=60000)
-            journal_mode = self.config.get("Web_Viewer", "sqlite_journal_mode", fallback="WAL").strip() or "WAL"
-            if journal_mode.upper() not in VALID_JOURNAL_MODES:
-                self.logger.warning(f"Invalid journal_mode {journal_mode!r}, falling back to WAL")
-                journal_mode = "WAL"
-            conn.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
-            conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
-            conn.execute(f"PRAGMA journal_mode={journal_mode}")
-        except sqlite3.OperationalError:
-            pass
+        self._configure_db_connection(conn)
         try:
             yield conn
         finally:
@@ -957,7 +991,7 @@ class BotDataViewer:
             config=self.config,
             db_manager=self.db_manager,
             logger=self.logger,
-            mesh_graph=getattr(self, "mesh_graph", None),
+            mesh_graph=self._get_mesh_graph(),
             include_location=True,
         )
         node_ids = [n["node_id"] for n in nodes]
@@ -3151,8 +3185,13 @@ class BotDataViewer:
                 current_country = contact['country']
                 self.logger.debug(f"Current location data - city: {current_city}, state: {current_state}, country: {current_country}")
 
+                # Outside the try below: a failure to build the manager is a
+                # setup problem, not a geocoding one, and must not be reported
+                # to the user as "Geocoding exception".
+                repeater_manager = self._get_repeater_manager()
+
                 try:
-                    location_info = self.repeater_manager._get_full_location_from_coordinates(lat, lon)
+                    location_info = repeater_manager._get_full_location_from_coordinates(lat, lon)
                     self.logger.debug(f"Geocoding result for {name}: {location_info}")
                 except Exception as geocode_error:
                     self.logger.error(f"Exception during geocoding for {name} at {lat}, {lon}: {geocode_error}", exc_info=True)
@@ -4736,6 +4775,21 @@ class BotDataViewer:
                     import sqlite3
                     import time
 
+                    # Subscription handlers replay recent history themselves.
+                    # With no live command/packet/message subscribers there is
+                    # nothing to broadcast, so avoid opening SQLite and decoding
+                    # every packet-stream row merely to discard it.
+                    if not self._has_live_stream_subscribers():
+                        last_timestamp = time.time()
+                        # An idle period is not a failure. Without this, an
+                        # error burst before the last subscriber left would
+                        # still be counted against the first poll after the
+                        # next one arrives, mis-escalating its log level and
+                        # backoff.
+                        consecutive_errors = 0
+                        time.sleep(2.0)
+                        continue
+
                     # Check if database file exists and is accessible
                     db_file = Path(self.db_path)
                     if not db_file.exists():
@@ -4854,6 +4908,19 @@ class BotDataViewer:
         polling_thread.start()
         self.logger.info("Database polling started")
 
+    def _has_live_stream_subscribers(self) -> bool:
+        """Return whether any client consumes a DB-backed live stream."""
+        subscription_keys = (
+            'subscribed_commands',
+            'subscribed_packets',
+            'subscribed_messages',
+        )
+        with self._clients_lock:
+            return any(
+                any(client.get(key, False) for key in subscription_keys)
+                for client in self.connected_clients.values()
+            )
+
     def _config_int(self, section: str, option: str, fallback: int) -> int:
         """Read an int config value, falling back on a missing or malformed entry."""
         try:
@@ -4950,9 +5017,7 @@ class BotDataViewer:
         """
         conn = sqlite3.connect(self.db_path, timeout=60, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        with suppress(sqlite3.OperationalError):
-            conn.execute(f"PRAGMA busy_timeout={self._config_int('Web_Viewer', 'sqlite_busy_timeout_ms', 60000)}")
-            conn.execute("PRAGMA journal_mode=WAL")
+        self._configure_db_connection(conn)
         return conn
 
     def _start_dashboard_refresher(self):
@@ -8463,7 +8528,7 @@ class BotDataViewer:
             config=self.config,
             db_manager=self.db_manager,
             logger=self.logger,
-            mesh_graph=getattr(self, "mesh_graph", None),
+            mesh_graph=self._get_mesh_graph(),
         )
 
     def run(self, host='127.0.0.1', port=8080, debug=False):
