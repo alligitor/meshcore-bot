@@ -125,6 +125,11 @@ function successfulResponse(data) {
 test('loadContactsData sends bounded server-side list parameters', async () => {
     const { context, elements, Manager } = loadManagerClass();
     elements.set('contacts-timespan', fakeElement({ value: '30d' }));
+    elements.set('contacts-path-bytes', fakeElement({ value: '2' }));
+    elements.set('contacts-device-role', fakeElement({ value: 'repeater' }));
+    elements.set('contacts-hop-filter', fakeElement({ value: '2' }));
+    elements.set('contacts-location-filter', fakeElement({ value: 'known' }));
+    elements.set('contacts-starred-filter', fakeElement({ value: 'yes' }));
     const manager = bareManager(Manager);
     manager.currentPage = 3;
     manager.searchTerm = 'alpha';
@@ -161,6 +166,11 @@ test('loadContactsData sends bounded server-side list parameters', async () => {
     assert.equal(url.searchParams.get('page'), '3');
     assert.equal(url.searchParams.get('page_size'), '100');
     assert.equal(url.searchParams.get('search'), 'alpha');
+    assert.equal(url.searchParams.get('path_bytes'), '2');
+    assert.equal(url.searchParams.get('device_role'), 'repeater');
+    assert.equal(url.searchParams.get('hop_filter'), '2');
+    assert.equal(url.searchParams.get('location_filter'), 'known');
+    assert.equal(url.searchParams.get('starred'), 'yes');
     assert.equal(url.searchParams.get('sort'), 'distance');
     assert.equal(url.searchParams.get('direction'), 'asc');
     assert.equal(manager.filteredData.length, 1);
@@ -170,6 +180,11 @@ test('loadContactsData sends bounded server-side list parameters', async () => {
 test('a newer contacts request aborts the stale request', async () => {
     const { context, elements, Manager } = loadManagerClass();
     elements.set('contacts-timespan', fakeElement({ value: '30d' }));
+    elements.set('contacts-path-bytes', fakeElement({ value: '' }));
+    elements.set('contacts-device-role', fakeElement({ value: '' }));
+    elements.set('contacts-hop-filter', fakeElement({ value: '' }));
+    elements.set('contacts-location-filter', fakeElement({ value: '' }));
+    elements.set('contacts-starred-filter', fakeElement({ value: '' }));
     const manager = bareManager(Manager);
     manager.setLoadingState = () => {};
     manager.updateSortIcons = () => {};
@@ -215,6 +230,12 @@ test('search is debounced before reloading the first page', () => {
         'refresh-contacts',
         'search-contacts',
         'contacts-timespan',
+        'contacts-path-bytes',
+        'contacts-device-role',
+        'contacts-hop-filter',
+        'contacts-location-filter',
+        'contacts-starred-filter',
+        'contacts-clear-filters',
         'contacts-timespan-mobile-menu',
         'bulk-delete-contacts',
         'contacts-list-panel',

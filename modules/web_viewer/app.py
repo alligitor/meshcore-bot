@@ -2589,6 +2589,11 @@ class BotDataViewer:
                     except (TypeError, ValueError):
                         page_size = 100
                 search = request.args.get('search', '').strip()[:100]
+                path_bytes = request.args.get('path_bytes', '').strip()
+                device_role = request.args.get('device_role', '').strip()
+                hop_filter = request.args.get('hop_filter', '').strip()
+                location_filter = request.args.get('location_filter', '').strip()
+                starred = request.args.get('starred', '').strip()
                 sort = request.args.get('sort', 'last_seen')
                 direction = request.args.get('direction', 'desc').lower()
                 contacts = self._get_tracking_data(
@@ -2596,6 +2601,11 @@ class BotDataViewer:
                     page=page,
                     page_size=page_size,
                     search=search,
+                    path_bytes=path_bytes,
+                    device_role=device_role,
+                    hop_filter=hop_filter,
+                    location_filter=location_filter,
+                    starred=starred,
                     sort=sort,
                     direction=direction,
                 )
@@ -6604,6 +6614,11 @@ class BotDataViewer:
         page: int | None = None,
         page_size: int | None = None,
         search: str = '',
+        path_bytes: str = '',
+        device_role: str = '',
+        hop_filter: str = '',
+        location_filter: str = '',
+        starred: str = '',
         sort: str = 'last_seen',
         direction: str = 'desc',
     ):
@@ -6637,6 +6652,20 @@ class BotDataViewer:
             }
             where_parts = []
             where_params: list[Any] = []
+            # A node can have more than one observed advert path.  Treat its byte class as
+            # the widest path encoding seen for it, with the contact's current out-path as a
+            # fallback for databases that have not retained an observed path yet.  This gives
+            # the list one stable, sortable value instead of placing the same node in several
+            # byte buckets.
+            path_bytes_expression = """COALESCE((
+                SELECT MAX(CASE WHEN op.bytes_per_hop IN (1, 2, 3)
+                                THEN op.bytes_per_hop ELSE 1 END)
+                FROM observed_paths op
+                WHERE op.public_key = c.public_key
+                  AND op.packet_type = 'advert'
+                  AND op.path_hex IS NOT NULL AND op.path_hex != ''
+            ), CASE WHEN c.out_bytes_per_hop IN (1, 2, 3)
+                     THEN c.out_bytes_per_hop ELSE 0 END)"""
             if since in datetime_offsets:
                 where_parts.append(
                     f"c.last_heard >= datetime('now', 'localtime', {datetime_offsets[since]})"
@@ -6659,6 +6688,44 @@ class BotDataViewer:
                     ")"
                 )
                 where_params.extend([f'{escaped}%'] + [f'%{escaped}%'] * 6)
+
+            path_bytes = str(path_bytes or '').strip()
+            if path_bytes in ('1', '2', '3'):
+                where_parts.append(f'{path_bytes_expression} = ?')
+                where_params.append(int(path_bytes))
+            elif path_bytes == 'unknown':
+                where_parts.append(f'{path_bytes_expression} = 0')
+
+            device_role = str(device_role or '').strip().lower()
+            if device_role in ('companion', 'repeater', 'roomserver', 'sensor'):
+                where_parts.append("LOWER(COALESCE(c.role, '')) = ?")
+                where_params.append(device_role)
+            elif device_role == 'other':
+                where_parts.append("LOWER(COALESCE(c.role, '')) NOT IN ('companion', 'repeater', 'roomserver', 'sensor')")
+
+            if hop_filter in ('0', '1', '2', '3'):
+                where_parts.append(
+                    'COALESCE(c.hop_count, 0) = ?' if hop_filter == '0'
+                    else 'COALESCE(c.hop_count, 0) >= ?'
+                )
+                where_params.append(int(hop_filter))
+
+            has_location_expression = (
+                "((c.city IS NOT NULL AND c.city != '') OR "
+                "(c.state IS NOT NULL AND c.state != '') OR "
+                "(c.country IS NOT NULL AND c.country != '') OR "
+                "(c.latitude IS NOT NULL AND c.longitude IS NOT NULL "
+                "AND c.latitude != 0 AND c.longitude != 0))"
+            )
+            if location_filter == 'known':
+                where_parts.append(has_location_expression)
+            elif location_filter == 'unknown':
+                where_parts.append(f'NOT {has_location_expression}')
+
+            if starred == 'yes':
+                where_parts.append('COALESCE(c.is_starred, 0) = 1')
+            elif starred == 'no':
+                where_parts.append('COALESCE(c.is_starred, 0) = 0')
 
             where_clause = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
 
@@ -6725,6 +6792,7 @@ class BotDataViewer:
                 ),
                 'snr': 'COALESCE(c.snr, 0)',
                 'hop_count': 'COALESCE(c.hop_count, 0)',
+                'path_bytes': path_bytes_expression,
                 'first_heard': "COALESCE(c.first_heard, '')",
                 'last_seen': "COALESCE(c.last_heard, '')",
                 'advert_count': 'COALESCE(c.advert_count, 0)',
@@ -6758,6 +6826,7 @@ class BotDataViewer:
                     """ + detail_cols + """
                     c.signal_strength,
                     c.is_starred, c.out_path, c.out_path_len, c.out_bytes_per_hop,
+                    """ + path_bytes_expression + """ AS path_bytes_per_hop,
                     c.last_advert_timestamp as last_message
                 FROM complete_contact_tracking c
                 """ + where_clause + """
@@ -6876,6 +6945,7 @@ class BotDataViewer:
                     'out_path': out_path_val,
                     'out_path_len': row['out_path_len'] if row['out_path_len'] is not None else -1,
                     'out_bytes_per_hop': out_bytes_per_hop_val,
+                    'path_bytes_per_hop': int(row['path_bytes_per_hop'] or 0),
                     'paths_count': paths_count,
                     'path_encoding_badge': path_encoding_badge,
                 }
