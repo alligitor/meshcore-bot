@@ -377,6 +377,11 @@ class PacketCaptureService(BaseServicePlugin):
         self.neighbors_discover_failures = 0
         self.neighbors_topic_warned: set[int] = set()
         self.last_neighbors_publish = self._load_neighbors_state()
+        # Single-flight across every trigger (scheduler, command, future callers):
+        # two overlapping cycles would collect into each other's discover window
+        # and double the airtime. asyncio is single-threaded, so a plain flag set
+        # and cleared without an await in between is enough.
+        self.neighbors_cycle_active = False
 
         # Background tasks
         self.background_tasks: list[asyncio.Task] = []
@@ -2222,17 +2227,45 @@ class PacketCaptureService(BaseServicePlugin):
             self.logger.debug(f"Could not read device public key: {e}")
             return ""
 
+    @staticmethod
+    def _empty_neighbors_summary(reason: str = "") -> dict[str, Any]:
+        """A cycle summary that reports no work done, optionally with a reason."""
+        return {
+            "ok": False, "reason": reason, "discovered": 0, "queried": 0,
+            "best_snr": None, "attempted": 0, "succeeded": 0, "recorded": 0,
+        }
+
     async def run_neighbors_cycle(self) -> dict[str, Any]:
-        """Run one discovery cycle: record it, feed the graph, publish it.
+        """Run one discovery cycle, refusing to overlap with one already running.
+
+        The scheduler and the ``neighbors`` command trigger cycles independently,
+        so the guard belongs here rather than in either caller: two concurrent
+        cycles would each collect the other's discover responses and double the
+        airtime for no extra information.
 
         Returns a summary dict (also used by the ``neighbors`` command):
         ``{'ok', 'reason', 'discovered', 'queried', 'best_snr', 'attempted',
         'succeeded', 'recorded'}``.
         """
-        summary: dict[str, Any] = {
-            "ok": False, "reason": "", "discovered": 0, "queried": 0,
-            "best_snr": None, "attempted": 0, "succeeded": 0, "recorded": 0,
-        }
+        if self.neighbors_cycle_active:
+            self.logger.info(
+                "Neighbors: a discovery cycle is already running, skipping this trigger"
+            )
+            return self._empty_neighbors_summary("a discovery cycle is already running")
+
+        self.neighbors_cycle_active = True
+        try:
+            return await self._run_neighbors_cycle()
+        finally:
+            self.neighbors_cycle_active = False
+
+    async def _run_neighbors_cycle(self) -> dict[str, Any]:
+        """One discovery cycle: record it, feed the graph, publish it.
+
+        Always call through run_neighbors_cycle, which holds the single-flight
+        guard for the whole cycle.
+        """
+        summary = self._empty_neighbors_summary()
 
         if not self.neighbors_enabled:
             summary["reason"] = "neighbors discovery is disabled"

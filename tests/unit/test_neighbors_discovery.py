@@ -51,6 +51,7 @@ class FakeRadio:
         self.unsubscribed = 0
         self.sent_tag = None
         self.regions_calls = []
+        self.reset_path_calls = []
         self.self_info = {"public_key": SELF_KEY}
         # A real contact cache; stage 2 must never populate it.
         self.contacts = {}
@@ -58,8 +59,25 @@ class FakeRadio:
             send_node_discover_req=self._send,
             req_regions_sync=self._regions,
             get_default_flood_scope=self._flood,
+            reset_path=self._reset_path,
         )
         self._flood_scope = flood_scope
+
+    def add_contact(self, pubkey, *, out_path_len=-1):
+        """Seed the contact cache the way the bot's contact management would."""
+        self.contacts[pubkey] = {"public_key": pubkey, "out_path_len": out_path_len,
+                                 "out_path": ""}
+
+    def get_contact_by_key_prefix(self, prefix):
+        """Mirrors MeshCore.get_contact_by_key_prefix (prefix match on the key)."""
+        for contact in self.contacts.values():
+            if contact.get("public_key", "").lower().startswith(prefix.lower()):
+                return contact
+        return None
+
+    async def _reset_path(self, pubkey):
+        self.reset_path_calls.append(pubkey)
+        return FakeEvent(EventType.OK, {})
 
     def subscribe(self, event_type, callback):
         assert event_type == EventType.DISCOVER_RESPONSE
@@ -470,6 +488,90 @@ async def test_collect_scopes_reraises_cancellation():
     entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
     with pytest.raises(asyncio.CancelledError):
         await nb.collect_scopes(radio, entries, cfg, LOGGER)
+
+
+@pytest.fixture
+def tiny_budget(monkeypatch):
+    """A scope_request_budget small enough to cut off a hung request at once.
+
+    scope_request_budget is floored by the library's 15s MSG_SENT wait, so the
+    constant has to be patched rather than waited out.
+    """
+    monkeypatch.setattr(nb, "LIBRARY_MSG_SENT_TIMEOUT", 0.01)
+    cfg = nb.NeighborsConfig(
+        collect_scopes=True, scope_gap=0, scope_min_timeout=0.01,
+        command_timeout=nb.MIN_COMMAND_TIMEOUT,
+    )
+    cfg.scope_timeout = 0.01
+    return cfg
+
+
+async def test_timed_out_request_restores_a_pinned_contact(tiny_budget):
+    """send_anon_req pins a path-less contact to zero-hop and restores it after
+    the send, with no try/finally — so our own timeout has to repair it."""
+    radio = FakeRadio(scopes="hang")
+    radio.add_contact(KEY_A, out_path_len=-1)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    await nb.collect_scopes(radio, entries, tiny_budget, LOGGER)
+    assert entries[0].status == nb.STATUS_SEND_FAILED
+    assert radio.reset_path_calls == [KEY_A]
+
+
+async def test_failed_request_restores_a_pinned_contact():
+    """A raising request leaves the same half-applied device state."""
+    cfg = nb.NeighborsConfig(collect_scopes=True, scope_gap=0)
+    radio = FakeRadio(scopes="raise")
+    radio.add_contact(KEY_A, out_path_len=-1)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    await nb.collect_scopes(radio, entries, cfg, LOGGER)
+    assert radio.reset_path_calls == [KEY_A]
+
+
+async def test_contact_with_a_real_path_is_never_reset(tiny_budget):
+    """The library only rewrites path-less contacts, so resetting one that has a
+    path would throw away routing we did not touch."""
+    radio = FakeRadio(scopes="hang")
+    radio.add_contact(KEY_A, out_path_len=2)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    await nb.collect_scopes(radio, entries, tiny_budget, LOGGER)
+    assert radio.reset_path_calls == []
+
+
+async def test_unknown_contact_needs_no_repair(tiny_budget):
+    """An unknown pubkey is asked to reply zero-hop; no contact is mutated."""
+    radio = FakeRadio(scopes="hang")
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    await nb.collect_scopes(radio, entries, tiny_budget, LOGGER)
+    assert radio.reset_path_calls == []
+
+
+async def test_successful_request_leaves_the_restore_to_the_library():
+    """The library's own reset_path runs on the happy path; ours must not double up."""
+    cfg = nb.NeighborsConfig(collect_scopes=True, scope_gap=0)
+    radio = FakeRadio(scopes="DEN")
+    radio.add_contact(KEY_A, out_path_len=-1)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    await nb.collect_scopes(radio, entries, cfg, LOGGER)
+    assert radio.reset_path_calls == []
+
+
+async def test_cancellation_schedules_the_repair_and_still_propagates():
+    """The cycle budget cancels mid-request; the repair must outlive us."""
+    cfg = nb.NeighborsConfig(collect_scopes=True, scope_gap=0)
+    radio = FakeRadio()
+    radio.add_contact(KEY_A, out_path_len=-1)
+
+    async def cancelled(pubkey, timeout=0, min_timeout=0):
+        raise asyncio.CancelledError
+
+    radio.commands.req_regions_sync = cancelled
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    with pytest.raises(asyncio.CancelledError):
+        await nb.collect_scopes(radio, entries, cfg, LOGGER)
+    # Scheduled as an independent task, so it has not run yet.
+    assert radio.reset_path_calls == []
+    await asyncio.sleep(0)
+    assert radio.reset_path_calls == [KEY_A]
 
 
 async def test_collect_scopes_never_populates_the_contact_cache():

@@ -30,6 +30,9 @@ that do not apply to the upstream capture tool:
   (``out_path_len == -1``, the common case for a flood repeater) the library
   reaches zero-hop by calling ``change_contact_path()`` and then
   ``reset_path()`` -- i.e. it *mutates the device's contact table* per neighbor.
+  Those two calls are not paired by ``try``/``finally`` upstream, so a request
+  cut short between them leaves the contact pinned to zero-hop; collect_scopes
+  restores it itself (see ``_restore_flood_path``).
 
 No device-command lock is passed around: unlike upstream, every coroutine on
 ``meshcore.commands`` is already serialized and paced by
@@ -78,6 +81,10 @@ MIN_COMMAND_TIMEOUT = 1.0
 # meshcore_py's CommandHandlerBase.DEFAULT_TIMEOUT: how long req_regions_sync
 # waits for MSG_SENT before it even begins waiting for the response.
 LIBRARY_MSG_SENT_TIMEOUT = 15.0
+
+# A contact with no stored path. This is the value the library both tests for
+# before pinning a contact to zero-hop and restores afterwards.
+CONTACT_NO_PATH = -1
 
 
 def clamp_interval_hours(hours: int) -> int:
@@ -307,6 +314,67 @@ async def discover_neighbors(
     return sort_entries(list(collected.values()))
 
 
+def _contact_has_no_path(meshcore: Any, pubkey: str) -> bool:
+    """True when *pubkey* is a known contact the library will pin to zero-hop.
+
+    That is the one case where ``send_anon_req`` mutates the device's contact
+    table (``out_path_len == -1`` -> zero-hop, restored after the send). An
+    unknown contact, or one with a real stored path, is left alone.
+    """
+    try:
+        contact = meshcore.get_contact_by_key_prefix(pubkey.lower())
+    except Exception:
+        # A stubbed or older client without the lookup: assume no mutation
+        # rather than "restoring" a path we know nothing about.
+        return False
+    if not isinstance(contact, dict):
+        return False
+    return contact.get("out_path_len", CONTACT_NO_PATH) == CONTACT_NO_PATH
+
+
+async def _restore_flood_path(meshcore: Any, pubkey: str,
+                              logger: logging.Logger) -> None:
+    """Put a contact back to "no path" after an interrupted scope request.
+
+    ``send_anon_req`` sets the zero-hop path and restores it *after* the send,
+    with no ``try``/``finally``. If our budget cuts the request off in between,
+    the contact stays pinned to zero-hop on the device and every later message
+    to it is sent direct-only, so we repair it here instead.
+    """
+    try:
+        await meshcore.commands.reset_path(pubkey)
+        logger.info(
+            f"Neighbors: restored flood path for {pubkey[:12]} after an "
+            f"interrupted scope request"
+        )
+    except Exception as exc:
+        logger.warning(
+            f"Neighbors: could not restore the flood path for {pubkey[:12]} "
+            f"after an interrupted scope request ({exc}); it may be left "
+            f"pinned to zero-hop on the device"
+        )
+
+
+def _restore_flood_path_detached(meshcore: Any, pubkey: str,
+                                 logger: logging.Logger) -> None:
+    """Schedule the repair as its own task, for use while being cancelled.
+
+    Awaiting inside a ``except CancelledError`` block cannot work — the next
+    suspension point re-raises — so the repair has to outlive this coroutine.
+    """
+    try:
+        task = asyncio.create_task(_restore_flood_path(meshcore, pubkey, logger))
+    except RuntimeError as exc:
+        # No running loop (shutdown): nothing left to repair with.
+        logger.warning(
+            f"Neighbors: {pubkey[:12]} may be left pinned to zero-hop; "
+            f"could not schedule a repair ({exc})"
+        )
+        return
+    # Nothing awaits this task, so make sure a failure is not swallowed silently.
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+
 async def collect_scopes(
     meshcore: Any,
     entries: list[NeighborEntry],
@@ -365,6 +433,12 @@ async def collect_scopes(
         if index > 0 and cfg.scope_gap > 0:
             await asyncio.sleep(cfg.scope_gap)
 
+        # Only a known contact with no stored path gets rewritten by the library,
+        # and only then does an interrupted request need repairing (see
+        # _restore_flood_path). Read it before the request, because the library
+        # updates the same dict in place.
+        pinned_to_zero_hop = _contact_has_no_path(meshcore, entry.pubkey)
+
         try:
             # Bounded: this holds the shared radio command lock for its whole
             # round trip, and an unbounded stall here would block every other
@@ -378,6 +452,8 @@ async def collect_scopes(
                 timeout=cfg.scope_request_budget,
             )
         except asyncio.CancelledError:
+            if pinned_to_zero_hop:
+                _restore_flood_path_detached(meshcore, entry.pubkey, logger)
             raise
         except asyncio.TimeoutError:
             entry.status = STATUS_SEND_FAILED
@@ -385,10 +461,14 @@ async def collect_scopes(
                 f"Neighbors: scope request to {entry.pubkey[:12]} exceeded "
                 f"{cfg.scope_request_budget:.0f}s; the device link may be stalled"
             )
+            if pinned_to_zero_hop:
+                await _restore_flood_path(meshcore, entry.pubkey, logger)
             continue
         except Exception as exc:
             entry.status = STATUS_SEND_FAILED
             logger.debug(f"Neighbors: scope request to {entry.pubkey[:12]} failed: {exc}")
+            if pinned_to_zero_hop:
+                await _restore_flood_path(meshcore, entry.pubkey, logger)
             continue
 
         if scopes is None:

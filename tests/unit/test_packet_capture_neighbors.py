@@ -40,6 +40,7 @@ class FakeRadio:
     def __init__(self, responses=None, *, commands=("send_node_discover_req",)):
         self.responses = responses or []
         self.handler = None
+        self.discover_requests = 0
         self.self_info = {"public_key": SELF_KEY}
         self.contacts = {}
         available = {}
@@ -57,6 +58,7 @@ class FakeRadio:
         return None
 
     async def _send(self, filter_bits, prefix_only=True, tag=None):
+        self.discover_requests += 1
         little_endian = tag.to_bytes(4, "little").hex()
         for item in self.responses:
             payload = dict(item)
@@ -142,6 +144,7 @@ def build_service(ini: str, *, db_manager=None, radio=None, connected=True):
     service.neighbors_discover_failures = 0
     service.neighbors_topic_warned = set()
     service.last_neighbors_publish = service._load_neighbors_state()
+    service.neighbors_cycle_active = False
     service.debug = False
     # global_iata deliberately not overridden: it comes from the ini, so tests can
     # exercise both a real IATA and the unset sentinel.
@@ -611,6 +614,51 @@ async def test_cycle_discards_when_the_session_resets_mid_cycle(db_manager, monk
     assert summary["ok"] is False
     with db_manager.connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM neighbor_links").fetchone()[0] == 0
+
+
+async def test_concurrent_cycles_are_refused(db_manager, monkeypatch):
+    """The scheduler and the command trigger independently, so the guard lives here.
+
+    Two overlapping cycles would each collect the other's discover responses and
+    spend twice the airtime for no extra information.
+    """
+    radio = FakeRadio([response(KEY_A, 1.0)])
+    service = build_service(BASE_INI, db_manager=db_manager, radio=radio)
+    service.mqtt_enabled = False
+
+    second = {}
+
+    async def run_second_cycle_mid_window(_seconds):
+        # Stands in for the other trigger firing during the discover window.
+        second["summary"] = await service.run_neighbors_cycle()
+
+    monkeypatch.setattr(nb.asyncio, "sleep", run_second_cycle_mid_window)
+    first = await service.run_neighbors_cycle()
+
+    assert first["ok"] is True
+    assert second["summary"]["ok"] is False
+    assert "already running" in second["summary"]["reason"]
+    # One discover request, one set of links.
+    assert radio.discover_requests == 1
+    with db_manager.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM neighbor_links").fetchone()[0] == 1
+    # And the guard is released for the next trigger.
+    assert service.neighbors_cycle_active is False
+
+
+async def test_the_guard_is_released_when_a_cycle_fails(db_manager, no_sleep):
+    radio = FakeRadio([])
+
+    async def boom(filter_bits, prefix_only=True, tag=None):
+        raise RuntimeError("serial write failed")
+
+    radio.commands.send_node_discover_req = boom
+    service = build_service(BASE_INI, db_manager=db_manager, radio=radio)
+    service.mqtt_enabled = False
+
+    with contextlib.suppress(RuntimeError):
+        await service.run_neighbors_cycle()
+    assert service.neighbors_cycle_active is False
 
 
 async def test_repeated_discover_failure_warns_only_once(db_manager, caplog, no_sleep):

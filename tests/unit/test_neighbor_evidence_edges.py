@@ -170,10 +170,31 @@ def test_unfiltered_returns_everything(seeded):
 def test_edge_keys_cover_both_directions(seeded):
     """Used to relabel mesh_connections edges, which lost their provenance."""
     keys = seeded._neighbor_evidence_edge_keys()
-    assert (SELF_KEY[:6], KEY_A[:6]) in keys
-    assert (KEY_A[:6], SELF_KEY[:6]) in keys
-    assert (SELF_KEY[:6], KEY_B[:6]) in keys
-    assert ("11", "22") not in keys
+    assert (SELF_KEY[:6], KEY_A[:6]) in keys.prefixes
+    assert (KEY_A[:6], SELF_KEY[:6]) in keys.prefixes
+    assert (SELF_KEY[:6], KEY_B[:6]) in keys.prefixes
+    assert ("11", "22") not in keys.prefixes
+
+
+def test_edge_keys_include_full_public_key_pairs(seeded):
+    """The graph keeps some edges at a 1-byte prefix but fills in the keys.
+
+    MeshGraph.add_edge deliberately does not promote a 1-byte edge that has no
+    public key, so matching on the 3-byte prefix alone would leave a confirmed
+    neighbor labelled 'singlebyte'.
+    """
+    keys = seeded._neighbor_evidence_edge_keys()
+    assert (SELF_KEY, KEY_A) in keys.public_keys
+    assert (KEY_A, SELF_KEY) in keys.public_keys
+
+
+def test_edge_keys_honour_the_days_window(seeded):
+    """neighbor_links is never pruned, so stale evidence must not label edges."""
+    keys = seeded._neighbor_evidence_edge_keys(days=30)
+    assert (SELF_KEY[:6], KEY_A[:6]) in keys.prefixes
+    # KEY_B was last heard in 2020.
+    assert (SELF_KEY[:6], KEY_B[:6]) not in keys.prefixes
+    assert (SELF_KEY, KEY_B) not in keys.public_keys
 
 
 def test_blank_keys_are_skipped(viewer):
@@ -181,12 +202,12 @@ def test_blank_keys_are_skipped(viewer):
         insert_link(conn, "", KEY_A)
         conn.commit()
     assert viewer._compute_neighbor_evidence_edges() == []
-    assert viewer._neighbor_evidence_edge_keys() == set()
+    assert viewer._neighbor_evidence_edge_keys() == ((set(), set()))
 
 
 def test_empty_database_yields_nothing(viewer):
     assert viewer._compute_neighbor_evidence_edges() == []
-    assert viewer._neighbor_evidence_edge_keys() == set()
+    assert viewer._neighbor_evidence_edge_keys() == ((set(), set()))
 
 
 def test_pre_migration_database_degrades_quietly(tmp_path):
@@ -195,7 +216,7 @@ def test_pre_migration_database_degrades_quietly(tmp_path):
     sqlite3.connect(path).close()
     stub = ViewerStub(path)
     assert stub._compute_neighbor_evidence_edges() == []
-    assert stub._neighbor_evidence_edge_keys() == set()
+    assert stub._neighbor_evidence_edge_keys() == ((set(), set()))
     edges, chars = stub._derive_neighbor_evidence_graph(days=7)
     assert edges == []
     assert chars == ViewerStub.NEIGHBOR_PREFIX_HEX_CHARS

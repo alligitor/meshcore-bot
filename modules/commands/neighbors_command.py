@@ -5,6 +5,8 @@ Triggers one zero-hop neighbor discovery cycle on demand
 """
 
 import asyncio
+import math
+import time
 from typing import Any, Optional
 
 from ..models import MeshMessage
@@ -21,6 +23,12 @@ class NeighborsCommand(BaseCommand):
     A cycle takes at least ``neighbors_discover_window`` seconds — 60 by default —
     so this acknowledges immediately and reports the result in a second message
     rather than holding the reply open.
+
+    ``cooldown_seconds`` is enforced twice over. The base class applies it per
+    sender; ``_shared_cooldown_remaining`` applies it to the node as a whole,
+    because the cost being rationed here is airtime, not one user's attention:
+    without it, N users could take turns and keep the radio discovering
+    continuously.
     """
 
     # Plugin metadata
@@ -28,7 +36,7 @@ class NeighborsCommand(BaseCommand):
     keywords = ['neighbors', 'neighbours']
     description = "Runs a zero-hop neighbor discovery cycle (DM only)"
     requires_dm = True
-    cooldown_seconds = 900  # 15 minutes; a cycle costs airtime
+    cooldown_seconds = 900  # 15 minutes, per sender *and* per node; see above
     category = "special"
 
     def __init__(self, bot: Any):
@@ -41,8 +49,9 @@ class NeighborsCommand(BaseCommand):
         self.command_enabled = self.get_config_value(
             'Neighbors_Command', 'enabled', fallback=True, value_type='bool'
         )
-        # Tracked so a second invocation cannot start an overlapping cycle: two
-        # concurrent discover rounds would collect into each other's window.
+        # Tracked so a second invocation cannot start an overlapping *report*
+        # task. Overlapping cycles are refused by the service itself, which is
+        # where the scheduler's own trigger is also visible.
         self._cycle_task: Optional[asyncio.Task] = None
 
     def get_help_text(self) -> str:
@@ -80,6 +89,18 @@ class NeighborsCommand(BaseCommand):
         except AttributeError:
             return None
 
+    def _shared_cooldown_remaining(self, service: Any) -> float:
+        """Seconds left before *any* sender may trigger another cycle.
+
+        Keyed off the service's own "last cycle that produced a result" stamp, so
+        a cycle the scheduler ran counts too, and a cycle that bailed out without
+        transmitting (radio down, unsupported build) does not.
+        """
+        if self.cooldown_seconds <= 0:
+            return 0.0
+        last = getattr(service, 'last_neighbors_publish', 0) or 0
+        return max(0.0, self.cooldown_seconds - (time.time() - last))
+
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the neighbors command.
 
@@ -87,7 +108,7 @@ class NeighborsCommand(BaseCommand):
             message: The message triggering the command.
 
         Returns:
-            bool: True if handled (including the error and busy notices).
+            bool: True if handled (including the error, busy and cooldown notices).
         """
         service = self._get_capture_service()
         if service is None or not getattr(service, 'neighbors_enabled', False):
@@ -96,6 +117,25 @@ class NeighborsCommand(BaseCommand):
 
         if self._cycle_task is not None and not self._cycle_task.done():
             await self.send_response(message, self.translate('commands.neighbors.busy'))
+            return True
+
+        # The service refuses an overlapping cycle on its own; this only decides
+        # what the requester is told, and rations airtime across senders.
+        if getattr(service, 'neighbors_cycle_active', False):
+            await self.send_response(message, self.translate('commands.neighbors.busy'))
+            return True
+
+        remaining = self._shared_cooldown_remaining(service)
+        if remaining > 0:
+            self.logger.debug(
+                f"Neighbors: refusing {message.sender_id}'s request, "
+                f"{remaining:.0f}s left on the shared cooldown"
+            )
+            await self.send_response(
+                message,
+                self.translate('commands.neighbors.cooldown_active',
+                               minutes=max(1, math.ceil(remaining / 60))),
+            )
             return True
 
         cfg = service.neighbors_config

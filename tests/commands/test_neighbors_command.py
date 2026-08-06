@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import types
 
 import pytest
@@ -12,13 +13,17 @@ from tests.conftest import mock_message
 
 
 def make_service(*, neighbors_enabled=True, summary=None, hang=False,
-                 raises=None, cycle_budget=5.0):
+                 raises=None, cycle_budget=5.0, last_publish=0.0,
+                 cycle_active=False):
     """A stand-in for PacketCaptureService's neighbors surface."""
     service = types.SimpleNamespace()
     service.neighbors_enabled = neighbors_enabled
     service.neighbors_config = types.SimpleNamespace(
         discover_window=60.0, cycle_budget=cycle_budget
     )
+    # 0.0 == "no cycle has ever produced a result", so nothing is on cooldown.
+    service.last_neighbors_publish = last_publish
+    service.neighbors_cycle_active = cycle_active
     service.calls = 0
 
     async def run_cycle():
@@ -194,6 +199,46 @@ async def test_a_finished_cycle_does_not_block_the_next_request(command_mock_bot
 
     assert service.calls == 2
     assert "busy" not in sent
+
+
+async def test_a_cycle_the_service_is_running_reads_as_busy(command_mock_bot, message):
+    """The scheduler's cycle is invisible to this command's own task guard."""
+    service = make_service(cycle_active=True)
+    command, sent = make_command(command_mock_bot, service)
+
+    assert await command.execute(message) is True
+    assert sent == ["busy"]
+    assert service.calls == 0
+
+
+async def test_the_cooldown_applies_across_senders(command_mock_bot):
+    """The base class rations per user; airtime has to be rationed per node.
+
+    Otherwise N users can take turns and keep the radio discovering nonstop.
+    """
+    service = make_service(last_publish=time.time() - 60)
+    command, sent = make_command(command_mock_bot, service)
+
+    for sender in ("UserOne", "UserTwo"):
+        result = await command.execute(
+            mock_message(content="neighbors", is_dm=True, sender_id=sender)
+        )
+        assert result is True
+
+    assert sent == ["cooldown_active minutes=14"] * 2
+    assert service.calls == 0
+    assert command._cycle_task is None
+
+
+async def test_the_cooldown_expires(command_mock_bot, message):
+    service = make_service(last_publish=time.time() - (NeighborsCommand.cooldown_seconds + 1),
+                           summary={"ok": True, "queried": 0, "recorded": 0, "attempted": 0})
+    command, sent = make_command(command_mock_bot, service)
+
+    await command.execute(message)
+    assert sent[0] == "started seconds=60"
+    await command._cycle_task
+    assert service.calls == 1
 
 
 def test_disabled_command_cannot_execute(command_mock_bot, message):

@@ -377,6 +377,14 @@ Results go three places, independently of each other:
   `GET /api/mesh/edges?evidence=neighbors`. Confirmed neighbours render as heavier
   lines and show their SNR.
 
+  `mesh_connections` cannot record *why* an edge exists, so the combined view
+  re-derives the `neighbors` label from `neighbor_links` — matching on the 3-byte
+  prefix pair *or* the full public-key pair, since the graph deliberately keeps
+  some edges at a 1-byte prefix while still filling in the keys discovery gave it.
+  The label honours the view's `days` window: `neighbor_links` is never pruned, so
+  without that a link last heard years ago would keep claiming a recent
+  path-derived edge is a current direct neighbour.
+
 Snapshots are published **non-retained**. `heard_secs_ago` is relative to publish time,
 so a retained copy replayed days later would still claim the neighbour was heard seconds
 ago. Consumers that want the current picture should subscribe and wait for the next
@@ -395,6 +403,17 @@ It acknowledges immediately and reports the result in a second DM once the windo
 closes. Enabled via `[Neighbors_Command]`; add `neighbors` to
 `[Admin_ACL] admin_commands` to restrict it, since a cycle spends airtime.
 
+Two guards keep the airtime bounded, because what is being rationed belongs to the
+whole mesh rather than to one requester:
+
+- **Only one cycle at a time.** The service refuses an overlapping cycle whichever
+  trigger asks — scheduler or command — so two discover rounds can never collect
+  into each other's window.
+- **The 15-minute cooldown is per node, not per sender.** It is measured from the
+  last cycle that produced a result (including the scheduler's), so users cannot
+  take turns and keep the radio discovering continuously. A cycle that bailed out
+  without transmitting (radio down, unsupported build) does not start the clock.
+
 ### Region scopes are opt-in, and why
 
 `neighbors_collect_scopes` additionally asks each neighbour for its region scopes.
@@ -408,7 +427,10 @@ It defaults to **false** for two reasons specific to running inside the bot:
    *not* being a known contact. The bot does track contacts, and for a repeater with
    no stored path the meshcore library reaches zero-hop by calling
    `change_contact_path()` and then `reset_path()` — temporarily rewriting that
-   contact's path on the device.
+   contact's path on the device. Those two calls are not paired by a
+   `try`/`finally` upstream, so a request cut short in between would leave the
+   contact pinned to zero-hop and every later message to it sent direct-only;
+   `modules/neighbors_discovery.py` restores the path itself when that happens.
 
 With it off, the snapshot reports every neighbour it heard with empty `scopes` and
 `status: responded`. Enable it on a bench radio first.
