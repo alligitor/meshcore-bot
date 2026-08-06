@@ -461,9 +461,12 @@ class PacketCaptureService(BaseServicePlugin):
         self.mqtt_enabled = config.getboolean("PacketCapture", "mqtt_enabled", fallback=True)
         self.mqtt_brokers = self._parse_mqtt_brokers(config)
 
-        # Global IATA
-        configured_iata = config.get("PacketCapture", "iata", fallback=DEFAULT_IATA)
-        self.global_iata = (configured_iata.strip() or DEFAULT_IATA).lower()
+        # Global IATA. Blank stays blank so packet/status {IATA} topics keep
+        # their historical empty-segment resolution; a missing key still falls
+        # back to the XYZ sentinel. Neighbors treats blank and XYZ as unset.
+        self.global_iata = config.get(
+            "PacketCapture", "iata", fallback=DEFAULT_IATA
+        ).strip().lower()
 
         # Owner information
         self.owner_public_key = config.get("PacketCapture", "owner_public_key", fallback=None)
@@ -2135,23 +2138,27 @@ class PacketCaptureService(BaseServicePlugin):
             return f"{prefix}/neighbors"
         return None
 
+    def _iata_is_unset(self) -> bool:
+        """True when no real IATA is configured (blank or the XYZ sentinel)."""
+        return (not self.global_iata) or self.global_iata == DEFAULT_IATA.lower()
+
     def _resolve_neighbors_topic(self, broker_config: dict[str, Any]) -> Optional[str]:
         """Resolved topic for one broker's neighbors snapshot, or None if unroutable."""
         template = self._neighbors_topic_template(broker_config)
         if not template:
             return None
 
-        # An unset IATA is the documented sentinel "XYZ", and this topic is
-        # location-routed on the community brokers. Publishing a snapshot to
-        # meshcore/XYZ/... would pollute a shared namespace, so refuse instead —
-        # matching the upstream rule that neighbors needs a real IATA to route.
-        # Only applies to a template we derived; an explicit topic is the
-        # operator's call.
+        # An unset IATA is blank or the documented sentinel "XYZ", and this topic
+        # is location-routed on the community brokers. Publishing a snapshot to
+        # meshcore/XYZ/... (or meshcore//...) would pollute a shared namespace, so
+        # refuse instead — matching the upstream rule that neighbors needs a real
+        # IATA to route. Only applies to a template we derived; an explicit topic
+        # is the operator's call.
         # .upper() catches both the {IATA} and {iata} placeholder spellings.
         if (
             not broker_config.get("topic_neighbors")
             and "{IATA}" in template.upper()
-            and self.global_iata == DEFAULT_IATA.lower()
+            and self._iata_is_unset()
         ):
             return None
 
@@ -2293,7 +2300,39 @@ class PacketCaptureService(BaseServicePlugin):
             return 0.0
         return max(0.0, MIN_CYCLE_GAP_SECONDS - (time.time() - last))
 
-    async def run_neighbors_cycle(self) -> dict[str, Any]:
+    def claim_neighbors_cycle(self) -> Optional[str]:
+        """Claim the single-flight lock before a cycle reaches the radio.
+
+        Returns ``None`` when claimed. Returns a refusal reason when another
+        cycle is already running or the airtime cooldown has not expired.
+
+        The ``neighbors`` command claims *before* acknowledging so an await
+        cannot let the scheduler sneak in and turn "started" into an immediate
+        failure. Pair every successful claim with ``release_neighbors_cycle``
+        (``run_neighbors_cycle`` does this in ``finally``).
+        """
+        if self.neighbors_cycle_active:
+            self.logger.info(
+                "Neighbors: a discovery cycle is already running, skipping this trigger"
+            )
+            return "a discovery cycle is already running"
+
+        cooldown = self.neighbors_cooldown_remaining()
+        if cooldown > 0:
+            self.logger.info(
+                f"Neighbors: last cycle was too recent, {cooldown:.0f}s left before "
+                f"another may run"
+            )
+            return f"another cycle may run in {cooldown:.0f}s"
+
+        self.neighbors_cycle_active = True
+        return None
+
+    def release_neighbors_cycle(self) -> None:
+        """Drop the single-flight lock claimed by ``claim_neighbors_cycle``."""
+        self.neighbors_cycle_active = False
+
+    async def run_neighbors_cycle(self, *, already_claimed: bool = False) -> dict[str, Any]:
         """Run one discovery cycle, subject to the airtime guards.
 
         Both guards live here rather than in a caller, because the scheduler, the
@@ -2304,31 +2343,23 @@ class PacketCaptureService(BaseServicePlugin):
         * no cycle within ``MIN_CYCLE_GAP_SECONDS`` of the last one that
           transmitted.
 
+        Pass ``already_claimed=True`` when the caller has successfully called
+        ``claim_neighbors_cycle`` (the manual command does this so it can
+        acknowledge only after the lock is held).
+
         Returns a summary dict (also used by the ``neighbors`` command):
         ``{'ok', 'reason', 'discovered', 'queried', 'best_snr', 'attempted',
         'succeeded', 'recorded'}``.
         """
-        if self.neighbors_cycle_active:
-            self.logger.info(
-                "Neighbors: a discovery cycle is already running, skipping this trigger"
-            )
-            return self._empty_neighbors_summary("a discovery cycle is already running")
+        if not already_claimed:
+            reason = self.claim_neighbors_cycle()
+            if reason is not None:
+                return self._empty_neighbors_summary(reason)
 
-        cooldown = self.neighbors_cooldown_remaining()
-        if cooldown > 0:
-            self.logger.info(
-                f"Neighbors: last cycle was too recent, {cooldown:.0f}s left before "
-                f"another may run"
-            )
-            return self._empty_neighbors_summary(
-                f"another cycle may run in {cooldown:.0f}s"
-            )
-
-        self.neighbors_cycle_active = True
         try:
             return await self._run_neighbors_cycle()
         finally:
-            self.neighbors_cycle_active = False
+            self.release_neighbors_cycle()
 
     async def _run_neighbors_cycle(self) -> dict[str, Any]:
         """One discovery cycle: record it, feed the graph, publish it.

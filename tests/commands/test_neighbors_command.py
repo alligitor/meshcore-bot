@@ -33,14 +33,38 @@ def make_service(*, neighbors_enabled=True, summary=None, hang=False,
         neighbors_cooldown_remaining(service)
     service.calls = 0
 
-    async def run_cycle():
-        service.calls += 1
-        if hang:
-            await asyncio.sleep(30)
-        if raises is not None:
-            raise raises
-        return summary or {"ok": True, "queried": 0, "recorded": 0, "attempted": 0}
+    def claim_neighbors_cycle():
+        if service.neighbors_cycle_active:
+            return "a discovery cycle is already running"
+        remaining = service.neighbors_cooldown_remaining()
+        if remaining > 0:
+            return f"another cycle may run in {remaining:.0f}s"
+        service.neighbors_cycle_active = True
+        return None
 
+    def release_neighbors_cycle():
+        service.neighbors_cycle_active = False
+
+    async def run_cycle(*, already_claimed=False):
+        if not already_claimed:
+            reason = claim_neighbors_cycle()
+            if reason is not None:
+                return {
+                    "ok": False, "reason": reason, "discovered": 0, "queried": 0,
+                    "best_snr": None, "attempted": 0, "succeeded": 0, "recorded": 0,
+                }
+        service.calls += 1
+        try:
+            if hang:
+                await asyncio.sleep(30)
+            if raises is not None:
+                raise raises
+            return summary or {"ok": True, "queried": 0, "recorded": 0, "attempted": 0}
+        finally:
+            release_neighbors_cycle()
+
+    service.claim_neighbors_cycle = claim_neighbors_cycle
+    service.release_neighbors_cycle = release_neighbors_cycle
     service.run_neighbors_cycle = run_cycle
     return service
 
@@ -55,6 +79,7 @@ def make_command(command_mock_bot, service, *, enabled=True):
     command._cycle_task = None
     # Normally set up by BaseCommand.__init__, which make_command skips.
     command._user_cooldowns = {}
+    command.cooldown_seconds = NeighborsCommand.cooldown_seconds
 
     sent: list[str] = []
 
@@ -95,6 +120,22 @@ async def test_reports_when_the_service_is_absent(command_mock_bot, message):
     assert sent == ["disabled"]
 
 
+async def test_disabled_refusal_does_not_burn_the_senders_own_cooldown(
+    command_mock_bot, message
+):
+    """Enabling the feature a minute later must not still be blocked for 14 more."""
+    command, sent = make_command(
+        command_mock_bot, make_service(neighbors_enabled=False)
+    )
+    command.record_execution(message.sender_id)
+    await command.execute(message)
+    assert sent == ["disabled"]
+
+    can_execute, remaining = command.check_cooldown(message.sender_id)
+    assert can_execute is False
+    assert remaining == pytest.approx(60, abs=5)
+
+
 async def test_acknowledges_before_running_the_cycle(command_mock_bot, message):
     """The listen window is ~60s, far too long to hold the reply open."""
     service = make_service(summary={"ok": True, "queried": 2, "best_snr": 8.0,
@@ -104,10 +145,37 @@ async def test_acknowledges_before_running_the_cycle(command_mock_bot, message):
     assert await command.execute(message) is True
     assert sent == ["started seconds=60"]
     assert service.calls == 0  # not awaited inline
+    # Claimed before the ack so the scheduler cannot sneak in during send_response.
+    assert service.neighbors_cycle_active is True
 
     await command._cycle_task
     assert len(sent) == 2
     assert sent[1].startswith("success")
+    assert service.neighbors_cycle_active is False
+
+
+async def test_claim_before_ack_survives_a_scheduler_race(command_mock_bot, message):
+    """If another trigger starts during send_response, we already hold the lock."""
+    service = make_service(summary={"ok": True, "queried": 0, "recorded": 0, "attempted": 0})
+    command, sent = make_command(command_mock_bot, service)
+
+    raced = {}
+
+    async def send_and_race(message, content, **kwargs):
+        sent.append(content)
+        if content.startswith("started"):
+            # Stands in for the scheduler waking during the ack await.
+            raced["summary"] = await service.run_neighbors_cycle()
+        return True
+
+    command.send_response = send_and_race
+    await command.execute(message)
+    await command._cycle_task
+
+    assert sent[0].startswith("started")
+    assert raced["summary"]["ok"] is False
+    assert "already running" in raced["summary"]["reason"]
+    assert service.calls == 1
 
 
 async def test_summary_reports_count_snr_and_records(command_mock_bot, message):
@@ -195,6 +263,22 @@ async def test_a_second_request_will_not_overlap_the_first(command_mock_bot, mes
     command._cycle_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await command._cycle_task
+
+
+async def test_busy_refusal_does_not_burn_the_senders_own_cooldown(
+    command_mock_bot, message
+):
+    """A mid-cycle 'busy' clears with the discover window, not after 15 minutes."""
+    service = make_service(cycle_active=True)
+    command, sent = make_command(command_mock_bot, service)
+
+    command.record_execution(message.sender_id)
+    await command.execute(message)
+    assert sent == ["busy"]
+
+    can_execute, remaining = command.check_cooldown(message.sender_id)
+    assert can_execute is False
+    assert remaining == pytest.approx(60, abs=5)
 
 
 async def test_a_finished_cycle_does_not_block_the_next_request(command_mock_bot, message):

@@ -12,6 +12,11 @@ from typing import Any, Optional
 from ..models import MeshMessage
 from .base_command import BaseCommand
 
+# How long a refused sender must wait before retrying. Matches the default
+# discover window: long enough that a busy cycle is usually done, short enough
+# that "busy" / "disabled" is not a fifteen-minute lockout.
+_REFUSAL_RETRY_SECONDS = 60.0
+
 
 class NeighborsCommand(BaseCommand):
     """Runs one neighbor discovery cycle immediately.
@@ -107,13 +112,26 @@ class NeighborsCommand(BaseCommand):
             self.logger.debug(f"Neighbors: could not read the shared cooldown: {e}")
             return 0.0
 
+    def _busy_retry_seconds(self, service: Any) -> float:
+        """How long a 'busy' refusal should hold this sender's personal cooldown.
+
+        Aligns with the discover window when known: by then a normal cycle has
+        finished listening, so a retry is meaningful.
+        """
+        cfg = getattr(service, 'neighbors_config', None)
+        window = getattr(cfg, 'discover_window', None)
+        if isinstance(window, (int, float)) and window > 0:
+            return float(window)
+        return _REFUSAL_RETRY_SECONDS
+
     def _yield_user_cooldown(self, user_id: Optional[str], remaining: float) -> None:
-        """Rewind this sender's own cooldown to expire with the shared one.
+        """Rewind this sender's own cooldown to expire after *remaining* seconds.
 
         The command manager records the execution *before* calling execute(), so a
         request refused in here has already spent the sender's 15 minutes. Without
-        this, "wait 1 more minute" would be a lie: retrying a minute later would
-        be refused for another fourteen, by their personal cooldown this time.
+        this, "wait 1 more minute" (or "busy, try again shortly") would be a lie:
+        retrying when ready would be refused for another fourteen minutes by their
+        personal cooldown.
 
         Rewound rather than cleared, so the refusal itself cannot be spammed — a
         DM reply is airtime too.
@@ -134,16 +152,22 @@ class NeighborsCommand(BaseCommand):
         """
         service = self._get_capture_service()
         if service is None or not getattr(service, 'neighbors_enabled', False):
+            # Same yield as other refusals: the manager already recorded a full
+            # personal cooldown, and "disabled" must not become a 15-minute lockout
+            # after the operator turns the feature on.
+            self._yield_user_cooldown(message.sender_id, _REFUSAL_RETRY_SECONDS)
             await self.send_response(message, self.translate('commands.neighbors.disabled'))
             return True
 
         if self._cycle_task is not None and not self._cycle_task.done():
+            self._yield_user_cooldown(message.sender_id, self._busy_retry_seconds(service))
             await self.send_response(message, self.translate('commands.neighbors.busy'))
             return True
 
         # The service refuses an overlapping cycle on its own; this only decides
         # what the requester is told, and rations airtime across senders.
         if getattr(service, 'neighbors_cycle_active', False):
+            self._yield_user_cooldown(message.sender_id, self._busy_retry_seconds(service))
             await self.send_response(message, self.translate('commands.neighbors.busy'))
             return True
 
@@ -163,22 +187,69 @@ class NeighborsCommand(BaseCommand):
 
         cfg = service.neighbors_config
         self.logger.info(f"User {message.sender_id} requested a neighbors discovery cycle")
-        await self.send_response(
-            message,
-            self.translate('commands.neighbors.started', seconds=int(cfg.discover_window)),
-        )
+
+        # Claim before acknowledging. send_response awaits, and without the lock
+        # the scheduler can start a cycle in that gap — the user would then get
+        # "started" followed by "failed: already running".
+        claimed = False
+        claim = getattr(service, 'claim_neighbors_cycle', None)
+        if callable(claim):
+            refusal = claim()
+            if refusal is not None:
+                if "already" in refusal:
+                    self._yield_user_cooldown(
+                        message.sender_id, self._busy_retry_seconds(service)
+                    )
+                    await self.send_response(
+                        message, self.translate('commands.neighbors.busy')
+                    )
+                else:
+                    left = self._shared_cooldown_remaining(service) or _REFUSAL_RETRY_SECONDS
+                    self._yield_user_cooldown(message.sender_id, left)
+                    await self.send_response(
+                        message,
+                        self.translate(
+                            'commands.neighbors.cooldown_active',
+                            minutes=max(1, math.ceil(left / 60)),
+                        ),
+                    )
+                return True
+            claimed = True
+
+        try:
+            await self.send_response(
+                message,
+                self.translate('commands.neighbors.started', seconds=int(cfg.discover_window)),
+            )
+        except Exception:
+            release = getattr(service, 'release_neighbors_cycle', None)
+            if claimed and callable(release):
+                release()
+            raise
 
         # Run detached so the discover window does not hold the command open, and
         # bound it so a stalled radio link cannot leave the task alive forever.
         self._cycle_task = asyncio.create_task(
-            self._run_and_report(message, service, cfg.cycle_budget)
+            self._run_and_report(
+                message, service, cfg.cycle_budget, already_claimed=claimed
+            )
         )
         return True
 
-    async def _run_and_report(self, message: MeshMessage, service: Any, budget: float) -> None:
+    async def _run_and_report(
+        self,
+        message: MeshMessage,
+        service: Any,
+        budget: float,
+        *,
+        already_claimed: bool = False,
+    ) -> None:
         """Run one cycle and DM the outcome."""
         try:
-            summary = await asyncio.wait_for(service.run_neighbors_cycle(), timeout=budget)
+            summary = await asyncio.wait_for(
+                service.run_neighbors_cycle(already_claimed=already_claimed),
+                timeout=budget,
+            )
         except asyncio.TimeoutError:
             self.logger.error(f"Neighbors: manual cycle exceeded {budget:.0f}s and was abandoned")
             await self.send_response(

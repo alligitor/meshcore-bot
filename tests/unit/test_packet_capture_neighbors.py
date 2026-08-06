@@ -294,6 +294,7 @@ mqtt1_server = one.example.com
 mqtt1_topic_packets = meshcore/{IATA}/{PUBLIC_KEY}/packets
 """, radio=FakeRadio())
     assert service.global_iata == "xyz"
+    assert service._iata_is_unset() is True
     assert service._resolve_neighbors_topic(service.mqtt_brokers[0]) is None
 
 
@@ -305,8 +306,25 @@ mqtt1_enabled = true
 mqtt1_server = one.example.com
 mqtt1_topic_packets = meshcore/{IATA}/{PUBLIC_KEY}/packets
 """, radio=FakeRadio())
-    assert service.global_iata == "xyz"
+    # Blank stays blank for packet/status topic resolution; neighbors still
+    # treats it as unset and refuses location-routed publish.
+    assert service.global_iata == ""
+    assert service._iata_is_unset() is True
     assert service._resolve_neighbors_topic(service.mqtt_brokers[0]) is None
+
+
+def test_empty_iata_keeps_historical_packet_topic_resolution():
+    """Empty must not become XYZ for packets — that would publish into XYZ."""
+    service = build_service(BASE_INI + """
+iata =
+mqtt1_enabled = true
+mqtt1_server = one.example.com
+mqtt1_topic_packets = meshcore/{IATA}/{PUBLIC_KEY}/packets
+""", radio=FakeRadio())
+    topic = service._resolve_topic_template(
+        "meshcore/{IATA}/{PUBLIC_KEY}/packets", "packet"
+    )
+    assert topic == f"meshcore//{SELF_KEY.upper()}/packets"
 
 
 def test_a_flat_derived_topic_still_works_without_an_iata():

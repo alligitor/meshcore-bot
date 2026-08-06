@@ -1888,7 +1888,8 @@ iata = XYZ
 #                                     # meshcore/{IATA}/{PUBLIC_KEY}/neighbors), else
 #                                     # <mqttN_topic_prefix>/neighbors. A derived
 #                                     # location-routed topic is skipped with a warning when
-#                                     # no iata is set, rather than publishing to XYZ.
+#                                     # no iata is set (blank or XYZ), rather than publishing
+#                                     # into that shared namespace.
 #
 # Topic template placeholders:
 # {IATA} - Uppercase IATA code (e.g., SEA)
