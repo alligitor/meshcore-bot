@@ -24,11 +24,11 @@ class NeighborsCommand(BaseCommand):
     so this acknowledges immediately and reports the result in a second message
     rather than holding the reply open.
 
-    ``cooldown_seconds`` is enforced twice over. The base class applies it per
-    sender; ``_shared_cooldown_remaining`` applies it to the node as a whole,
-    because the cost being rationed here is airtime, not one user's attention:
-    without it, N users could take turns and keep the radio discovering
-    continuously.
+    Two cooldowns apply. ``cooldown_seconds`` is this sender's own, from the base
+    class. The node-wide one belongs to the service (``MIN_CYCLE_GAP_SECONDS``),
+    because airtime is spent by whichever trigger asks — the scheduler included —
+    and it is only *reported* here, so the reply can say how long is left instead
+    of failing opaquely.
     """
 
     # Plugin metadata
@@ -92,20 +92,36 @@ class NeighborsCommand(BaseCommand):
     def _shared_cooldown_remaining(self, service: Any) -> float:
         """Seconds left before *any* sender may trigger another cycle.
 
-        Measured from the last cycle that reached the radio, whichever trigger
-        started it — including the scheduler's, and including a cycle that failed
-        after the discover request went out. A lost acknowledgement spends the
-        airtime just the same, so charging only for completed cycles would let a
-        second sender start another round immediately. A cycle that bailed out
-        before transmitting (radio down, unsupported build) does not count.
+        The service owns this rule — it applies to the scheduler and to every
+        other trigger too, and it would refuse the cycle regardless. Asking it
+        here only buys a clearer reply than a generic failure summary, so a
+        service that cannot answer is treated as "no wait known" and left to
+        refuse for itself.
         """
-        if self.cooldown_seconds <= 0:
+        remaining = getattr(service, 'neighbors_cooldown_remaining', None)
+        if not callable(remaining):
             return 0.0
-        last = max(
-            getattr(service, 'last_neighbors_publish', 0) or 0,
-            getattr(service, 'last_neighbors_attempt', 0) or 0,
-        )
-        return max(0.0, self.cooldown_seconds - (time.time() - last))
+        try:
+            return float(remaining())
+        except Exception as e:
+            self.logger.debug(f"Neighbors: could not read the shared cooldown: {e}")
+            return 0.0
+
+    def _yield_user_cooldown(self, user_id: Optional[str], remaining: float) -> None:
+        """Rewind this sender's own cooldown to expire with the shared one.
+
+        The command manager records the execution *before* calling execute(), so a
+        request refused in here has already spent the sender's 15 minutes. Without
+        this, "wait 1 more minute" would be a lie: retrying a minute later would
+        be refused for another fourteen, by their personal cooldown this time.
+
+        Rewound rather than cleared, so the refusal itself cannot be spammed — a
+        DM reply is airtime too.
+        """
+        if not user_id or self.cooldown_seconds <= 0:
+            return
+        spent = max(0.0, self.cooldown_seconds - remaining)
+        self._user_cooldowns[user_id] = time.time() - spent
 
     async def execute(self, message: MeshMessage) -> bool:
         """Execute the neighbors command.
@@ -137,6 +153,7 @@ class NeighborsCommand(BaseCommand):
                 f"Neighbors: refusing {message.sender_id}'s request, "
                 f"{remaining:.0f}s left on the shared cooldown"
             )
+            self._yield_user_cooldown(message.sender_id, remaining)
             await self.send_response(
                 message,
                 self.translate('commands.neighbors.cooldown_active',

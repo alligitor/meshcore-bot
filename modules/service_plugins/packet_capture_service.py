@@ -26,6 +26,7 @@ from ..meshcore_payload_decode import (
 )
 from ..neighbors_discovery import (
     MAX_INTERVAL_HOURS,
+    MIN_CYCLE_GAP_SECONDS,
     MIN_INTERVAL_HOURS,
     STATUS_RESPONDED,
     NeighborsConfig,
@@ -61,6 +62,12 @@ from .packet_capture_utils import create_auth_token_async, read_private_key_file
 # bot_metadata key holding the last neighbors cycle timestamp. Namespaced because
 # bot_metadata is shared across the whole bot.
 NEIGHBORS_STATE_KEY = "packet_capture.last_neighbors_publish"
+
+# How long the scheduler waits before re-checking after a cycle that produced no
+# result. Short on purpose: the usual causes (radio down, unsupported build) cost
+# nothing to re-test. A cycle that did transmit is held by MIN_CYCLE_GAP_SECONDS
+# instead, which is longer.
+NEIGHBORS_RETRY_BACKOFF_SECONDS = 300.0
 
 # Sentinel meaning "no IATA configured" (documented as invalid in config.ini.example).
 DEFAULT_IATA = "XYZ"
@@ -2239,13 +2246,29 @@ class PacketCaptureService(BaseServicePlugin):
             "best_snr": None, "attempted": 0, "succeeded": 0, "recorded": 0,
         }
 
-    async def run_neighbors_cycle(self) -> dict[str, Any]:
-        """Run one discovery cycle, refusing to overlap with one already running.
+    def neighbors_cooldown_remaining(self) -> float:
+        """Seconds until another cycle may reach the radio.
 
-        The scheduler and the ``neighbors`` command trigger cycles independently,
-        so the guard belongs here rather than in either caller: two concurrent
-        cycles would each collect the other's discover responses and double the
-        airtime for no extra information.
+        Measured from the last cycle that got as far as transmitting, whichever
+        trigger started it — so a cycle that failed on a lost acknowledgement
+        still counts, because the discover broadcast went out regardless. A cycle
+        that bailed before touching the radio stamps nothing and so costs nothing.
+        """
+        last = max(self.last_neighbors_attempt, self.last_neighbors_publish)
+        if last <= 0:
+            return 0.0
+        return max(0.0, MIN_CYCLE_GAP_SECONDS - (time.time() - last))
+
+    async def run_neighbors_cycle(self) -> dict[str, Any]:
+        """Run one discovery cycle, subject to the airtime guards.
+
+        Both guards live here rather than in a caller, because the scheduler, the
+        ``neighbors`` command and any future trigger all reach the same radio:
+
+        * no overlap — two concurrent cycles would each collect the other's
+          discover responses and spend twice the airtime for no extra information;
+        * no cycle within ``MIN_CYCLE_GAP_SECONDS`` of the last one that
+          transmitted.
 
         Returns a summary dict (also used by the ``neighbors`` command):
         ``{'ok', 'reason', 'discovered', 'queried', 'best_snr', 'attempted',
@@ -2256,6 +2279,16 @@ class PacketCaptureService(BaseServicePlugin):
                 "Neighbors: a discovery cycle is already running, skipping this trigger"
             )
             return self._empty_neighbors_summary("a discovery cycle is already running")
+
+        cooldown = self.neighbors_cooldown_remaining()
+        if cooldown > 0:
+            self.logger.info(
+                f"Neighbors: last cycle was too recent, {cooldown:.0f}s left before "
+                f"another may run"
+            )
+            return self._empty_neighbors_summary(
+                f"another cycle may run in {cooldown:.0f}s"
+            )
 
         self.neighbors_cycle_active = True
         try:
@@ -2422,9 +2455,15 @@ class PacketCaptureService(BaseServicePlugin):
                 # run_neighbors_cycle stamps last_neighbors_publish when it got as
                 # far as a result. If it bailed early (not connected, unsupported
                 # build) back off before retrying so we re-check periodically
-                # rather than spinning.
+                # rather than spinning — but never retry inside the airtime
+                # cooldown: a cycle that failed on a lost acknowledgement already
+                # put a discover broadcast on the air, and retrying every
+                # NEIGHBORS_RETRY_BACKOFF_SECONDS would spend triple the intended
+                # airtime.
                 if (time.time() - self.last_neighbors_publish) >= interval_seconds:
-                    if await self._wait_with_shutdown(300):
+                    backoff = max(NEIGHBORS_RETRY_BACKOFF_SECONDS,
+                                  self.neighbors_cooldown_remaining())
+                    if await self._wait_with_shutdown(backoff):
                         break
 
             except asyncio.CancelledError:
@@ -2433,7 +2472,7 @@ class PacketCaptureService(BaseServicePlugin):
                 break
             except Exception as e:
                 self.logger.error(f"Error in neighbors scheduler: {e}")
-                if await self._wait_with_shutdown(300):
+                if await self._wait_with_shutdown(NEIGHBORS_RETRY_BACKOFF_SECONDS):
                     break
 
     async def stats_refresh_scheduler(self) -> None:

@@ -17,6 +17,7 @@ from meshcore import EventType
 from modules import neighbors_discovery as nb
 from modules.db_migrations import MigrationRunner
 from modules.service_plugins.packet_capture_service import (
+    NEIGHBORS_RETRY_BACKOFF_SECONDS,
     NEIGHBORS_STATE_KEY,
     PacketCaptureService,
 )
@@ -647,18 +648,29 @@ async def test_concurrent_cycles_are_refused(db_manager, monkeypatch):
     assert service.neighbors_cycle_active is False
 
 
+def _lost_ack_radio():
+    """A radio whose discover broadcast goes out but is never acknowledged.
+
+    The airtime is spent; the host just never learns that it was, which is what
+    makes this different from a build that rejects the command outright.
+    """
+    radio = FakeRadio([])
+
+    async def unacknowledged(filter_bits, prefix_only=True, tag=None):
+        radio.discover_requests += 1
+        return FakeEvent(EventType.ERROR, {"reason": "no_event_received"})
+
+    radio.commands.send_node_discover_req = unacknowledged
+    return radio
+
+
 async def test_a_failed_cycle_still_records_the_attempt(db_manager, caplog, no_sleep):
     """A lost acknowledgement spends the airtime without completing the cycle.
 
     last_neighbors_publish stays unset in that case, so callers that ration
     airtime need the attempt stamp or another sender could transmit immediately.
     """
-    radio = FakeRadio([])
-
-    async def failing(filter_bits, prefix_only=True, tag=None):
-        return FakeEvent(EventType.ERROR, {"reason": "no_event_received"})
-
-    radio.commands.send_node_discover_req = failing
+    radio = _lost_ack_radio()
     service = build_service(BASE_INI, db_manager=db_manager, radio=radio)
     service.mqtt_enabled = False
 
@@ -676,6 +688,86 @@ async def test_a_cycle_that_never_transmits_records_no_attempt(db_manager):
     summary = await service.run_neighbors_cycle()
     assert summary["ok"] is False
     assert service.last_neighbors_attempt == 0.0
+
+
+async def test_a_cycle_inside_the_airtime_cooldown_is_refused(db_manager, no_sleep):
+    """The guard belongs to the service, so it covers the scheduler too — not just
+    the DM command, which is one caller among several."""
+    radio = FakeRadio([response(KEY_A, 1.0)])
+    service = build_service(BASE_INI, db_manager=db_manager, radio=radio)
+    service.mqtt_enabled = False
+
+    assert (await service.run_neighbors_cycle())["ok"] is True
+    assert radio.discover_requests == 1
+
+    summary = await service.run_neighbors_cycle()
+    assert summary["ok"] is False
+    assert "may run in" in summary["reason"]
+    # Refused before touching the radio.
+    assert radio.discover_requests == 1
+
+
+async def test_the_cooldown_covers_a_failure_that_transmitted(db_manager, no_sleep):
+    """The failing cycle never stamps last_neighbors_publish, so a guard reading
+    only that would let the next trigger transmit immediately."""
+    radio = _lost_ack_radio()
+    service = build_service(BASE_INI, db_manager=db_manager, radio=radio)
+    service.mqtt_enabled = False
+
+    assert (await service.run_neighbors_cycle())["ok"] is False
+    assert radio.discover_requests == 1
+
+    assert "may run in" in (await service.run_neighbors_cycle())["reason"]
+    assert radio.discover_requests == 1
+
+
+async def test_the_cooldown_does_not_delay_a_cycle_that_never_transmitted(db_manager):
+    """Re-checking a disconnected radio is free, so it must stay quick."""
+    service = build_service(BASE_INI, db_manager=db_manager, radio=None)
+    service.mqtt_enabled = False
+
+    await service.run_neighbors_cycle()
+    assert service.neighbors_cooldown_remaining() == 0.0
+
+
+def _record_scheduler_waits(service, monkeypatch):
+    """Capture what the scheduler waits, and stop it after one pass."""
+    waits: list[float] = []
+
+    async def record_wait(timeout):
+        waits.append(timeout)
+        service.should_exit = True
+        return True
+
+    monkeypatch.setattr(service, "_wait_with_shutdown", record_wait)
+    return waits
+
+
+async def test_scheduler_waits_out_the_cooldown_before_retrying(
+    db_manager, monkeypatch, no_sleep
+):
+    """Retrying on the short failure backoff alone would triple the airtime."""
+    radio = _lost_ack_radio()
+    service = build_service(BASE_INI, db_manager=db_manager, radio=radio)
+    service.mqtt_enabled = False
+
+    waits = _record_scheduler_waits(service, monkeypatch)
+    await service.neighbors_scheduler()
+
+    assert radio.discover_requests == 1
+    assert waits == [pytest.approx(nb.MIN_CYCLE_GAP_SECONDS, abs=5)]
+    assert waits[0] > NEIGHBORS_RETRY_BACKOFF_SECONDS
+
+
+async def test_scheduler_retries_quickly_when_nothing_transmitted(db_manager, monkeypatch):
+    """A disconnected radio costs nothing to re-test, so keep the short backoff."""
+    service = build_service(BASE_INI, db_manager=db_manager, radio=None)
+    service.mqtt_enabled = False
+
+    waits = _record_scheduler_waits(service, monkeypatch)
+    await service.neighbors_scheduler()
+
+    assert waits == [NEIGHBORS_RETRY_BACKOFF_SECONDS]
 
 
 async def test_the_guard_is_released_when_a_cycle_fails(db_manager, no_sleep):
@@ -705,6 +797,9 @@ async def test_repeated_discover_failure_warns_only_once(db_manager, caplog, no_
 
     with caplog.at_level(logging.WARNING, logger=LOGGER.name):
         for _ in range(3):
+            # Stands in for the scheduler waiting out the airtime cooldown between
+            # attempts; without it the guard would refuse cycles 2 and 3.
+            service.last_neighbors_attempt = 0.0
             assert (await service.run_neighbors_cycle())["ok"] is False
 
     assert caplog.text.count("discovery request failed; will keep retrying") == 1

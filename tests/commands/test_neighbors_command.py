@@ -9,6 +9,8 @@ import types
 import pytest
 
 from modules.commands.neighbors_command import NeighborsCommand
+from modules.neighbors_discovery import MIN_CYCLE_GAP_SECONDS
+from modules.service_plugins.packet_capture_service import PacketCaptureService
 from tests.conftest import mock_message
 
 
@@ -25,6 +27,10 @@ def make_service(*, neighbors_enabled=True, summary=None, hang=False,
     service.last_neighbors_publish = last_publish
     service.last_neighbors_attempt = last_attempt
     service.neighbors_cycle_active = cycle_active
+    # The node-wide cooldown is the service's rule; mirror its arithmetic here so
+    # the command is tested against the same contract the real service offers.
+    service.neighbors_cooldown_remaining = lambda: PacketCaptureService.\
+        neighbors_cooldown_remaining(service)
     service.calls = 0
 
     async def run_cycle():
@@ -47,6 +53,8 @@ def make_command(command_mock_bot, service, *, enabled=True):
     command.logger = command_mock_bot.logger
     command.command_enabled = enabled
     command._cycle_task = None
+    # Normally set up by BaseCommand.__init__, which make_command skips.
+    command._user_cooldowns = {}
 
     sent: list[str] = []
 
@@ -245,8 +253,39 @@ async def test_a_failed_cycle_still_starts_the_cooldown(command_mock_bot):
     assert service.calls == 0
 
 
+async def test_a_refusal_does_not_burn_the_senders_own_cooldown(command_mock_bot, message):
+    """The command manager records the execution before calling execute().
+
+    So a request refused for the shared cooldown has already spent this sender's
+    15 minutes. Telling them to wait one minute and then refusing for fourteen
+    more — on their personal cooldown this time — would make the reply a lie.
+    """
+    service = make_service(last_attempt=time.time() - 840)  # 60s left
+    command, sent = make_command(command_mock_bot, service)
+
+    command.record_execution(message.sender_id)  # what the manager does first
+    await command.execute(message)
+    assert sent == ["cooldown_active minutes=1"]
+
+    can_execute, remaining = command.check_cooldown(message.sender_id)
+    assert can_execute is False
+    # Expires with the shared cooldown, not 15 minutes from the refusal.
+    assert remaining == pytest.approx(60, abs=5)
+
+
+async def test_a_refusal_still_blocks_an_immediate_retry(command_mock_bot, message):
+    """Rewound, not cleared: a refusal reply is airtime too."""
+    service = make_service(last_attempt=time.time() - 60)
+    command, _ = make_command(command_mock_bot, service)
+
+    command.record_execution(message.sender_id)
+    await command.execute(message)
+
+    assert command.check_cooldown(message.sender_id)[0] is False
+
+
 async def test_the_cooldown_expires(command_mock_bot, message):
-    service = make_service(last_publish=time.time() - (NeighborsCommand.cooldown_seconds + 1),
+    service = make_service(last_publish=time.time() - (MIN_CYCLE_GAP_SECONDS + 1),
                            summary={"ok": True, "queried": 0, "recorded": 0, "attempted": 0})
     command, sent = make_command(command_mock_bot, service)
 

@@ -71,6 +71,12 @@ MIN_INTERVAL_HOURS = 12
 MAX_INTERVAL_HOURS = 336
 DEFAULT_INTERVAL_HOURS = 24
 
+# Minimum wall time between cycles that reach the radio, whichever trigger asks.
+# A cycle broadcasts a discover request and draws a reply from every direct
+# neighbour, so the cost being rationed belongs to the whole mesh rather than to
+# one caller. The neighbors command advertises this as its cooldown.
+MIN_CYCLE_GAP_SECONDS = 900.0
+
 # Floors that keep a misconfiguration from producing an empty snapshot forever.
 # Repeaters answer a discover request after a randomised delay, so a very short
 # window collects nothing at all.

@@ -403,19 +403,25 @@ It acknowledges immediately and reports the result in a second DM once the windo
 closes. Enabled via `[Neighbors_Command]`; add `neighbors` to
 `[Admin_ACL] admin_commands` to restrict it, since a cycle spends airtime.
 
-Two guards keep the airtime bounded, because what is being rationed belongs to the
-whole mesh rather than to one requester:
+Two guards keep the airtime bounded. Both live in the service rather than in the
+command, because what is being rationed belongs to the whole mesh and every
+trigger reaches the same radio — the scheduler included:
 
-- **Only one cycle at a time.** The service refuses an overlapping cycle whichever
-  trigger asks — scheduler or command — so two discover rounds can never collect
-  into each other's window.
-- **The 15-minute cooldown is per node, not per sender.** It is measured from the
-  last cycle that reached the radio, whichever trigger started it — including the
-  scheduler's, and including a cycle that failed after the discover request went
+- **Only one cycle at a time.** An overlapping cycle is refused whichever trigger
+  asks, so two discover rounds can never collect into each other's window.
+- **At most one cycle every 15 minutes.** Measured from the last cycle that
+  reached the radio, including one that failed *after* the discover request went
   out, since a lost acknowledgement spends the airtime just the same. Users
-  therefore cannot take turns and keep the radio discovering continuously. A
-  cycle that bailed out *before* transmitting (radio down, unsupported build)
-  does not start the clock, so a retry stays possible.
+  cannot take turns and keep the radio discovering continuously, and the
+  scheduler's own retry-after-failure backoff waits this out rather than
+  re-transmitting every five minutes. A cycle that bailed out *before*
+  transmitting (radio down, unsupported build) does not start the clock, so
+  re-checking those stays quick.
+
+The DM command reports the wait instead of failing opaquely, and rewinds the
+sender's personal cooldown to expire with the shared one — the command manager
+records an execution before the command runs, so otherwise being told "wait one
+more minute" would be followed by fourteen more minutes of personal cooldown.
 
 ### Region scopes are opt-in, and why
 
