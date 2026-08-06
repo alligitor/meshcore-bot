@@ -17,6 +17,7 @@ from meshcore import EventType
 from modules import neighbors_discovery as nb
 from modules.db_migrations import MigrationRunner
 from modules.service_plugins.packet_capture_service import (
+    NEIGHBORS_ATTEMPT_STATE_KEY,
     NEIGHBORS_RETRY_BACKOFF_SECONDS,
     NEIGHBORS_STATE_KEY,
     PacketCaptureService,
@@ -145,7 +146,7 @@ def build_service(ini: str, *, db_manager=None, radio=None, connected=True):
     service.neighbors_discover_failures = 0
     service.neighbors_topic_warned = set()
     service.last_neighbors_publish = service._load_neighbors_state()
-    service.last_neighbors_attempt = 0.0
+    service.last_neighbors_attempt = service._load_neighbors_attempt_state()
     service.neighbors_cycle_active = False
     service.debug = False
     # global_iata deliberately not overridden: it comes from the ini, so tests can
@@ -296,6 +297,18 @@ mqtt1_topic_packets = meshcore/{IATA}/{PUBLIC_KEY}/packets
     assert service._resolve_neighbors_topic(service.mqtt_brokers[0]) is None
 
 
+def test_location_routed_topic_is_refused_with_an_explicitly_empty_iata():
+    """An empty configured value is just as unset as the XYZ fallback."""
+    service = build_service(BASE_INI + """
+iata =
+mqtt1_enabled = true
+mqtt1_server = one.example.com
+mqtt1_topic_packets = meshcore/{IATA}/{PUBLIC_KEY}/packets
+""", radio=FakeRadio())
+    assert service.global_iata == "xyz"
+    assert service._resolve_neighbors_topic(service.mqtt_brokers[0]) is None
+
+
 def test_a_flat_derived_topic_still_works_without_an_iata():
     """The guard is about location routing, not about having an IATA at all."""
     service = build_service(BASE_INI + """
@@ -304,6 +317,18 @@ mqtt1_server = one.example.com
 """)
     assert service.global_iata == "xyz"
     assert service._resolve_neighbors_topic(service.mqtt_brokers[0]) == "meshcore/packets/neighbors"
+
+
+def test_neighbors_topic_follows_a_flat_packets_topic():
+    service = build_service(BASE_INI + """
+iata = SEA
+mqtt1_enabled = true
+mqtt1_server = one.example.com
+mqtt1_topic_packets = packets
+""")
+    broker = service.mqtt_brokers[0]
+    assert service._neighbors_topic_template(broker) == "neighbors"
+    assert service._resolve_neighbors_topic(broker) == "neighbors"
 
 
 def test_an_explicit_topic_is_honoured_even_without_an_iata():
@@ -455,6 +480,18 @@ def test_state_round_trips_through_bot_metadata(db_manager):
 
     reloaded = build_service(BASE_INI, db_manager=db_manager)
     assert reloaded.last_neighbors_publish == 1774482900.0
+
+
+def test_attempt_state_round_trips_through_bot_metadata(db_manager):
+    service = build_service(BASE_INI, db_manager=db_manager)
+    assert service.last_neighbors_attempt == 0.0
+
+    service.last_neighbors_attempt = 1774482900.0
+    service._save_neighbors_attempt_state()
+    assert db_manager.metadata[NEIGHBORS_ATTEMPT_STATE_KEY] == "1774482900.0"
+
+    reloaded = build_service(BASE_INI, db_manager=db_manager)
+    assert reloaded.last_neighbors_attempt == 1774482900.0
 
 
 def test_malformed_state_is_ignored(db_manager):
@@ -678,6 +715,30 @@ async def test_a_failed_cycle_still_records_the_attempt(db_manager, caplog, no_s
     assert summary["ok"] is False
     assert service.last_neighbors_publish == 0
     assert service.last_neighbors_attempt > 0
+    assert float(db_manager.metadata[NEIGHBORS_ATTEMPT_STATE_KEY]) == pytest.approx(
+        service.last_neighbors_attempt
+    )
+
+
+async def test_a_transmitted_failure_remains_on_cooldown_after_restart(
+    db_manager, no_sleep
+):
+    """A watchdog restart must not turn a lost acknowledgement into another burst."""
+    first_radio = _lost_ack_radio()
+    service = build_service(BASE_INI, db_manager=db_manager, radio=first_radio)
+    service.mqtt_enabled = False
+
+    assert (await service.run_neighbors_cycle())["ok"] is False
+    assert first_radio.discover_requests == 1
+
+    restarted_radio = _lost_ack_radio()
+    restarted = build_service(BASE_INI, db_manager=db_manager, radio=restarted_radio)
+    restarted.mqtt_enabled = False
+    summary = await restarted.run_neighbors_cycle()
+
+    assert summary["ok"] is False
+    assert "may run in" in summary["reason"]
+    assert restarted_radio.discover_requests == 0
 
 
 async def test_a_cycle_that_never_transmits_records_no_attempt(db_manager):

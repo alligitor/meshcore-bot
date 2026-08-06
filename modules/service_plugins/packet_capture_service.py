@@ -63,6 +63,13 @@ from .packet_capture_utils import create_auth_token_async, read_private_key_file
 # bot_metadata is shared across the whole bot.
 NEIGHBORS_STATE_KEY = "packet_capture.last_neighbors_publish"
 
+# A cycle can spend airtime without producing a publish timestamp (for example,
+# when the discover acknowledgement is lost). Persist that attempt separately so
+# a process restart cannot bypass the short airtime guard while still allowing
+# the scheduler to retry after MIN_CYCLE_GAP_SECONDS rather than waiting a full
+# configured interval.
+NEIGHBORS_ATTEMPT_STATE_KEY = "packet_capture.last_neighbors_attempt"
+
 # How long the scheduler waits before re-checking after a cycle that produced no
 # result. Short on purpose: the usual causes (radio down, unsupported build) cost
 # nothing to re-test. A cycle that did transmit is held by MIN_CYCLE_GAP_SECONDS
@@ -387,7 +394,7 @@ class PacketCaptureService(BaseServicePlugin):
         # When a cycle last reached the radio, whether or not it produced a
         # result. Callers that ration airtime need this rather than
         # last_neighbors_publish, which a failed cycle never stamps.
-        self.last_neighbors_attempt = 0.0
+        self.last_neighbors_attempt = self._load_neighbors_attempt_state()
         # Single-flight across every trigger (scheduler, command, future callers):
         # two overlapping cycles would collect into each other's discover window
         # and double the airtime. asyncio is single-threaded, so a plain flag set
@@ -455,7 +462,8 @@ class PacketCaptureService(BaseServicePlugin):
         self.mqtt_brokers = self._parse_mqtt_brokers(config)
 
         # Global IATA
-        self.global_iata = config.get("PacketCapture", "iata", fallback=DEFAULT_IATA).lower()
+        configured_iata = config.get("PacketCapture", "iata", fallback=DEFAULT_IATA)
+        self.global_iata = (configured_iata.strip() or DEFAULT_IATA).lower()
 
         # Owner information
         self.owner_public_key = config.get("PacketCapture", "owner_public_key", fallback=None)
@@ -527,40 +535,64 @@ class PacketCaptureService(BaseServicePlugin):
                 f"using {self.neighbors_config.interval_hours}h"
             )
 
-    def _load_neighbors_state(self) -> float:
-        """Last cycle timestamp, from bot_metadata.
-
-        Neighbors intervals are long (12-336h), so surviving a restart is what
-        keeps a bot that reboots often from re-running discovery every start.
-        """
+    def _load_neighbors_timestamp(self, key: str, label: str) -> float:
+        """Load and validate one neighbors wall-clock timestamp."""
         try:
-            raw = self.bot.db_manager.get_metadata(NEIGHBORS_STATE_KEY)
+            raw = self.bot.db_manager.get_metadata(key)
         except Exception as e:
-            self.logger.debug(f"Could not read neighbors state: {e}")
+            self.logger.debug(f"Could not read {label}: {e}")
             return 0.0
         if not raw:
             return 0.0
         try:
             value = float(raw)
         except (TypeError, ValueError):
-            self.logger.warning(f"Ignoring malformed neighbors state value: {raw!r}")
+            self.logger.warning(f"Ignoring malformed {label} value: {raw!r}")
             return 0.0
         # A clock jump either way would otherwise pin the scheduler: a future
         # timestamp suppresses cycles indefinitely, a nonsensical old one is noise.
         now = time.time()
         if value > now + 300 or value < now - (400 * 86400):
             self.logger.warning(
-                f"Ignoring out-of-range neighbors state timestamp ({value}); will run a cycle"
+                f"Ignoring out-of-range {label} timestamp ({value})"
             )
             return 0.0
         return value
 
+    def _load_neighbors_state(self) -> float:
+        """Last completed cycle timestamp, from bot_metadata.
+
+        Neighbors intervals are long (12-336h), so surviving a restart is what
+        keeps a bot that reboots often from re-running discovery every start.
+        """
+        return self._load_neighbors_timestamp(NEIGHBORS_STATE_KEY, "neighbors state")
+
+    def _load_neighbors_attempt_state(self) -> float:
+        """Last cycle that may have reached the radio, from bot_metadata."""
+        return self._load_neighbors_timestamp(
+            NEIGHBORS_ATTEMPT_STATE_KEY, "neighbors attempt state"
+        )
+
+    def _save_neighbors_timestamp(self, key: str, value: float, label: str) -> None:
+        """Persist one neighbors wall-clock timestamp."""
+        try:
+            self.bot.db_manager.set_metadata(key, str(value))
+        except Exception as e:
+            self.logger.debug(f"Could not save {label}: {e}")
+
     def _save_neighbors_state(self) -> None:
         """Persist the last cycle timestamp to bot_metadata."""
-        try:
-            self.bot.db_manager.set_metadata(NEIGHBORS_STATE_KEY, str(self.last_neighbors_publish))
-        except Exception as e:
-            self.logger.debug(f"Could not save neighbors state: {e}")
+        self._save_neighbors_timestamp(
+            NEIGHBORS_STATE_KEY, self.last_neighbors_publish, "neighbors state"
+        )
+
+    def _save_neighbors_attempt_state(self) -> None:
+        """Persist the last cycle that may have reached the radio."""
+        self._save_neighbors_timestamp(
+            NEIGHBORS_ATTEMPT_STATE_KEY,
+            self.last_neighbors_attempt,
+            "neighbors attempt state",
+        )
 
     def _build_channel_key_store(self, config) -> ChannelKeyStore:
         """Build a comprehensive channel key store for GRP_TXT decryption.
@@ -2093,8 +2125,10 @@ class PacketCaptureService(BaseServicePlugin):
             return explicit
 
         packets = broker_config.get("topic_packets")
-        if packets and "/" in packets:
-            return packets.rsplit("/", 1)[0] + "/neighbors"
+        if packets:
+            if "/" in packets:
+                return packets.rsplit("/", 1)[0] + "/neighbors"
+            return "neighbors"
 
         prefix = broker_config.get("topic_prefix")
         if prefix:
@@ -2329,10 +2363,12 @@ class PacketCaptureService(BaseServicePlugin):
         # the discover broadcast may go out and spend airtime even if we never
         # learn that it did (a lost acknowledgement fails the cycle without
         # stamping last_neighbors_publish). Rate limiting has to charge for the
-        # transmission, not for the result. In-memory on purpose — this rations
-        # requests within a run, while last_neighbors_publish is the persisted
-        # schedule state.
+        # transmission, not for the result. Persist this to ration requests
+        # across restarts as well. It is separate from
+        # last_neighbors_publish so a failed cycle retries after the short airtime
+        # gap rather than waiting the full configured schedule interval.
         self.last_neighbors_attempt = time.time()
+        self._save_neighbors_attempt_state()
 
         entries = await discover_neighbors(
             self.meshcore, cfg, self_pubkey, self.logger,
