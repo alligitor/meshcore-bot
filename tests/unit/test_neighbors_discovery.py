@@ -42,10 +42,11 @@ class FakeRadio:
     """Delivers DISCOVER_RESPONSE events synchronously from the send call."""
 
     def __init__(self, responses=None, *, send_result="ok", scopes="DEN,APRS",
-                 flood_scope="SEA"):
+                 flood_scope="SEA", reset_result="ok"):
         self.responses = responses or []
         self.send_result = send_result
         self.scopes = scopes
+        self.reset_result = reset_result
         self.handler = None
         self.subscribed = 0
         self.unsubscribed = 0
@@ -77,6 +78,12 @@ class FakeRadio:
 
     async def _reset_path(self, pubkey):
         self.reset_path_calls.append(pubkey)
+        if self.reset_result == "raise":
+            raise RuntimeError("serial write failed")
+        if self.reset_result == "error":
+            # How the library reports a device rejection, and its own response
+            # timeout: an ERROR event, not an exception.
+            return FakeEvent(EventType.ERROR, {"reason": "timeout"})
         return FakeEvent(EventType.OK, {})
 
     def subscribe(self, event_type, callback):
@@ -543,6 +550,65 @@ async def test_unknown_contact_needs_no_repair(tiny_budget):
     entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
     await nb.collect_scopes(radio, entries, tiny_budget, LOGGER)
     assert radio.reset_path_calls == []
+
+
+async def test_a_collapsed_send_error_restores_a_pinned_contact():
+    """req_regions_sync returns None for a send_anon_req error too.
+
+    One of those errors is change_contact_path failing *after* the device applied
+    the zero-hop path (a lost acknowledgement), which returns before the library's
+    own reset_path — so None cannot be assumed to mean "the path was restored".
+    """
+    cfg = nb.NeighborsConfig(collect_scopes=True, scope_gap=0)
+    radio = FakeRadio(scopes=None)
+    radio.add_contact(KEY_A, out_path_len=-1)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    await nb.collect_scopes(radio, entries, cfg, LOGGER)
+    assert entries[0].status == nb.STATUS_TIMEOUT
+    assert radio.reset_path_calls == [KEY_A]
+
+
+async def test_no_response_needs_no_repair_without_a_known_contact():
+    """Nothing was mutated, so nothing may be sent to the device."""
+    cfg = nb.NeighborsConfig(collect_scopes=True, scope_gap=0)
+    radio = FakeRadio(scopes=None)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+    await nb.collect_scopes(radio, entries, cfg, LOGGER)
+    assert radio.reset_path_calls == []
+
+
+@pytest.mark.parametrize("reset_result,expected", [
+    ("error", "rejected the flood-path restore"),
+    ("raise", "could not restore the flood path"),
+])
+async def test_a_failed_restore_is_reported_as_a_failure(caplog, reset_result, expected):
+    """reset_path reports a rejection as an ERROR event, not an exception.
+
+    Logging success there would hide a contact left pinned to zero-hop.
+    """
+    cfg = nb.NeighborsConfig(collect_scopes=True, scope_gap=0)
+    radio = FakeRadio(scopes=None, reset_result=reset_result)
+    radio.add_contact(KEY_A, out_path_len=-1)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+        await nb.collect_scopes(radio, entries, cfg, LOGGER)
+
+    assert radio.reset_path_calls == [KEY_A]
+    assert expected in caplog.text
+    assert "restored flood path" not in caplog.text
+
+
+async def test_a_confirmed_restore_is_reported_as_success(caplog):
+    cfg = nb.NeighborsConfig(collect_scopes=True, scope_gap=0)
+    radio = FakeRadio(scopes=None)
+    radio.add_contact(KEY_A, out_path_len=-1)
+    entries = [nb.NeighborEntry(pubkey=KEY_A, snr=1.0, heard_at=0.0)]
+
+    with caplog.at_level(logging.INFO, logger=LOGGER.name):
+        await nb.collect_scopes(radio, entries, cfg, LOGGER)
+
+    assert "restored flood path" in caplog.text
 
 
 async def test_successful_request_leaves_the_restore_to_the_library():

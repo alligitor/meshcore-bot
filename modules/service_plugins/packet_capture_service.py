@@ -377,6 +377,10 @@ class PacketCaptureService(BaseServicePlugin):
         self.neighbors_discover_failures = 0
         self.neighbors_topic_warned: set[int] = set()
         self.last_neighbors_publish = self._load_neighbors_state()
+        # When a cycle last reached the radio, whether or not it produced a
+        # result. Callers that ration airtime need this rather than
+        # last_neighbors_publish, which a failed cycle never stamps.
+        self.last_neighbors_attempt = 0.0
         # Single-flight across every trigger (scheduler, command, future callers):
         # two overlapping cycles would collect into each other's discover window
         # and double the airtime. asyncio is single-threaded, so a plain flag set
@@ -2287,6 +2291,15 @@ class PacketCaptureService(BaseServicePlugin):
 
         def session_intact() -> bool:
             return self.meshcore is session and self.bot.connected
+
+        # Stamp the attempt before the request, not after the cycle: from here on
+        # the discover broadcast may go out and spend airtime even if we never
+        # learn that it did (a lost acknowledgement fails the cycle without
+        # stamping last_neighbors_publish). Rate limiting has to charge for the
+        # transmission, not for the result. In-memory on purpose — this rations
+        # requests within a run, while last_neighbors_publish is the persisted
+        # schedule state.
+        self.last_neighbors_attempt = time.time()
 
         entries = await discover_neighbors(
             self.meshcore, cfg, self_pubkey, self.logger,

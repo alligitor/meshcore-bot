@@ -14,15 +14,16 @@ from tests.conftest import mock_message
 
 def make_service(*, neighbors_enabled=True, summary=None, hang=False,
                  raises=None, cycle_budget=5.0, last_publish=0.0,
-                 cycle_active=False):
+                 last_attempt=0.0, cycle_active=False):
     """A stand-in for PacketCaptureService's neighbors surface."""
     service = types.SimpleNamespace()
     service.neighbors_enabled = neighbors_enabled
     service.neighbors_config = types.SimpleNamespace(
         discover_window=60.0, cycle_budget=cycle_budget
     )
-    # 0.0 == "no cycle has ever produced a result", so nothing is on cooldown.
+    # 0.0 == "no cycle has ever run", so nothing is on cooldown.
     service.last_neighbors_publish = last_publish
+    service.last_neighbors_attempt = last_attempt
     service.neighbors_cycle_active = cycle_active
     service.calls = 0
 
@@ -228,6 +229,20 @@ async def test_the_cooldown_applies_across_senders(command_mock_bot):
     assert sent == ["cooldown_active minutes=14"] * 2
     assert service.calls == 0
     assert command._cycle_task is None
+
+
+async def test_a_failed_cycle_still_starts_the_cooldown(command_mock_bot):
+    """The discover broadcast may have gone out even when the cycle failed, so a
+    second sender must not be able to transmit another round immediately."""
+    service = make_service(last_publish=0.0, last_attempt=time.time() - 60)
+    command, sent = make_command(command_mock_bot, service)
+
+    result = await command.execute(
+        mock_message(content="neighbors", is_dm=True, sender_id="SomeoneElse")
+    )
+    assert result is True
+    assert sent == ["cooldown_active minutes=14"]
+    assert service.calls == 0
 
 
 async def test_the_cooldown_expires(command_mock_bot, message):

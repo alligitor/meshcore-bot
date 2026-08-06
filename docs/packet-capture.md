@@ -410,9 +410,12 @@ whole mesh rather than to one requester:
   trigger asks — scheduler or command — so two discover rounds can never collect
   into each other's window.
 - **The 15-minute cooldown is per node, not per sender.** It is measured from the
-  last cycle that produced a result (including the scheduler's), so users cannot
-  take turns and keep the radio discovering continuously. A cycle that bailed out
-  without transmitting (radio down, unsupported build) does not start the clock.
+  last cycle that reached the radio, whichever trigger started it — including the
+  scheduler's, and including a cycle that failed after the discover request went
+  out, since a lost acknowledgement spends the airtime just the same. Users
+  therefore cannot take turns and keep the radio discovering continuously. A
+  cycle that bailed out *before* transmitting (radio down, unsupported build)
+  does not start the clock, so a retry stays possible.
 
 ### Region scopes are opt-in, and why
 
@@ -428,9 +431,13 @@ It defaults to **false** for two reasons specific to running inside the bot:
    no stored path the meshcore library reaches zero-hop by calling
    `change_contact_path()` and then `reset_path()` — temporarily rewriting that
    contact's path on the device. Those two calls are not paired by a
-   `try`/`finally` upstream, so a request cut short in between would leave the
-   contact pinned to zero-hop and every later message to it sent direct-only;
-   `modules/neighbors_discovery.py` restores the path itself when that happens.
+   `try`/`finally` upstream, and one error path returns between them, so a request
+   cut short — or one whose path change was applied but not acknowledged — would
+   leave the contact pinned to zero-hop and every later message to it sent
+   direct-only. `modules/neighbors_discovery.py` restores the path itself in each
+   of those cases, and warns if the device rejects the restore (which it reports
+   as an error event rather than an exception), since that contact's routing is
+   then wrong until something else fixes it.
 
 With it off, the snapshot reports every neighbour it heard with empty `scopes` and
 `status: responded`. Enable it on a bench radio first.

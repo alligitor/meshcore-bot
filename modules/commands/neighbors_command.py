@@ -92,13 +92,19 @@ class NeighborsCommand(BaseCommand):
     def _shared_cooldown_remaining(self, service: Any) -> float:
         """Seconds left before *any* sender may trigger another cycle.
 
-        Keyed off the service's own "last cycle that produced a result" stamp, so
-        a cycle the scheduler ran counts too, and a cycle that bailed out without
-        transmitting (radio down, unsupported build) does not.
+        Measured from the last cycle that reached the radio, whichever trigger
+        started it — including the scheduler's, and including a cycle that failed
+        after the discover request went out. A lost acknowledgement spends the
+        airtime just the same, so charging only for completed cycles would let a
+        second sender start another round immediately. A cycle that bailed out
+        before transmitting (radio down, unsupported build) does not count.
         """
         if self.cooldown_seconds <= 0:
             return 0.0
-        last = getattr(service, 'last_neighbors_publish', 0) or 0
+        last = max(
+            getattr(service, 'last_neighbors_publish', 0) or 0,
+            getattr(service, 'last_neighbors_attempt', 0) or 0,
+        )
         return max(0.0, self.cooldown_seconds - (time.time() - last))
 
     async def execute(self, message: MeshMessage) -> bool:

@@ -144,6 +144,7 @@ def build_service(ini: str, *, db_manager=None, radio=None, connected=True):
     service.neighbors_discover_failures = 0
     service.neighbors_topic_warned = set()
     service.last_neighbors_publish = service._load_neighbors_state()
+    service.last_neighbors_attempt = 0.0
     service.neighbors_cycle_active = False
     service.debug = False
     # global_iata deliberately not overridden: it comes from the ini, so tests can
@@ -644,6 +645,37 @@ async def test_concurrent_cycles_are_refused(db_manager, monkeypatch):
         assert conn.execute("SELECT COUNT(*) FROM neighbor_links").fetchone()[0] == 1
     # And the guard is released for the next trigger.
     assert service.neighbors_cycle_active is False
+
+
+async def test_a_failed_cycle_still_records_the_attempt(db_manager, caplog, no_sleep):
+    """A lost acknowledgement spends the airtime without completing the cycle.
+
+    last_neighbors_publish stays unset in that case, so callers that ration
+    airtime need the attempt stamp or another sender could transmit immediately.
+    """
+    radio = FakeRadio([])
+
+    async def failing(filter_bits, prefix_only=True, tag=None):
+        return FakeEvent(EventType.ERROR, {"reason": "no_event_received"})
+
+    radio.commands.send_node_discover_req = failing
+    service = build_service(BASE_INI, db_manager=db_manager, radio=radio)
+    service.mqtt_enabled = False
+
+    summary = await service.run_neighbors_cycle()
+    assert summary["ok"] is False
+    assert service.last_neighbors_publish == 0
+    assert service.last_neighbors_attempt > 0
+
+
+async def test_a_cycle_that_never_transmits_records_no_attempt(db_manager):
+    """Refusing before the radio is touched must not lock out a retry."""
+    service = build_service(BASE_INI, db_manager=db_manager, radio=None)
+    service.mqtt_enabled = False
+
+    summary = await service.run_neighbors_cycle()
+    assert summary["ok"] is False
+    assert service.last_neighbors_attempt == 0.0
 
 
 async def test_the_guard_is_released_when_a_cycle_fails(db_manager, no_sleep):

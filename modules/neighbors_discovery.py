@@ -332,27 +332,60 @@ def _contact_has_no_path(meshcore: Any, pubkey: str) -> bool:
     return contact.get("out_path_len", CONTACT_NO_PATH) == CONTACT_NO_PATH
 
 
+def _event_error_reason(event: Any) -> Optional[str]:
+    """The failure reason when *event* is an ERROR event, else None.
+
+    Device commands report a rejection -- and their own response timeout -- as an
+    ERROR event rather than an exception, so a returned event has to be inspected
+    before the command can be called successful.
+    """
+    if event is None or getattr(event, "type", None) != EventType.ERROR:
+        return None
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        reason = payload.get("reason") or payload.get("error")
+        if reason:
+            return str(reason)
+    return "error"
+
+
 async def _restore_flood_path(meshcore: Any, pubkey: str,
-                              logger: logging.Logger) -> None:
+                              logger: logging.Logger) -> bool:
     """Put a contact back to "no path" after an interrupted scope request.
 
     ``send_anon_req`` sets the zero-hop path and restores it *after* the send,
-    with no ``try``/``finally``. If our budget cuts the request off in between,
-    the contact stays pinned to zero-hop on the device and every later message
-    to it is sent direct-only, so we repair it here instead.
+    with no ``try``/``finally``, and one of its error paths returns between the
+    two. Either way the contact stays pinned to zero-hop on the device and every
+    later message to it is sent direct-only, so we repair it here instead.
+
+    Returns True when the device confirmed the reset. A failure is worth a
+    warning rather than a retry: the operator needs to know that contact's
+    routing is wrong, and hammering an unresponsive device does not help.
     """
     try:
-        await meshcore.commands.reset_path(pubkey)
-        logger.info(
-            f"Neighbors: restored flood path for {pubkey[:12]} after an "
-            f"interrupted scope request"
-        )
+        event = await meshcore.commands.reset_path(pubkey)
     except Exception as exc:
         logger.warning(
             f"Neighbors: could not restore the flood path for {pubkey[:12]} "
             f"after an interrupted scope request ({exc}); it may be left "
             f"pinned to zero-hop on the device"
         )
+        return False
+
+    reason = _event_error_reason(event)
+    if reason is not None:
+        logger.warning(
+            f"Neighbors: the device rejected the flood-path restore for "
+            f"{pubkey[:12]} ({reason}); it may be left pinned to zero-hop, "
+            f"so messages to it will be sent direct-only"
+        )
+        return False
+
+    logger.info(
+        f"Neighbors: restored flood path for {pubkey[:12]} after an "
+        f"interrupted scope request"
+    )
+    return True
 
 
 def _restore_flood_path_detached(meshcore: Any, pubkey: str,
@@ -479,6 +512,15 @@ async def collect_scopes(
             entry.status = STATUS_TIMEOUT
             if debug:
                 logger.debug(f"Neighbors: no scope response from {entry.pubkey[:12]}")
+            # One of those collapsed failures is send_anon_req giving up because
+            # change_contact_path returned an error -- which it also does when the
+            # device *applied* the zero-hop path but its acknowledgement was lost.
+            # That returns before the library's own reset_path, so repair it here
+            # too. On the far more common "neighbour just did not answer" path the
+            # library has already restored the path and this is a redundant device
+            # command: no airtime, idempotent, and it re-syncs the contact cache.
+            if pinned_to_zero_hop:
+                await _restore_flood_path(meshcore, entry.pubkey, logger)
             continue
 
         entry.scopes = str(scopes).strip()
