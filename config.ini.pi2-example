@@ -38,13 +38,30 @@
 #   accept that the engine will not receive further major updates. A true Pi 2 v1.1 cannot run a
 #   64-bit OS, so there is no upgrade path off this ceiling short of new hardware.
 #
-# BUILD OFF-DEVICE
-#   Do not build the image on the Pi. Ten dependencies have no prebuilt armv7 wheels and compile
-#   from source: PyNaCl (bundles libsodium), pycryptodome, ephem, pyephem, brotli, cffi,
-#   MarkupSafe, librt, backports.zstd, sgmllib3k. Everything else resolves to a wheel - notably
-#   cryptography, aiohttp, jellyfish and qh3 all publish armv7 builds, so no Rust toolchain is
-#   needed. On a 900 MHz Cortex-A7 with 1 GB RAM that is hours of work and a
-#   likely OOM. Cross-build with buildx/QEMU in CI (already configured) and pull the result.
+# DEPENDENCIES / BUILDING
+#   Ten dependencies publish no prebuilt armv7 wheel on PyPI and would compile from source:
+#   PyNaCl (bundles libsodium), pycryptodome, ephem, pyephem, brotli, cffi, MarkupSafe, librt,
+#   backports.zstd, sgmllib3k. On a 900 MHz Cortex-A7 with 1 GB RAM that is hours of work and a
+#   likely OOM. Everything else already resolves to a wheel - cryptography, aiohttp, jellyfish
+#   and qh3 all publish armv7 builds, so no Rust toolchain is needed.
+#
+#   You should not have to compile any of them:
+#
+#     Docker install - nothing to do. The published linux/arm/v7 image ships everything
+#       prebuilt. Just pull it; do not build the image on the Pi.
+#
+#     Native install - install-service.sh handles this automatically. On a 32-bit ARM host it
+#       adds the piwheels index and applies constraints-armv7.txt, which resolves the entire
+#       dependency set to wheels (measured: 75/75, zero compiled). Raspberry Pi OS already
+#       configures piwheels in /etc/pip.conf; the explicit flag also covers Ubuntu armhf and
+#       DietPi, which do not.
+#
+#     Manual pip install - pass both yourself:
+#       pip install --extra-index-url https://www.piwheels.org/simple \
+#                   -c constraints-armv7.txt -r requirements.txt
+#
+#   See constraints-armv7.txt for the measurements and for how to re-check the pins as
+#   piwheels catches up.
 #
 # RADIO TRANSPORT
 #   The Pi 2 has no onboard Bluetooth or WiFi - those arrived with the Pi 3. BLE requires a USB
