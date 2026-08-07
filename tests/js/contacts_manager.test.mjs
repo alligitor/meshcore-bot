@@ -223,6 +223,65 @@ test('a newer contacts request aborts the stale request', async () => {
     assert.equal(signals[1].aborted, false);
 });
 
+test('updateSortIcons leaves the hops info tip alone', () => {
+    const { context, Manager } = loadManagerClass();
+    const sortIcon = fakeElement({ className: 'fas fa-sort sort-icon' });
+    const infoIcon = fakeElement({ className: 'fas fa-info-circle' });
+    const hopsHeader = fakeElement({
+        classList: {
+            remove(name) {
+                this._removed = name;
+            },
+            add(name) {
+                this._added = name;
+            },
+        },
+        querySelector(selector) {
+            if (selector === '.sort-icon') return sortIcon;
+            if (selector === 'i') return sortIcon;
+            return null;
+        },
+        querySelectorAll(selector) {
+            if (selector === '.sort-icon') return [sortIcon];
+            if (selector === 'i') return [sortIcon, infoIcon];
+            return [];
+        },
+    });
+    const otherHeader = fakeElement({
+        classList: {
+            remove() {},
+            add() {},
+        },
+        querySelector() {
+            return null;
+        },
+        querySelectorAll() {
+            return [];
+        },
+    });
+
+    context.document.querySelectorAll = selector => {
+        if (selector === '.sortable .sort-icon') return [sortIcon];
+        if (selector === '.sortable i') return [sortIcon, infoIcon];
+        if (selector === '.sortable') return [hopsHeader, otherHeader];
+        return [];
+    };
+    context.document.querySelector = selector => {
+        if (selector === '[data-sort="hop_count"]') return hopsHeader;
+        return null;
+    };
+
+    const manager = bareManager(Manager);
+    manager.sortColumn = 'hop_count';
+    manager.sortDirection = 'asc';
+    manager.syncMobileSortSelect = () => {};
+    manager.updateSortIcons();
+
+    assert.equal(sortIcon.className, 'fas fa-sort-up sort-icon');
+    assert.equal(infoIcon.className, 'fas fa-info-circle');
+    assert.equal(hopsHeader.classList._added, 'sort-active');
+});
+
 test('search is debounced before reloading the first page', () => {
     const { context, elements, Manager } = loadManagerClass();
     const requiredIds = [

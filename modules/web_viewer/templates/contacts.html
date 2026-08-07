@@ -496,23 +496,23 @@
                                 <input type="checkbox" class="form-check-input" id="contacts-select-all" title="Select all on page">
                             </th>
                             <th class="sortable" data-sort="username">
-                                Name <i class="fas fa-sort"></i>
+                                Name <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable" data-sort="device_type">
-                                Device Type <i class="fas fa-sort"></i>
+                                Device Type <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable" data-sort="location">
-                                Location <i class="fas fa-sort"></i>
+                                Location <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable" data-sort="distance">
-                                Distance <i class="fas fa-sort"></i>
+                                Distance <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable" data-sort="snr">
-                                SNR <i class="fas fa-sort"></i>
+                                SNR <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable" data-sort="hop_count">
                                 <span class="d-inline-flex align-items-center gap-1">
-                                    Hops <i class="fas fa-sort"></i>
+                                    Hops <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                                     <button type="button" class="btn btn-link p-0 border-0 align-baseline text-muted path-encoding-info-btn"
                                             id="contacts-list-multibyte-badge-info"
                                             aria-label="How Multibyte and 1-byte only badges are determined"
@@ -522,16 +522,16 @@
                                 </span>
                             </th>
                             <th class="sortable" data-sort="path_bytes">
-                                Bytes/hop <i class="fas fa-sort"></i>
+                                Bytes/hop <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable" data-sort="first_heard">
-                                First Heard <i class="fas fa-sort"></i>
+                                First Heard <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable sort-active" data-sort="last_seen">
-                                Last Heard <i class="fas fa-sort-down"></i>
+                                Last Heard <i class="fas fa-sort-down sort-icon" aria-hidden="true"></i>
                             </th>
                             <th class="sortable" data-sort="advert_count">
-                                Adverts <i class="fas fa-sort"></i>
+                                Adverts <i class="fas fa-sort sort-icon" aria-hidden="true"></i>
                             </th>
                             <th>Actions</th>
                         </tr>
@@ -863,9 +863,9 @@ class ModernContactsManager {
     }
     
     updateSortIcons() {
-        // Remove all sort icons
-        document.querySelectorAll('.sortable i').forEach(icon => {
-            icon.className = 'fas fa-sort';
+        // Only touch dedicated sort chevrons — never the hops path-encoding (i) tip.
+        document.querySelectorAll('.sortable .sort-icon').forEach(icon => {
+            icon.className = 'fas fa-sort sort-icon';
         });
         
         // Remove active class from all headers
@@ -877,9 +877,11 @@ class ModernContactsManager {
         const activeHeader = document.querySelector(`[data-sort="${this.sortColumn}"]`);
         if (activeHeader) {
             activeHeader.classList.add('sort-active');
-            const icon = activeHeader.querySelector('i');
+            const icon = activeHeader.querySelector('.sort-icon');
             if (icon) {
-                icon.className = this.sortDirection === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down';
+                icon.className = this.sortDirection === 'asc'
+                    ? 'fas fa-sort-up sort-icon'
+                    : 'fas fa-sort-down sort-icon';
             }
         }
         this.syncMobileSortSelect();
@@ -2723,18 +2725,18 @@ document.addEventListener('DOMContentLoaded', () => {
     transition: all 0.2s ease;
 }
 
-.sortable i {
+.sortable .sort-icon {
     margin-left: 5px;
     opacity: 0.5;
     transition: opacity 0.2s ease;
     font-size: 0.8em;
 }
 
-.sortable:hover i {
+.sortable:hover .sort-icon {
     opacity: 0.8;
 }
 
-.sort-active i {
+.sort-active .sort-icon {
     opacity: 1;
     color: #0d6efd !important;
 }
