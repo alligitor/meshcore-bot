@@ -6656,14 +6656,15 @@ class BotDataViewer:
             # the widest path encoding seen for it, with the contact's current out-path as a
             # fallback for databases that have not retained an observed path yet.  This gives
             # the list one stable, sortable value instead of placing the same node in several
-            # byte buckets.
+            # byte buckets.  Only count rows with a known 1/2/3 encoding so NULL/invalid
+            # observations do not collapse to "1-byte" and block the out-path fallback.
             path_bytes_expression = """COALESCE((
-                SELECT MAX(CASE WHEN op.bytes_per_hop IN (1, 2, 3)
-                                THEN op.bytes_per_hop ELSE 1 END)
+                SELECT MAX(op.bytes_per_hop)
                 FROM observed_paths op
                 WHERE op.public_key = c.public_key
                   AND op.packet_type = 'advert'
                   AND op.path_hex IS NOT NULL AND op.path_hex != ''
+                  AND op.bytes_per_hop IN (1, 2, 3)
             ), CASE WHEN c.out_bytes_per_hop IN (1, 2, 3)
                      THEN c.out_bytes_per_hop ELSE 0 END)"""
             if since in datetime_offsets:

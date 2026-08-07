@@ -499,6 +499,58 @@ class TestContactRoutes:
         ).get_json()["tracking_data"]
         assert [row["path_bytes_per_hop"] for row in sorted_rows] == [3, 2, 1]
 
+    def test_api_contacts_path_bytes_ignores_invalid_observed_encodings(self, client, viewer):
+        """NULL/invalid observed_paths.bytes_per_hop must not become 1-byte.
+
+        Those rows should be ignored so the contact falls back to out_bytes_per_hop.
+        """
+        public_key = "d804" * 16
+        _insert_contact(viewer, public_key, "PathBytes Fallback")
+        with closing(sqlite3.connect(viewer.db_path)) as conn:
+            conn.execute(
+                """UPDATE complete_contact_tracking
+                   SET out_bytes_per_hop = 3, last_heard = datetime('now', 'localtime')
+                   WHERE public_key = ?""",
+                (public_key,),
+            )
+            conn.execute(
+                """INSERT INTO observed_paths
+                   (public_key, from_prefix, to_prefix, path_hex, path_length,
+                    bytes_per_hop, packet_type, first_seen, last_seen, observation_count)
+                   VALUES (?, 'abcd', 'ef01', 'abcdef01', 4, NULL, 'advert',
+                           datetime('now', 'localtime'), datetime('now', 'localtime'), 1)""",
+                (public_key,),
+            )
+            conn.commit()
+
+        rows = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes Fallback", "sort": "path_bytes",
+            },
+        ).get_json()["tracking_data"]
+        assert len(rows) == 1
+        assert rows[0]["path_bytes_per_hop"] == 3
+
+        filtered = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes Fallback", "path_bytes": "3",
+            },
+        ).get_json()["tracking_data"]
+        assert [row["username"] for row in filtered] == ["PathBytes Fallback"]
+
+        as_one_byte = client.get(
+            "/api/contacts",
+            query_string={
+                "since": "all", "page": 1, "page_size": 10,
+                "search": "PathBytes Fallback", "path_bytes": "1",
+            },
+        ).get_json()["tracking_data"]
+        assert as_one_byte == []
+
     @pytest.mark.parametrize(
         ("sort", "ascending_names"),
         [
