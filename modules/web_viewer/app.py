@@ -1215,6 +1215,9 @@ class BotDataViewer:
             response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
             # Allow CDNs used by templates (base.html, login.html, mesh.html).
             # Without these hosts, browsers block external CSS/JS/fonts (not CSRF).
+            # fonts.googleapis.com serves login.html's stylesheet and fonts.gstatic.com
+            # the font files it references — both hosts are needed or the login page
+            # silently falls back to system fonts.
             # The highest-risk admin screens have migrated their inline handlers
             # and authorize their remaining template scripts with a per-request
             # nonce. Other legacy screens retain unsafe-inline until their inline
@@ -1242,13 +1245,15 @@ class BotDataViewer:
                 + script_source
                 + "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
                 "style-src 'self' 'unsafe-inline' "
-                "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
+                "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com "
+                "https://fonts.googleapis.com; "
                 "img-src 'self' data: https://*.tile.openstreetmap.org "
                 "https://*.basemaps.cartocdn.com "
                 "https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
                 "connect-src 'self' ws: wss: "
                 "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; "
-                "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com"
+                "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+                "https://fonts.gstatic.com"
             )
 
             # Sanitize error details from 5xx JSON responses to prevent info disclosure.
