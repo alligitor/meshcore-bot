@@ -243,10 +243,10 @@
                     </div>
                     <div class="col-md-2">
                         <label for="filter-evidence" class="form-label">Evidence</label>
-                        <select class="form-select" id="filter-evidence" title="Multi-byte only: build the graph solely from unique multi-byte path observations, ignoring ambiguous single-byte evidence. Neighbours only: only links this node confirmed directly by zero-hop discovery, with measured SNR.">
+                        <select class="form-select" id="filter-evidence" title="Multi-byte only: build the graph solely from unique multi-byte path observations, ignoring ambiguous single-byte evidence. Neighbors only: only links this node confirmed directly by zero-hop discovery, with measured SNR.">
                             <option value="all">All Evidence</option>
                             <option value="multibyte" selected>Multi-byte Only</option>
-                            <option value="neighbors">Neighbours Only</option>
+                            <option value="neighbors">Neighbors Only</option>
                         </select>
                     </div>
                     <div class="col-md-2">
@@ -297,7 +297,7 @@
                     <hr style="margin: 4px 0;">
                     <div class="connection-legend-item">
                         <span style="display: inline-block; width: 18px; border-top: 4px solid currentColor; vertical-align: middle;"></span>
-                        <span>Confirmed neighbour (zero-hop)</span>
+                        <span>Confirmed neighbor (zero-hop)</span>
                     </div>
                     <div class="connection-legend-item">
                         <span style="display: inline-block; width: 18px; border-top: 2px solid currentColor; vertical-align: middle;"></span>
@@ -759,7 +759,7 @@
     function getEvidenceLabel(edge) {
         if (edge.evidence === 'neighbors') {
             const snr = formatSnr(edge.snr);
-            return snr ? `Confirmed neighbour (avg SNR ${snr})` : 'Confirmed neighbour (zero-hop)';
+            return snr ? `Confirmed neighbor (avg SNR ${snr})` : 'Confirmed neighbor (zero-hop)';
         }
         if (edge.evidence === 'multibyte') {
             return edge.path_count
@@ -957,8 +957,8 @@
     function getHomeComponentBounds() {
         if (!botLocation) return null;
         // Every evidence mode tags its edges, so this works in "All Evidence" too.
-        // Confirmed neighbours count as trusted (they are measured, not inferred),
-        // and are the only tagged edges present in "Neighbours Only" mode.
+        // Confirmed neighbors count as trusted (they are measured, not inferred),
+        // and are the only tagged edges present in "Neighbors Only" mode.
         const mbEdges = filteredEdges.filter(
             e => e.evidence === 'multibyte' || e.evidence === 'neighbors'
         );
@@ -1212,8 +1212,6 @@
             return;
         }
         
-        console.log(`Highlighting path with ${pathRepeaters.length} repeaters:`, pathRepeaters.map(r => r.node_id));
-        
         // Highlight edges between consecutive nodes in the path
         // Need to match the edgeKey format used when storing edges: `${edge.from_prefix}-${edge.to_prefix}`
         const pathEdgeKeys = new Set();
@@ -1257,25 +1255,11 @@
                 // Normalize to lowercase to match how edges are stored
                 const edgeKey = `${edge.from_prefix.toLowerCase()}-${edge.to_prefix.toLowerCase()}`;
                 pathEdgeKeys.add(edgeKey);
-                console.log(`Found edge for path segment ${fromRepeater.node_id}->${toRepeater.node_id}: ${edgeKey} (edge stored as ${edge.from_prefix}->${edge.to_prefix})`);
             } else {
                 console.warn(`No edge found for path segment ${fromRepeater.node_id}->${toRepeater.node_id}`);
-                // Log available edges for debugging
-                const availableEdges = filteredEdges.filter(e => {
-                    const eFrom = e.from_prefix.toUpperCase();
-                    const eTo = e.to_prefix.toUpperCase();
-                    return (eFrom === fromPrefix || eTo === fromPrefix || eFrom === toPrefix || eTo === toPrefix);
-                });
-                if (availableEdges.length > 0) {
-                    console.log(`Available edges with these prefixes:`, availableEdges.map(e => `${e.from_prefix}->${e.to_prefix}`));
-                } else {
-                    console.log(`No edges found with prefixes ${fromPrefix} or ${toPrefix} in filteredEdges (total: ${filteredEdges.length})`);
-                }
             }
         }
-        
-        console.log(`Path edge keys to highlight:`, Array.from(pathEdgeKeys));
-        
+
         // First, store original styles for ALL edges if not already stored
         edgeLines.forEach((line, edgeKey) => {
             if (!allEdgeStyles.has(edgeKey)) {
@@ -1286,8 +1270,6 @@
                 });
             }
         });
-        
-        console.log(`Total edges on map: ${edgeLines.size}, Path edges to highlight: ${pathEdgeKeys.size}`);
         
         // Normalize path edge keys to lowercase for matching
         const normalizedPathEdgeKeys = new Set();

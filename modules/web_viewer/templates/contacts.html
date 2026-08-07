@@ -1136,8 +1136,6 @@ class ModernContactsManager {
         
         // Try to get server-provided daily stats first
         const serverStats = this.contactsData.server_stats || {};
-        console.log('Contacts data structure:', typeof this.contactsData, 'has server_stats:', 'server_stats' in this.contactsData);
-        console.log('Server stats received:', serverStats);
         const adverts24h = (serverStats.advertisements_24h !== undefined) ? serverStats.advertisements_24h : this.filteredData.filter(contact => {
             const lastSeen = new Date(contact.last_seen);
             const now = new Date();
@@ -1153,29 +1151,7 @@ class ModernContactsManager {
         
         const advertsAll = (serverStats.total_advertisements !== undefined) ? serverStats.total_advertisements : this.filteredData.reduce((sum, contact) => sum + (contact.advert_count || 0), 0);
         
-        console.log('Final advertisement counts:', {
-            '24h': adverts24h,
-            '7d': adverts7d, 
-            'All': advertsAll,
-            'using_server_stats': (serverStats.advertisements_24h !== undefined) && 
-                                  (serverStats.advertisements_7d !== undefined) && 
-                                  (serverStats.total_advertisements !== undefined)
-        });
-        
         // Calculate new device metrics (devices first seen in the last 7 days)
-        // Debug: Log device types to see what we're working with
-        const deviceTypes = [...new Set(this.filteredData.map(contact => contact.device_type))];
-        console.log('Available device types:', deviceTypes);
-        console.log('Sample contact data:', this.filteredData[0]);
-        
-        // Also check for any devices first heard in the last week regardless of type
-        const anyNewDevices = this.filteredData.filter(contact => {
-            const firstHeard = new Date(contact.first_heard);
-            return firstHeard >= oneWeekAgo;
-        });
-        console.log('Any new devices in last week:', anyNewDevices.length);
-        console.log('Sample new device:', anyNewDevices[0]);
-        
         // Try different possible device type values
         const newCompanions = this.filteredStats.new_companions ?? this.filteredData.filter(contact => {
             const firstHeard = new Date(contact.first_heard);
@@ -1208,11 +1184,6 @@ class ModernContactsManager {
                 deviceType.includes('server')
             );
         }).length;
-        
-        // Debug: Log the counts
-        console.log('New companions:', newCompanions);
-        console.log('New repeaters:', newRepeaters);
-        console.log('New room servers:', newRoomServers);
         
         // Update contact metrics
         document.getElementById('contacts-24h').textContent = contacts24h;
