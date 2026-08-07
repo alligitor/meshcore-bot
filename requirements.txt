@@ -22,7 +22,10 @@ retry-requests>=1.0.0
 flask>=2.3.0
 flask-socketio>=5.3.0
 flask-compress>=1.14
-meshcore-cli
+# Still required alongside the meshcore library: `meshcore_cli.next_cmd` backs the
+# contact and channel operations (add/remove contact, discover_companion_contacts,
+# set_manual_add_contacts, get_channel) that meshcore.commands does not expose.
+meshcore-cli>=1.4.0
 feedparser>=6.0.10
 paho-mqtt>=1.6.0
 cryptography>=41.0.0
