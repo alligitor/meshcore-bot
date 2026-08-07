@@ -17,7 +17,7 @@ import time
 from contextlib import closing, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 # When started as a script (`python modules/web_viewer/app.py`), Python puts the
@@ -77,6 +77,17 @@ from modules.web_viewer.dashboard_stats import (
 
 # RFC 8594 Sunset date advertised on the deprecated /api/stats endpoint.
 STATS_ENDPOINT_SUNSET = "Fri, 01 Jan 2027 00:00:00 GMT"
+
+
+class NeighborEvidenceKeys(NamedTuple):
+    """Directed edge identities that zero-hop neighbor discovery has confirmed.
+
+    A ``mesh_connections`` edge counts as neighbor-confirmed if it matches on
+    either key space; see BotDataViewer._neighbor_evidence_edge_keys.
+    """
+
+    prefixes: set[tuple[str, str]]
+    public_keys: set[tuple[str, str]]
 
 
 def _validate_dynamic_key(key: str) -> "str | None":
@@ -973,6 +984,140 @@ class BotDataViewer:
             })
         result.sort(key=lambda e: e['last_seen'] or '', reverse=True)
         return result
+
+    # Nodes in the neighbor tables are stored as full 32-byte public keys, so the
+    # graph's highest resolution (3 bytes) is always available for edge identity.
+    NEIGHBOR_PREFIX_HEX_CHARS = 6
+
+    def _neighbor_evidence_edge_keys(
+        self,
+        days: int | None = None,
+    ) -> 'NeighborEvidenceKeys':
+        """Directed pairs that confirmed zero-hop discovery has proven.
+
+        Used to upgrade the evidence label in the combined view, where the edge
+        itself comes from ``mesh_connections`` and so has lost its provenance.
+        Two key spaces are returned because a ``mesh_connections`` edge can be
+        matched by either:
+
+        * ``prefixes`` — 3-byte prefix pairs, matching edges the graph stores at
+          the same resolution neighbor discovery feeds it.
+        * ``public_keys`` — full-key pairs, for edges the graph deliberately keeps
+          at a *shorter* prefix (see ``MeshGraph.add_edge``: a 1-byte edge with no
+          public key is not promoted, so several nodes keep sharing it) while
+          still filling in the public keys discovery supplied. Truncating our
+          keys down to 2 chars instead would be wrong — it would relabel every
+          other node sharing that byte.
+
+        ``days`` windows the evidence the same way the caller windows its edges.
+        ``neighbor_links`` is never pruned, so without it a link last seen years
+        ago would keep labelling a recent path-derived edge a current neighbor.
+        """
+        try:
+            edges = self._derive_neighbor_evidence_graph(days=days)[0]
+        except Exception as exc:
+            # A pre-migration-22 database simply has no neighbor evidence.
+            self.logger.debug(f"Neighbor evidence keys unavailable: {exc}")
+            return NeighborEvidenceKeys(set(), set())
+
+        # Both directions are already emitted per link, so no reversing here.
+        prefixes = {
+            (edge['from_prefix'], edge['to_prefix'])
+            for edge in edges
+            if edge['from_prefix'] and edge['to_prefix']
+        }
+        public_keys = {
+            (edge['from_public_key'], edge['to_public_key'])
+            for edge in edges
+            if edge['from_public_key'] and edge['to_public_key']
+        }
+        return NeighborEvidenceKeys(prefixes, public_keys)
+
+    def _compute_neighbor_evidence_edges(self) -> list[dict[str, Any]]:
+        """Derive mesh edges from confirmed zero-hop neighbor discovery.
+
+        This is the strongest evidence class in the database: each row is a
+        direct RF reception between two *full* public keys with a measured SNR,
+        recorded by modules/neighbors_discovery.py. Two differences from the
+        multi-byte path derivation are worth noting:
+
+        * ``from_public_key``/``to_public_key`` are populated. Path-derived edges
+          cannot fill these in, because a path carries prefixes only.
+        * ``snr``/``best_snr`` are real measurements. Unlike the dashboard's
+          one-hop panel, which withholds SNR unless two sources agree because
+          ``complete_contact_tracking.hop_count`` over-claims zero-hop, a
+          discover response *is* the authoritative first-party measurement.
+
+        Both directions are emitted per link: a discover response proves we
+        transmitted, they received, they transmitted, and we received.
+        """
+        chars = self.NEIGHBOR_PREFIX_HEX_CHARS
+        query = '''
+            SELECT
+                self_public_key,
+                neighbor_public_key,
+                observation_count,
+                snr_sum,
+                snr_count,
+                best_snr,
+                last_snr,
+                first_seen,
+                last_seen
+            FROM neighbor_links
+        '''
+        try:
+            with self._with_db_connection() as conn:
+                rows = conn.execute(query).fetchall()
+        except Exception as exc:
+            self.logger.debug(f"Neighbor evidence edges unavailable: {exc}")
+            return []
+
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            self_key = (row['self_public_key'] or '').lower()
+            neighbor_key = (row['neighbor_public_key'] or '').lower()
+            if not self_key or not neighbor_key:
+                continue
+            snr_count = row['snr_count'] or 0
+            mean_snr = (row['snr_sum'] / snr_count) if snr_count else None
+            for from_key, to_key in ((self_key, neighbor_key), (neighbor_key, self_key)):
+                edges.append({
+                    'from_prefix': from_key[:chars],
+                    'to_prefix': to_key[:chars],
+                    'from_public_key': from_key,
+                    'to_public_key': to_key,
+                    'observation_count': row['observation_count'] or 1,
+                    'first_seen': row['first_seen'],
+                    'last_seen': row['last_seen'],
+                    # A direct link is by definition the first hop of any path
+                    # that crosses it.
+                    'avg_hop_position': 1.0,
+                    'geographic_distance': None,
+                    'snr': mean_snr,
+                    'best_snr': row['best_snr'],
+                    'last_snr': row['last_snr'],
+                    'evidence': 'neighbors',
+                })
+
+        edges.sort(key=lambda e: e['last_seen'] or '', reverse=True)
+        return edges
+
+    def _derive_neighbor_evidence_graph(
+        self,
+        days: int | None = None,
+        min_observations: int | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Filtered neighbor-evidence edges plus their prefix resolution.
+
+        Reuses the multi-byte view filter: it only touches ``last_seen`` and
+        ``observation_count`` (handling both naive and aware timestamps), which
+        is exactly the filtering these edges need.
+        """
+        all_edges = self._compute_neighbor_evidence_edges()
+        filtered = self._filter_multibyte_evidence_edges(
+            all_edges, days=days, min_observations=min_observations
+        )
+        return filtered, self.NEIGHBOR_PREFIX_HEX_CHARS
 
     def _resolve_path(self, path_input: str) -> dict[str, Any]:
         """Resolve a hex path to repeater names/locations for the mesh map.
@@ -2739,6 +2884,10 @@ class BotDataViewer:
             evidence=multibyte derives edges purely from unique multi-byte path
             observations (observed_paths, bytes_per_hop >= 2), bypassing the
             mesh_connections merge heuristics that single-byte evidence feeds into.
+
+            evidence=neighbors derives edges purely from confirmed zero-hop
+            discovery (neighbor_links) — full public keys on both ends plus a
+            measured SNR, the strongest evidence class available.
             """
             conn = None
             try:
@@ -2761,6 +2910,23 @@ class BotDataViewer:
                         'prefix_hex_chars': prefix_hex_chars,
                         'evidence': 'multibyte',
                     })
+
+                if evidence == 'neighbors':
+                    edges, prefix_hex_chars = self._derive_neighbor_evidence_graph(
+                        days=days,
+                        min_observations=min_observations,
+                    )
+                    return jsonify({
+                        'edges': edges,
+                        'prefix_hex_chars': prefix_hex_chars,
+                        'evidence': 'neighbors',
+                    })
+
+                # Combined view: mesh_connections cannot record *why* an edge
+                # exists, so re-derive the strongest label from neighbor_links.
+                # Same window as the edges themselves, so stale evidence cannot
+                # claim a recent edge is a current direct neighbor.
+                neighbor_keys = self._neighbor_evidence_edge_keys(days=days)
 
                 conn = self._get_db_connection()
                 cursor = conn.cursor()
@@ -2831,9 +2997,23 @@ class BotDataViewer:
                     # by a multi-byte path observation; 2-char keys carry only ambiguous
                     # single-byte evidence.
                     is_multibyte = bool(fp) and bool(tp) and len(fp) >= 4 and len(tp) >= 4
+                    from_lower = fp.lower() if fp else ''
+                    to_lower = tp.lower() if tp else ''
+                    from_key = (row['from_public_key'] or '').lower()
+                    to_key = (row['to_public_key'] or '').lower()
+                    if (
+                        (from_lower, to_lower) in neighbor_keys.prefixes
+                        or (from_key and to_key
+                            and (from_key, to_key) in neighbor_keys.public_keys)
+                    ):
+                        edge_evidence = 'neighbors'
+                    elif is_multibyte:
+                        edge_evidence = 'multibyte'
+                    else:
+                        edge_evidence = 'singlebyte'
                     edges.append({
-                        'from_prefix': fp.lower() if fp else '',
-                        'to_prefix': tp.lower() if tp else '',
+                        'from_prefix': from_lower,
+                        'to_prefix': to_lower,
                         'from_public_key': row['from_public_key'],
                         'to_public_key': row['to_public_key'],
                         'observation_count': row['observation_count'],
@@ -2841,7 +3021,7 @@ class BotDataViewer:
                         'last_seen': row['last_seen'],
                         'avg_hop_position': row['avg_hop_position'],
                         'geographic_distance': row['geographic_distance'],
-                        'evidence': 'multibyte' if is_multibyte else 'singlebyte'
+                        'evidence': edge_evidence
                     })
 
                 return jsonify({'edges': edges, 'prefix_hex_chars': prefix_hex_chars or 2})

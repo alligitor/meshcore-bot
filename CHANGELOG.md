@@ -8,6 +8,48 @@ semantic versioning.
 
 ### Added
 
+- Zero-hop neighbour discovery in the packet capture service, ported from
+  `meshcore-packet-capture` (itself a port of the observer firmware's neighbours
+  feature). On a long interval (12–336 h, default 24) the bot asks which
+  repeaters it hears **directly** and records each confirmed link with its
+  measured SNR. `[PacketCapture] neighbors_enabled` is the single switch and is
+  off by default; every enabled broker publishes the snapshot once it is on
+  (`mqttN_neighbors` defaults true, so set it false to hold a broker back). The
+  neighbours topic is derived from each broker's packets topic by swapping the
+  last segment, so a templated broker gets
+  `meshcore/{IATA}/{PUBLIC_KEY}/neighbors` — the topic the firmware uses. A
+  derived location-routed topic is skipped with a warning when no `iata` is set,
+  rather than publishing into `meshcore/XYZ/...`. Snapshots are non-retained,
+  because `heard_secs_ago` is relative to publish time.
+- Confirmed direct links are now the strongest evidence class in the database:
+  two full 32-byte public keys plus a first-party RF measurement, where path
+  inference has only 1–3 byte prefixes and no keys. Stored in `neighbor_links`
+  (adjacency, migration 22) and `neighbor_observations` (per-cycle history,
+  pruned by `neighbor_observations_retention_days`, default 365).
+- Mesh graph integration: a **Neighbours Only** evidence mode on the mesh page
+  and `GET /api/mesh/edges?evidence=neighbors`, deriving edges purely from
+  `neighbor_links`. Unlike the multi-byte mode these edges carry populated public
+  keys and real SNR, and they render as heavier lines. Confirmed neighbours are
+  also labelled as such in the combined view, and count as provenance-trusted
+  when framing the initial map. `neighbors_feed_mesh_graph` (default on) also
+  writes them to `mesh_connections`.
+- `neighbors` DM command to run one cycle on demand — the scheduled interval has
+  a 12 h floor, which makes testing impractical otherwise. Acknowledges
+  immediately and reports in a second DM once the listen window closes. Worth
+  adding to `[Admin_ACL] admin_commands`, since a cycle spends airtime.
+- Optional region-scope collection (`neighbors_collect_scopes`), **off by
+  default**: each request holds the bot's single radio command lock for up to
+  ~25 s, and for a repeater with no stored path the meshcore library reaches
+  zero-hop by temporarily rewriting that contact's path on the device. The
+  default cycle costs one radio command plus a passive listen window, during
+  which the bot stays fully responsive.
+
+### Changed
+
+- `meshcore` minimum raised from 2.3.6 to 2.3.8. Required for
+  `send_node_discover_req` / `req_regions_sync`, and for the bounded, serialised
+  BLE write.
+
 - Rebuilt web-viewer dashboard, served from a background snapshot instead of
   recomputing statistics on every request. A refresher thread in the viewer
   process writes `daily_rollup` (one row per local date) and
